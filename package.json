@@ -17,16 +17,16 @@
     "three": "^0.183.2"
   },
   "devDependencies": {
-    "@eslint/css": "^0.14.1",
-    "@eslint/js": "^9.39.2",
-    "@types/audioworklet": "^0.0.92",
-    "@types/node": "^25.2.1",
-    "eslint": "^9.39.2",
+    "@eslint/css": "^1.0.0",
+    "@eslint/js": "^10.0.1",
+    "@types/audioworklet": "^0.0.97",
+    "@types/node": "^25.5.0",
+    "eslint": "^10.1.0",
     "jiti": "^2.6.1",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.50.0",
-    "vite": "^7.3.0",
-    "vite-plugin-static-copy": "^3.2.0",
-    "vitest": "^4.0.16"
+    "typescript-eslint": "^8.57.2",
+    "vite": "^8.0.3",
+    "vite-plugin-static-copy": "^4.0.0",
+    "vitest": "^4.1.2"
   }
 }
