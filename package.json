@@ -1,0 +1,32 @@
+{
+  "name": "template-change-me",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run build:ts",
+    "build:ts": "eslint ./src/** && tsc && vite build",
+    "preview": "vite preview",
+    "test": "npm run test:ts",
+    "test:ts": "vitest run"
+  },
+  "dependencies": {
+    "@types/three": "^0.183.1",
+    "lil-gui": "^0.21.0",
+    "three": "^0.183.2"
+  },
+  "devDependencies": {
+    "@eslint/css": "^0.14.1",
+    "@eslint/js": "^9.39.2",
+    "@types/audioworklet": "^0.0.92",
+    "@types/node": "^25.2.1",
+    "eslint": "^9.39.2",
+    "jiti": "^2.6.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.50.0",
+    "vite": "^7.3.0",
+    "vite-plugin-static-copy": "^3.2.0",
+    "vitest": "^4.0.16"
+  }
+}
