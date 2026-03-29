@@ -65,12 +65,11 @@ async function init() {
     createStatsPanel();
     createGui();
 
-    idleManager = new IdleManager(
-        document,
-        () => view.renderer.setAnimationLoop(animate),
-        () => view.renderer.setAnimationLoop(null),
-    );
-    idleManager.enableDebugIndicator(true);
+    idleManager = new IdleManager(document, {
+        onStartIdle: () => view.renderer.setAnimationLoop(null),
+        onStopIdle: () => view.renderer.setAnimationLoop(animate),
+        showDebugIndicator: true,
+    });
 }
 
 init();
