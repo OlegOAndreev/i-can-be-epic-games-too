@@ -4,6 +4,7 @@ import Stats from 'three/addons/libs/stats.module.js';
 import { TrackballControls } from 'three/examples/jsm/Addons.js';
 
 import { IdleManager } from './idle-manager';
+import { getById, setupWindowOnError } from './common-utils';
 
 const FOV = 80;
 const NEAR_Z = 0.1;
@@ -52,10 +53,9 @@ let idleManager: IdleManager;
 let statsPanel: Stats;
 
 async function init() {
-    canvas = document.getElementById('threejs') as HTMLCanvasElement;
-    if (!canvas) {
-        throw new Error('Canvas element with id "threejs" not found');
-    }
+    setupWindowOnError();
+
+    canvas = getById('threejs');
 
     view = new View(canvas);
 
