@@ -3,15 +3,16 @@ const ALL_INTERACTION_EVENTS = ['keydown', 'keyup', 'pointerdown', 'pointermove'
 // Idle is enabled 1.5 seconds after the last event. This should be enough time for all animation to settle.
 const SETTLE_TIMEOUT = 1500;
 
-export interface IdleOptions {
+// Options for IdleManager
+export interface IdleManagerOptions {
     // Called when the animation should be idle, e.g. () => renderer.setAnimationLoop(null)
     onStartIdle: () => void;
     // Called when the animation should start, e.g. () => renderer.setAnimationLoop(yourAnimateFunction)
     onStopIdle: () => void;
-    // If true, idle will be started when the document is hidden even if it has been disabled by disable() call
-    // previously (i.e. animation will not play for hidden windows). If false, document visibility is ignored. True by
-    // default.
-    enableIdleOnHidden?: boolean;
+    // If true, the page may enter idle while hidden even when idling is currently disabled via disableIdle(). If false,
+    // disableIdle() continues to prevent entering idle while hidden. This flag only affects hidden-page behavior while
+    // idling is disabled; it does not affect wake(), which always exits idle. True by default.
+    forceIdleOnHidden?: boolean;
     // If true, a small yellow dot will be show on top of document when idling. False by default.
     showDebugIndicator?: boolean;
 }
@@ -19,74 +20,122 @@ export interface IdleOptions {
 // Class for tracking if the animation loop should be running or idle, depending on user interaction with the page and
 // page visibility.
 export class IdleManager {
+    private document: Document;
     private onStopIdle: () => void;
     private onStartIdle: () => void;
-    private enabledIdleOnHidden: boolean;
-    private showDebugIndicator: boolean;
+    private forceIdleOnHidden: boolean;
 
-    private debugIndicator: HTMLDivElement;
+    private debugIndicator: HTMLDivElement | null = null;
 
+    // Set to true so that we can exit
     private isIdle = true;
-    private idleTimeout: number | null = null;
-    private idleEnabled = true;
-    // Set to true only if idle on hidden is enabled and document is hidden.
-    private isHidden = false;
+    private idleDisabledCount = 0;
+    private idleSettleTimeout: number | null = null;
 
-    // onStopIdle should start animation loop, e.g. webGlRenderer.setAnimationLoop(yourAnimate), onStartIdle should stop
-    // animation loop.
-    constructor(document: Document, options: IdleOptions) {
+    constructor(document: Document, options: IdleManagerOptions) {
+        this.document = document;
         this.onStopIdle = options.onStopIdle;
         this.onStartIdle = options.onStartIdle;
-        this.enabledIdleOnHidden = options.enableIdleOnHidden ?? true;
-        this.showDebugIndicator = options.showDebugIndicator ?? false;
+        this.forceIdleOnHidden = options.forceIdleOnHidden ?? true;
 
-        this.debugIndicator = this.createDebugIndicator(document);
+        const showDebugIndicator = options.showDebugIndicator ?? false;
+        if (showDebugIndicator) {
+            this.debugIndicator = this.createDebugIndicator(document);
+        }
 
-        this.isHidden = document.hidden && this.enabledIdleOnHidden;
         this.setupEventListeners(document);
 
-        // Trigger rendering and idle timer.
-        this.interrupt();
+        // Trigger waking for the first time.
+        this.wake();
     }
 
-    // Interrupt idle, but do not disable idling
-    interrupt() {
-        // Do not schedule idle while idle transitions are disabled.
-        if (!this.idleEnabled || this.isHidden) {
-            return;
+    // Interrupt idle, but do not disable idling. Idle is always disabled, regardless of page visibility.
+    wake() {
+        this.exitIdle();
+        // Clear currently running settle-to-idle
+        if (this.idleSettleTimeout) {
+            clearTimeout(this.idleSettleTimeout);
+            this.idleSettleTimeout = null;
         }
-        this.stopIdle();
-        this.idleTimeout = setTimeout(() => {
-            if (this.isIdle) {
-                console.error('Internal error: starting idle when idle is already started');
-                return;
-            }
-            if (!this.idleEnabled) {
-                console.error('Internal error: starting idle when idle is disabled');
-                return;
-            }
-            this.startIdle();
-        }, SETTLE_TIMEOUT);
+        this.settleToIdle();
     }
 
     // Prevent idling (e.g. when animation is running)
-    disable() {
-        if (!this.idleEnabled) {
-            return;
-        }
-        this.idleEnabled = false;
-        if (!this.isHidden) {
-            this.stopIdle();
-        }
+    disableIdle() {
+        this.idleDisabledCount++;
+        this.wake();
+    }
+
+    // Return true if idle is currently suspended.
+    idleDisabled(): boolean {
+        return this.idleDisabledCount > 0;
     }
 
     // Re-enable idling (e.g. when animation is finished)
-    enable() {
-        if (this.idleEnabled) {
+    enableIdle() {
+        if (this.idleDisabledCount <= 0) {
+            console.error('Trying to resume idle that was not suspended');
             return;
         }
-        this.idleEnabled = true;
-        this.interrupt();
+        this.idleDisabledCount--;
+        this.settleToIdle();
+    }
+
+    private setupEventListeners(document: Document) {
+        document.addEventListener('visibilitychange', () => this.onVisibilityChange(), { capture: true });
+        for (const event of ALL_INTERACTION_EVENTS) {
+            // We use unconditional waking here: if the user somehow manages to interact with the hidden page (is it
+            // even possible?), we should wake from idle.
+            document.addEventListener(event, () => this.wake(), { capture: true });
+        }
+    }
+
+    private onVisibilityChange() {
+        if (this.document.hidden) {
+            // If page is hidden, try entering idle (this transition happens if the idling was disabled previously).
+            this.settleToIdle();
+        } else {
+            this.wake();
+        }
+    }
+
+    // Enter idle after a timeout (unless disabled).
+    private settleToIdle() {
+        if (this.isIdle || this.idleSettleTimeout !== null) {
+            // Do not settle if either already idle, or he settle-to-idle is already in progress, do not reset it.
+            return;
+        }
+        if (this.idleDisabledCount > 0 && (!this.document.hidden || !this.forceIdleOnHidden)) {
+            // Do not settle if idle is disabled and page is not hidden.
+            return;
+        }
+        this.idleSettleTimeout = setTimeout(() => {
+            this.idleSettleTimeout = null;
+            this.enterIdle();
+        }, SETTLE_TIMEOUT);
+    }
+
+    // Use a pair of functions exitIdle/enterIdle to guarantee we keep onStartIdle/onStopIdle paired.
+    private exitIdle() {
+        if (this.isIdle) {
+            this.isIdle = false;
+            this.onStopIdle();
+            if (this.debugIndicator) {
+                this.debugIndicator.style.display = 'none';
+            }
+        }
+    }
+
+    private enterIdle() {
+        if (this.isIdle) {
+            console.error(`enterIdle is double called, missed clearTimeout?`);
+            return;
+        }
+        this.isIdle = true;
+        this.onStartIdle();
+        if (this.debugIndicator) {
+            this.debugIndicator.style.display = 'block';
+        }
     }
 
     private createDebugIndicator(document: Document) {
@@ -100,60 +149,10 @@ export class IdleManager {
         indicator.style.backgroundColor = 'yellow';
         indicator.style.zIndex = '100000';
         indicator.style.pointerEvents = 'none';
-        indicator.style.visibility = 'hidden';
+        indicator.style.display = 'none';
 
         document.body.appendChild(indicator);
 
         return indicator;
-    }
-
-    private setupEventListeners(document: Document) {
-        document.addEventListener('visibilitychange', () => {
-            this.isHidden = document.hidden && this.enabledIdleOnHidden;
-            if (document.hidden) {
-                if (this.enabledIdleOnHidden) {
-                    // Immediately start idle when hidden.
-                    if (!this.isIdle) {
-                        this.startIdle();
-                    }
-                }
-            } else {
-                if (this.enabledIdleOnHidden) {
-                    // Always force stop idle, otherwise the interrupt() may early exit if idling has been previously
-                    // disabled.
-                    this.stopIdle();
-                }
-                this.interrupt();
-            }
-        });
-
-        for (const event of ALL_INTERACTION_EVENTS) {
-            document.addEventListener(event, () => this.interrupt(), { capture: true });
-        }
-    }
-
-    private stopIdle() {
-        if (this.idleTimeout !== null) {
-            clearTimeout(this.idleTimeout);
-            this.idleTimeout = null;
-        }
-        if (!this.isIdle) {
-            return;
-        }
-        this.isIdle = false;
-        this.debugIndicator.style.visibility = 'hidden';
-        this.onStopIdle();
-    }
-
-    private startIdle() {
-        if (this.idleTimeout !== null) {
-            clearTimeout(this.idleTimeout);
-            this.idleTimeout = null;
-        }
-        this.isIdle = true;
-        if (this.showDebugIndicator) {
-            this.debugIndicator.style.visibility = 'visible';
-        }
-        this.onStartIdle();
     }
 }
