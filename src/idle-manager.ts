@@ -13,7 +13,7 @@ export interface IdleManagerOptions {
     // disableIdle() continues to prevent entering idle while hidden. This flag only affects hidden-page behavior while
     // idling is disabled; it does not affect wake(), which always exits idle. True by default.
     forceIdleOnHidden?: boolean;
-    // If true, a small yellow dot will be show on top of document when idling. False by default.
+    // If true, a small yellow dot will be shown on top of document when idling. False by default.
     showDebugIndicator?: boolean;
 }
 
@@ -27,7 +27,7 @@ export class IdleManager {
 
     private debugIndicator: HTMLDivElement | null = null;
 
-    // Set to true so that we can exit
+    // Set to true so that we exit idle in constructor.
     private isIdle = true;
     private idleDisabledCount = 0;
     private idleSettleTimeout: number | null = null;
@@ -49,7 +49,7 @@ export class IdleManager {
         this.wake();
     }
 
-    // Interrupt idle, but do not disable idling. Idle is always disabled, regardless of page visibility.
+    // Interrupt idle, but do not disable idling. Idle is always interrupted, regardless of page visibility.
     wake() {
         this.exitIdle();
         // Clear currently running settle-to-idle
@@ -102,7 +102,7 @@ export class IdleManager {
     // Enter idle after a timeout (unless disabled).
     private settleToIdle() {
         if (this.isIdle || this.idleSettleTimeout !== null) {
-            // Do not settle if either already idle, or he settle-to-idle is already in progress, do not reset it.
+            // Do not settle if either already idle, or the settle-to-idle is already in progress, do not reset it.
             return;
         }
         if (this.idleDisabledCount > 0 && (!this.document.hidden || !this.forceIdleOnHidden)) {
@@ -128,7 +128,7 @@ export class IdleManager {
 
     private enterIdle() {
         if (this.isIdle) {
-            console.error(`enterIdle is double called, missed clearTimeout?`);
+            console.error(`enterIdle is called twice, missed clearTimeout?`);
             return;
         }
         this.isIdle = true;

@@ -49,7 +49,6 @@ class View {
 
 let canvas: HTMLCanvasElement;
 let view: View;
-let idleManager: IdleManager;
 let statsPanel: Stats;
 
 async function init() {
@@ -65,7 +64,7 @@ async function init() {
     createStatsPanel();
     createGui();
 
-    idleManager = new IdleManager(document, {
+    new IdleManager(document, {
         onStartIdle: () => view.renderer.setAnimationLoop(null),
         onStopIdle: () => view.renderer.setAnimationLoop(animate),
         showDebugIndicator: true,
@@ -80,7 +79,6 @@ function createStatsPanel() {
     statsPanel.dom.id = 'stats-panel';
     statsPanel.dom.style.cssText = '';
     document.body.appendChild(statsPanel.dom);
-    statsPanel.dom.style.display = 'block';
 }
 
 function createGui() {
