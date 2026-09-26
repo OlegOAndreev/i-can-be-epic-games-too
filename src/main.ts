@@ -1,7 +1,7 @@
 import GUI from 'lil-gui';
 import { Color, PerspectiveCamera, Scene, WebGLRenderer } from 'three';
 import Stats from 'three/addons/libs/stats.module.js';
-import { TrackballControls } from 'three/examples/jsm/Addons.js';
+import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js';
 
 import { IdleManager } from './idle-manager';
 import { getById, setupWindowOnError } from './common-utils';

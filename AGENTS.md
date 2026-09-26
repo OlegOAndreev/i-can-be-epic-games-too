@@ -2,12 +2,12 @@
 
 ## General
 * ADD INFO HERE
-* General information about this project is in README.md
-* The code is written in TypeScript with minimal dependencies, pure CSS and HTML, bundled using esbuild
+* The code is written in TypeScript with minimal dependencies, pure CSS and HTML, bundled with Vite.
+* ESLint lints both TypeScript and CSS, while `tsc` type-checks without emitting; Vite produces the final bundle.
 
 ## Code location
 * TypeScript files are located in src/
-* HTML and CSS Files are located in src/assets/
+* The HTML entry point is index.html and CSS files are located in src/assets/
 
 ## Project rules
 * Do not embed HTML or CSS in typescript files

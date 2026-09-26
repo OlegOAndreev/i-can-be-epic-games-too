@@ -82,12 +82,15 @@ export class IdleManager {
     }
 
     private setupEventListeners(document: Document) {
-        document.addEventListener('visibilitychange', () => this.onVisibilityChange(), { capture: true });
+        document.addEventListener('visibilitychange', () => this.onVisibilityChange());
         for (const event of ALL_INTERACTION_EVENTS) {
             // We use unconditional waking here: if the user somehow manages to interact with the hidden page (is it
             // even possible?), we should wake from idle.
-            document.addEventListener(event, () => this.wake(), { capture: true });
+            document.addEventListener(event, () => this.wake());
         }
+        // From https://developer.mozilla.org/en-US/docs/Web/API/Window/resize_event
+        // > However, resize events are only fired on the window object (i.e., returned by document.defaultView).
+        document.defaultView?.addEventListener('resize', () => this.wake());
     }
 
     private onVisibilityChange() {

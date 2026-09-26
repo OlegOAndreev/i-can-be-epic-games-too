@@ -12,23 +12,23 @@
     "test:ts": "vitest run"
   },
   "dependencies": {
-    "@types/three": "^0.183.1",
+    "@types/three": "^0.186.0",
     "lil-gui": "^0.21.0",
-    "three": "^0.183.2"
+    "three": "^0.186.1"
   },
   "devDependencies": {
-    "@eslint/css": "^1.0.0",
+    "@eslint/css": "^2.0.0",
     "@eslint/js": "^10.0.1",
-    "@types/audioworklet": "^0.0.97",
-    "@types/node": "^25.5.0",
-    "eslint": "^10.1.0",
+    "@types/audioworklet": "^0.0.100",
+    "@types/node": "^26.6.3",
+    "eslint": "^10.11.0",
     "globals": "^17.5.0",
     "jiti": "^2.6.1",
-    "typescript": "^5.9.3",
-    "typescript-eslint": "^8.57.2",
-    "vite": "^8.0.3",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.70.1",
+    "vite": "^8.3.1",
     "vite-plugin-static-copy": "^4.0.0",
-    "vitest": "^4.1.2"
+    "vitest": "^5.0.2"
   },
   "allowScripts": {
     "fsevents@2.3.3": true
