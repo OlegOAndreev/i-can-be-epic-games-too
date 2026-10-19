@@ -1,0 +1,302 @@
+import {
+    BufferAttribute,
+    BufferGeometry,
+    Color,
+    DoubleSide,
+    DynamicDrawUsage,
+    Group,
+    InstancedMesh,
+    Matrix4,
+    MeshStandardMaterial,
+    Object3D,
+    ShaderChunk,
+    Vector3,
+} from 'three';
+
+import { hash32, smoothstep } from './math-utils';
+import { mulberry32 } from './noise';
+import { WATER_LEVEL } from './terrain';
+import type { Terrain } from './terrain';
+
+const CELL_SIZE = 5;
+const MAX_INSTANCES = 16000;
+const BLADE_COUNT = 6;
+// Grass is sub-pixel well before this range, so fade it into the ground instead of letting it
+// flicker in the distance.
+const FADE_START = 50;
+const FADE_END = 80;
+// The terrain shader multiplies its vertex color by the grass texture. This is the average of
+// the grass texture variants, so tuft colors land on the same value as the ground under them.
+const GROUND_TEXTURE_TINT = new Color().setRGB(0.65, 0.74, 0.4);
+
+export const DEFAULT_GRASS_RADIUS = 100;
+
+interface GrassTuft {
+    matrix: Matrix4;
+    color: Color;
+}
+
+interface GrassCell {
+    tufts: GrassTuft[];
+    lastSeen: number;
+}
+
+// A patch of instanced grass tufts that stays centered on the player. Tuft placement is deterministic
+// per world cell and cached, so crossing cell boundaries only generates newly visible cells.
+export class GrassField {
+    readonly group = new Group();
+
+    private mesh: InstancedMesh;
+    private terrain: Terrain;
+    private material: MeshStandardMaterial;
+    private dummy = new Object3D();
+    private cells = new Map<string, GrassCell>();
+    private generation = 0;
+    private cellRadius: number;
+    private lastCellX = Number.NaN;
+    private lastCellZ = Number.NaN;
+
+    constructor(terrain: Terrain, radius = DEFAULT_GRASS_RADIUS) {
+        this.group.name = 'grass';
+        this.terrain = terrain;
+        this.cellRadius = radiusToCells(radius);
+
+        const geometry = createTuftGeometry();
+        this.material = new MeshStandardMaterial({
+            vertexColors: true,
+            side: DoubleSide,
+            roughness: 1,
+            metalness: 0,
+            transparent: true,
+            // The whole field is sorted as one object, so a depth write from any blade would hide
+            // alpha-blended effects (such as the detector pulse) that are actually in front of it.
+            depthWrite: false,
+            // DoubleSide + transparent otherwise renders in two passes; the back pass flips
+            // the up-facing normal, which makes the blades dark.
+            forceSinglePass: true,
+        });
+        // Blades are paper-thin, so side-facing normals make neighbouring tufts alternate between
+        // sunlit and shadowed, which reads as sparkle at a distance. Light every tuft as a
+        // ground-like surface instead. DoubleSide flips the normal on back faces, so drop that.
+        // The distance fade blends distant tufts into the ground before they become sub-pixel.
+        this.material.onBeforeCompile = (shader) => {
+            shader.vertexShader = shader.vertexShader
+                .replace('void main() {', 'varying float vGrassFade;\nvoid main() {')
+                .replace(
+                    '#include <project_vertex>',
+                    `vec3 tuftWorld = (modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+                    vGrassFade = 1.0 - smoothstep(${FADE_START.toFixed(1)}, ${FADE_END.toFixed(1)}, distance(tuftWorld, cameraPosition));
+                    #include <project_vertex>`,
+                );
+            shader.fragmentShader = shader.fragmentShader
+                .replace('void main() {', 'varying float vGrassFade;\nvoid main() {')
+                .replace(
+                    '#include <normal_fragment_begin>',
+                    ShaderChunk.normal_fragment_begin.replace('normal *= faceDirection;', ''),
+                )
+                .replace(
+                    '#include <color_fragment>',
+                    `#include <color_fragment>\n\tif (vGrassFade < 0.01) discard;\n\tdiffuseColor.a *= vGrassFade;`,
+                );
+        };
+
+        this.mesh = new InstancedMesh(geometry, this.material, MAX_INSTANCES);
+        this.mesh.name = 'grass-tufts';
+        this.mesh.count = 0;
+        this.mesh.instanceMatrix.setUsage(DynamicDrawUsage);
+        this.mesh.frustumCulled = false;
+        this.mesh.castShadow = false;
+        this.mesh.receiveShadow = true;
+        this.group.add(this.mesh);
+    }
+
+    get instanceCount(): number {
+        return this.mesh.count;
+    }
+
+    setVisible(visible: boolean): void {
+        this.group.visible = visible;
+    }
+
+    // Radius is the approximate half-extent of the grass patch in world units.
+    setRadius(radius: number): void {
+        const cellRadius = radiusToCells(radius);
+        if (cellRadius === this.cellRadius) {
+            return;
+        }
+        this.cellRadius = cellRadius;
+        this.lastCellX = Number.NaN;
+        this.lastCellZ = Number.NaN;
+    }
+
+    update(playerPosition: Vector3): void {
+        const centerX = Math.floor(playerPosition.x / CELL_SIZE);
+        const centerZ = Math.floor(playerPosition.z / CELL_SIZE);
+        if (centerX === this.lastCellX && centerZ === this.lastCellZ) {
+            return;
+        }
+        this.lastCellX = centerX;
+        this.lastCellZ = centerZ;
+        this.generation++;
+
+        let count = 0;
+        let truncated = false;
+
+        for (let cellZ = centerZ - this.cellRadius; cellZ <= centerZ + this.cellRadius && !truncated; cellZ++) {
+            for (let cellX = centerX - this.cellRadius; cellX <= centerX + this.cellRadius; cellX++) {
+                const key = cellKey(cellX, cellZ);
+                let cell = this.cells.get(key);
+                if (!cell) {
+                    cell = this.createCell(cellX, cellZ);
+                    this.cells.set(key, cell);
+                }
+                cell.lastSeen = this.generation;
+
+                for (const tuft of cell.tufts) {
+                    if (count >= MAX_INSTANCES) {
+                        truncated = true;
+                        break;
+                    }
+                    this.mesh.setMatrixAt(count, tuft.matrix);
+                    this.mesh.setColorAt(count, tuft.color);
+                    count++;
+                }
+
+                if (truncated) {
+                    break;
+                }
+            }
+        }
+
+        for (const [key, cell] of this.cells) {
+            if (cell.lastSeen !== this.generation) {
+                this.cells.delete(key);
+            }
+        }
+
+        this.mesh.count = count;
+        this.mesh.instanceMatrix.needsUpdate = true;
+        if (this.mesh.instanceColor) {
+            this.mesh.instanceColor.needsUpdate = true;
+        }
+    }
+
+    dispose(): void {
+        this.mesh.geometry.dispose();
+        this.material.dispose();
+        this.mesh.dispose();
+        this.group.clear();
+        this.group.removeFromParent();
+        this.cells.clear();
+    }
+
+    private createCell(cellX: number, cellZ: number): GrassCell {
+        const rng = mulberry32(hash32(cellX, cellZ, this.terrain.seed));
+        const tuftCount = 9 + Math.floor(rng() * 8);
+        const tufts: GrassTuft[] = [];
+
+        for (let i = 0; i < tuftCount; i++) {
+            const x = (cellX + rng()) * CELL_SIZE;
+            const z = (cellZ + rng()) * CELL_SIZE;
+            const height = this.terrain.heightAt(x, z);
+
+            if (height < WATER_LEVEL + 0.2 || height > 62) {
+                continue;
+            }
+
+            // Stay off beaches and high, sparse alpine ground, and accept only close to the
+            // green habitat core so gray rock and sand remain nearly bare.
+            const altitudeBias = smoothstep(2.8, 5.5, height) * (1 - smoothstep(55, 62, height));
+            const suitability = this.terrain.grassBiasAt(x, z) * altitudeBias;
+            if (suitability < 0.08 || rng() > suitability) {
+                continue;
+            }
+            if (this.terrain.slopeAt(x, z) > 0.8) {
+                continue;
+            }
+
+            const scale = 0.75 + rng() * 0.7;
+            this.dummy.position.set(x, height, z);
+            this.dummy.rotation.set(0, rng() * Math.PI * 2, 0);
+            this.dummy.scale.set(scale, scale * (0.8 + rng() * 0.5), scale);
+            this.dummy.updateMatrix();
+
+            const color = this.terrain
+                .groundColorAt(x, z)
+                .multiply(GROUND_TEXTURE_TINT)
+                .multiplyScalar(0.9 + rng() * 0.2);
+            tufts.push({ matrix: this.dummy.matrix.clone(), color });
+        }
+
+        return { tufts, lastSeen: this.generation };
+    }
+}
+
+function createTuftGeometry(): BufferGeometry {
+    const positions: number[] = [];
+    const colors: number[] = [];
+    // Neutral shade gradient; the per-tuft color supplies the actual ground hue.
+    const baseColor = new Color().setRGB(0.9, 0.9, 0.9);
+    const tipColor = new Color().setRGB(1, 1, 1);
+
+    for (let i = 0; i < BLADE_COUNT; i++) {
+        const angle = (i / BLADE_COUNT) * Math.PI * 2 + (i % 2) * 0.4;
+        const directionX = Math.cos(angle);
+        const directionZ = Math.sin(angle);
+        const perpendicularX = -directionZ;
+        const perpendicularZ = directionX;
+
+        const radius = 0.035 + (i % 3) * 0.015;
+        const height = 0.3 + (i % 5) * 0.05;
+        const width = 0.045 + (i % 2) * 0.015;
+        const lean = 0.14 + (i % 4) * 0.025;
+
+        const baseX = directionX * radius;
+        const baseZ = directionZ * radius;
+        const tipX = directionX * (radius + lean);
+        const tipZ = directionZ * (radius + lean);
+        const tipWidth = width * 0.22;
+
+        const baseLeftX = baseX + perpendicularX * width;
+        const baseLeftZ = baseZ + perpendicularZ * width;
+        const baseRightX = baseX - perpendicularX * width;
+        const baseRightZ = baseZ - perpendicularZ * width;
+        const tipLeftX = tipX + perpendicularX * tipWidth;
+        const tipLeftZ = tipZ + perpendicularZ * tipWidth;
+        const tipRightX = tipX - perpendicularX * tipWidth;
+        const tipRightZ = tipZ - perpendicularZ * tipWidth;
+
+        pushVertex(positions, colors, baseLeftX, 0, baseLeftZ, baseColor);
+        pushVertex(positions, colors, baseRightX, 0, baseRightZ, baseColor);
+        pushVertex(positions, colors, tipRightX, height, tipRightZ, tipColor);
+
+        pushVertex(positions, colors, baseLeftX, 0, baseLeftZ, baseColor);
+        pushVertex(positions, colors, tipRightX, height, tipRightZ, tipColor);
+        pushVertex(positions, colors, tipLeftX, height, tipLeftZ, tipColor);
+    }
+
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
+    geometry.setAttribute('color', new BufferAttribute(new Float32Array(colors), 3));
+    // Match the material: every blade is lit from above rather than by its facing direction.
+    const normals = new Float32Array(positions.length);
+    for (let index = 1; index < normals.length; index += 3) {
+        normals[index] = 1;
+    }
+    geometry.setAttribute('normal', new BufferAttribute(normals, 3));
+    return geometry;
+}
+
+function pushVertex(positions: number[], colors: number[], x: number, y: number, z: number, color: Color): void {
+    positions.push(x, y, z);
+    colors.push(color.r, color.g, color.b);
+}
+
+function radiusToCells(radius: number): number {
+    return Math.max(1, Math.ceil(radius / CELL_SIZE));
+}
+
+
+function cellKey(x: number, z: number): string {
+    return `${x},${z}`;
+}

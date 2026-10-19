@@ -50,6 +50,17 @@ function dispatchInteraction(document: MockDocument) {
 describe('IdleManager', () => {
     let document: MockDocument;
 
+    function createManager(forceIdleOnHidden?: boolean) {
+        const onStartIdle = vi.fn();
+        const onStopIdle = vi.fn();
+        const manager = new IdleManager(document as unknown as Document, {
+            onStartIdle,
+            onStopIdle,
+            forceIdleOnHidden,
+        });
+        return { manager, onStartIdle, onStopIdle };
+    }
+
     beforeEach(() => {
         vi.useFakeTimers();
         document = new MockDocument();
@@ -62,13 +73,7 @@ describe('IdleManager', () => {
     });
 
     it('wakes immediately on construction and enters idle after settle timeout', () => {
-        const onStartIdle = vi.fn();
-        const onStopIdle = vi.fn();
-
-        new IdleManager(document as unknown as Document, {
-            onStartIdle,
-            onStopIdle,
-        });
+        const { onStartIdle, onStopIdle } = createManager();
 
         expect(onStopIdle).toHaveBeenCalledTimes(1);
         expect(onStartIdle).toHaveBeenCalledTimes(0);
@@ -81,13 +86,7 @@ describe('IdleManager', () => {
     });
 
     it('resets settle timer on interaction and idles only after last interaction', () => {
-        const onStartIdle = vi.fn();
-        const onStopIdle = vi.fn();
-
-        new IdleManager(document as unknown as Document, {
-            onStartIdle,
-            onStopIdle,
-        });
+        const { onStartIdle } = createManager();
 
         vi.advanceTimersByTime(1000);
         dispatchInteraction(document);
@@ -99,13 +98,7 @@ describe('IdleManager', () => {
     });
 
     it('disableIdle prevents entering idle while visible', () => {
-        const onStartIdle = vi.fn();
-        const onStopIdle = vi.fn();
-
-        const manager = new IdleManager(document as unknown as Document, {
-            onStartIdle,
-            onStopIdle,
-        });
+        const { manager, onStartIdle } = createManager();
 
         manager.disableIdle();
 
@@ -115,13 +108,7 @@ describe('IdleManager', () => {
     });
 
     it('enableIdle restores idling and can settle to idle', () => {
-        const onStartIdle = vi.fn();
-        const onStopIdle = vi.fn();
-
-        const manager = new IdleManager(document as unknown as Document, {
-            onStartIdle,
-            onStopIdle,
-        });
+        const { manager, onStartIdle } = createManager();
 
         manager.disableIdle();
         vi.advanceTimersByTime(1501);
@@ -134,14 +121,7 @@ describe('IdleManager', () => {
     });
 
     it('with forceIdleOnHidden=false, hidden document does not force idle while disabled', () => {
-        const onStartIdle = vi.fn();
-        const onStopIdle = vi.fn();
-
-        const manager = new IdleManager(document as unknown as Document, {
-            onStartIdle,
-            onStopIdle,
-            forceIdleOnHidden: false,
-        });
+        const { manager, onStartIdle } = createManager(false);
 
         manager.disableIdle();
 
@@ -153,14 +133,7 @@ describe('IdleManager', () => {
     });
 
     it('with forceIdleOnHidden=true, hidden document can enter idle even when disabled', () => {
-        const onStartIdle = vi.fn();
-        const onStopIdle = vi.fn();
-
-        const manager = new IdleManager(document as unknown as Document, {
-            onStartIdle,
-            onStopIdle,
-            forceIdleOnHidden: true,
-        });
+        const { manager, onStartIdle } = createManager(true);
 
         manager.disableIdle();
 
@@ -172,13 +145,7 @@ describe('IdleManager', () => {
     });
 
     it('becoming visible always wakes from idle', () => {
-        const onStartIdle = vi.fn();
-        const onStopIdle = vi.fn();
-
-        new IdleManager(document as unknown as Document, {
-            onStartIdle,
-            onStopIdle,
-        });
+        const { onStartIdle, onStopIdle } = createManager();
 
         vi.advanceTimersByTime(1500);
         expect(onStartIdle).toHaveBeenCalledTimes(1);
@@ -193,14 +160,8 @@ describe('IdleManager', () => {
     });
 
     it('enableIdle logs error if called more times than disableIdle', () => {
-        const onStartIdle = vi.fn();
-        const onStopIdle = vi.fn();
+        const { manager } = createManager();
         const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-        const manager = new IdleManager(document as unknown as Document, {
-            onStartIdle,
-            onStopIdle,
-        });
 
         manager.enableIdle();
 

@@ -1,5 +1,5 @@
 {
-  "name": "template-change-me",
+  "name": "walking-game",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -7,11 +7,16 @@
     "dev": "vite",
     "build": "npm run build:ts",
     "build:ts": "eslint ./src/** && tsc && vite build",
+    "generate:textures": "tsx scripts/generate-textures.ts",
+    "generate:signs": "tsx scripts/generate-signs.ts",
+    "generate:audio": "tsx scripts/generate-audio.ts",
+    "generate:midi": "tsx scripts/generate-midi.ts",
     "preview": "vite preview",
     "test": "npm run test:ts",
     "test:ts": "vitest run"
   },
   "dependencies": {
+    "@tonejs/midi": "^2.0.28",
     "@types/three": "^0.186.0",
     "lil-gui": "^0.21.0",
     "three": "^0.186.1"
@@ -19,11 +24,13 @@
   "devDependencies": {
     "@eslint/css": "^2.0.0",
     "@eslint/js": "^10.0.1",
+    "@napi-rs/canvas": "^1.0.11",
     "@types/audioworklet": "^0.0.100",
     "@types/node": "^26.6.3",
     "eslint": "^10.11.0",
     "globals": "^17.5.0",
     "jiti": "^2.6.1",
+    "tsx": "^4.23.15",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.70.1",
     "vite": "^8.3.1",

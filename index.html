@@ -3,14 +3,172 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0" />
-    <title>three.js template</title>
-    <link type="text/css" rel="stylesheet" href="/src/assets/main.css" />
+    <title>Wanderer — a walking game</title>
+    <link type="text/css" rel="stylesheet" href="/assets/main.css" />
     <link rel="icon" href="data:;base64,=" />
 
+    <!-- Static hosts such as GitHub Pages cannot send COOP/COEP headers. This worker adds them,
+         reloads once, and makes the page cross-origin isolated (5 µs performance.now / SAB). -->
+    <script type="text/javascript" src="/coi-serviceworker.js"></script>
     <script type="module" src="/src/main.ts"></script>
   </head>
 
   <body>
     <canvas id="threejs" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+
+    <div id="speedometer" aria-label="Current speed" data-i18n-aria-label="hud.speedLabel">
+      <span id="speed-value">0.0</span>
+      <span class="speed-unit" data-i18n="hud.speedUnit">m/s</span>
+    </div>
+
+    <div id="energy-meter" class="is-hidden" aria-label="Energy collected" data-i18n-aria-label="hud.energyLabel">
+      <span id="energy-value">0%</span>
+      <span class="energy-label" data-i18n="hud.energy">energy collected</span>
+    </div>
+
+    <div id="parts-meter" class="is-hidden" role="status" aria-label="Spaceship parts found" data-i18n-aria-label="hud.partsLabel">
+      <span id="parts-value">0 / 5</span>
+      <span class="parts-label" data-i18n="hud.parts">spaceship parts found</span>
+    </div>
+
+    <div id="minerals-meter" class="is-hidden" role="status" aria-label="Fuel minerals" data-i18n-aria-label="hud.mineralsLabel">
+      <span id="minerals-value">0 / 6</span>
+      <span class="minerals-label" data-i18n="hud.minerals">fuel minerals</span>
+    </div>
+
+    <div id="dialogue" class="is-hidden" role="status" aria-live="polite" aria-atomic="true">
+      <span id="dialogue-speaker"></span>
+      <p id="dialogue-text"></p>
+    </div>
+
+    <div id="map-panel" class="is-hidden" aria-label="Wreckage map" data-i18n-aria-label="map.title">
+      <div class="map-frame">
+        <div class="map-header">
+          <span data-i18n="map.title">Wreckage map</span>
+          <span class="map-hint"><kbd>Tab</kbd><span data-i18n="map.close">close</span></span>
+        </div>
+        <canvas id="map-canvas"></canvas>
+        <ul class="map-legend">
+          <li><span class="map-swatch map-swatch-part"></span><span data-i18n="map.legendPart">possible part location</span></li>
+          <li><span class="map-swatch map-swatch-structure"></span><span data-i18n="map.legendStructure">megastructure</span></li>
+          <li><span class="map-swatch map-swatch-player"></span><span data-i18n="map.legendPlayer">you</span></li>
+        </ul>
+      </div>
+    </div>
+
+
+    <div id="flight-hud" class="is-hidden" role="status">
+      <p id="flight-instruction" data-i18n="flight.instruction">Pass through all rings to get on hyperdrive trajectory</p>
+      <p class="flight-progress">
+        <span data-i18n="flight.rings">rings</span>
+        <span id="ring-progress">0 / 5</span>
+      </p>
+    </div>
+
+    <div id="hyperdrive" class="is-hidden">HYPERDRIVE</div>
+
+    <div id="farewell-message" class="is-hidden" role="status" aria-live="polite"></div>
+    <div id="escape-time-message" class="is-hidden" role="status" aria-live="polite"></div>
+
+    <div id="overlay">
+      <div class="overlay-panel">
+        <div class="overlay-columns">
+          <div class="overlay-main">
+            <p class="eyebrow" data-i18n="overlay.eyebrow">A quiet walk</p>
+            <h1 data-i18n="overlay.title">Wanderer</h1>
+            <p class="tagline" data-i18n="overlay.tagline">A procedurally generated island, made for walking.</p>
+
+            <ul class="controls">
+              <li><span class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span><span data-i18n="controls.run">Run</span></li>
+              <li><span class="keys"><kbd>Space</kbd></span><span data-i18n="controls.jump">Jump</span></li>
+              <li><span class="keys"><kbd>LMB</kbd><kbd>F</kbd></span><span data-i18n="controls.hitWrench">Swing wrench</span></li>
+              <li><span class="keys"><kbd>Shift</kbd><kbd>RMB</kbd></span><span data-i18n="controls.chargeWrench">Charged strike</span></li>
+
+              <li><span class="keys"><kbd>V</kbd></span><span data-i18n="controls.person">1st / 3rd person</span></li>
+              <li><span class="keys"><kbd>F11</kbd></span><span data-i18n="controls.fullscreen">Fullscreen</span></li>
+              <li><span class="keys"><kbd>F12</kbd></span><span data-i18n="controls.screenshot">Screenshot</span></li>
+              <li><span class="keys"><kbd>M</kbd></span><span data-i18n="controls.toggleMusic">Toggle music</span></li>
+              <li><span class="keys"><kbd>Tab</kbd></span><span data-i18n="controls.map">Map</span></li>
+              <li><span class="keys"><kbd>Esc</kbd></span><span data-i18n="controls.pause">Pause / resume</span></li>
+            </ul>
+
+            <div class="rules">
+              <p class="rules-title" data-i18n="rules.title">Rules</p>
+              <ul>
+                <li data-i18n="rules.jumpFaster">Jumping makes you faster</li>
+                <li data-i18n="rules.doubleJump">Try double jumping</li>
+                <li data-i18n="rules.chargeWrench">Charge the wrench to deal more damage</li>
+                <li data-i18n="rules.emeraldMinerals">Break stones with an emerald sheen to gather fuel minerals</li>
+                <li data-i18n="rules.megastructureSwitch">Hit the switch on top of the megastructure to charge the energy</li>
+                <li data-i18n="rules.spaceshipParts">Search the map for spaceship parts</li>
+              </ul>
+            </div>
+
+            <div class="menu-actions">
+              <button id="play-button" type="button" data-i18n="overlay.start">Continue</button>
+              <button id="new-world-button" class="menu-button" type="button" data-i18n="overlay.newWorld">New world</button>
+            </div>
+            <p id="overlay-status" class="status" data-i18n="overlay.status">Your mouse is captured while you play.</p>
+
+            <p class="seed"><span data-i18n="overlay.seed">World seed</span> <span id="seed-value">—</span></p>
+          </div>
+
+          <aside class="overlay-sidebar" aria-label="Settings" data-i18n-aria-label="overlay.settings">
+            <p class="overlay-sidebar-title" data-i18n="overlay.settings">Settings</p>
+
+            <section class="menu-settings-section">
+              <p class="menu-settings-title" data-i18n="overlay.game">Game</p>
+              <label class="menu-select">
+                <span data-i18n="overlay.difficulty">Difficulty</span>
+                <select id="difficulty-select">
+                  <option value="peaceful" data-i18n="overlay.difficulty.peaceful">Peaceful</option>
+                  <option value="easy" data-i18n="overlay.difficulty.easy">Easy</option>
+                  <option value="medium" data-i18n="overlay.difficulty.medium" selected>Medium</option>
+                  <option value="hard" data-i18n="overlay.difficulty.hard">Hard</option>
+                </select>
+              </label>
+              <label class="menu-select">
+                <span data-i18n="overlay.language">Language</span>
+                <select id="language-select"></select>
+              </label>
+            </section>
+
+            <section class="menu-settings-section">
+              <p class="menu-settings-title" data-i18n="gui.graphics">Graphics</p>
+              <label class="menu-toggle">
+                <input id="antialias-checkbox" type="checkbox" />
+                <span data-i18n="overlay.antialias">Anti-aliasing</span>
+              </label>
+              <label class="menu-select">
+                <span data-i18n="overlay.shadowQuality">Shadow quality</span>
+                <select id="shadow-quality-select">
+                  <option value="low" data-i18n="gui.shadowQuality.low">Low</option>
+                  <option value="medium" data-i18n="gui.shadowQuality.medium">Medium</option>
+                  <option value="high" data-i18n="gui.shadowQuality.high">High</option>
+                  <option value="ultra" data-i18n="gui.shadowQuality.ultra">Ultra</option>
+                </select>
+              </label>
+            </section>
+
+            <section class="menu-settings-section">
+              <p class="menu-settings-title" data-i18n="gui.audio">Audio</p>
+              <label class="menu-range">
+                <span data-i18n="overlay.volume">Volume</span>
+                <input id="volume-slider" type="range" min="0" max="1" step="0.01" />
+                <output id="volume-value" for="volume-slider">80%</output>
+              </label>
+              <label class="menu-toggle">
+                <input id="music-checkbox" type="checkbox" />
+                <span data-i18n="overlay.music">Enable music</span>
+              </label>
+              <label class="menu-toggle">
+                <input id="sounds-checkbox" type="checkbox" />
+                <span data-i18n="overlay.sounds">Enable sound</span>
+              </label>
+            </section>
+          </aside>
+        </div>
+      </div>
+    </div>
   </body>
 </html>

@@ -5,5 +5,4 @@ dist
 .vscode
 .idea
 .DS_Store
-
-data
+.tmp*
