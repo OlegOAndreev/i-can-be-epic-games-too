@@ -13,6 +13,8 @@ export default {
     // Relative URLs keep the build portable across repo names.
     base: './',
 
+    assetsInclude: ['**/*.ktx2'],
+
     server: {
         headers: isolationHeaders,
     },
@@ -38,6 +40,11 @@ export default {
     plugins: [
         viteStaticCopy({
             targets: [
+                {
+                    src: 'node_modules/three/examples/jsm/libs/basis/basis_transcoder.*',
+                    dest: 'basis',
+                    rename: { stripBase: true },
+                },
                 {
                     src: 'assets/*.json',
                     dest: '.',

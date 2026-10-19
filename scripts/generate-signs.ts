@@ -1,5 +1,6 @@
 // Generates the glowing glyph signs stamped on the floor totems. The images are white masks with
 // transparent backgrounds; the game tints them gold or purple and animates a wave through them.
+// They are also packed into a KTX2 array. Requires Khronos KTX-Software's `ktx` CLI.
 // Run with: npm run generate:signs
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -8,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { createCanvas } from '@napi-rs/canvas';
 
 import { mulberry32 } from '../src/noise.ts';
+import { createKtx2, ensureKtx } from './ktx.ts';
 
 const SIGN_SIZE = 256;
 const SIGN_COUNT = 14;
@@ -34,8 +36,11 @@ const painters: Array<(context: CanvasRenderingContext2D, size: number, rng: Rng
     paintCross,
 ];
 
+ensureKtx();
 rmSync(OUTPUT_DIRECTORY, { recursive: true, force: true });
 mkdirSync(OUTPUT_DIRECTORY, { recursive: true });
+
+const signFiles: string[] = [];
 
 for (let index = 0; index < SIGN_COUNT; index++) {
     const canvas = createCanvas(SIGN_SIZE, SIGN_SIZE);
@@ -52,8 +57,12 @@ for (let index = 0; index < SIGN_COUNT; index++) {
 
     const filePath = join(OUTPUT_DIRECTORY, `sign-${String(index).padStart(2, '0')}.png`);
     writeFileSync(filePath, canvas.toBuffer('image/png'));
+    signFiles.push(filePath);
     console.log(`Generated ${filePath} (${SIGN_SIZE}x${SIGN_SIZE})`);
 }
+
+// Masks carry data, not colour, so they stay linear and untagged for the shader.
+createKtx2(join(OUTPUT_DIRECTORY, 'signs.ktx2'), signFiles, 'linear');
 
 function toX(x: number, size: number): number {
     return size / 2 + x * size * 0.34;

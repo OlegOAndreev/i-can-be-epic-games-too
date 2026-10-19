@@ -55,7 +55,7 @@
     "flight.instruction": "Pass through all rings to get on hyperdrive trajectory",
     "flight.rings": "rings",
     "finale.farewell": "SEE YOU, SPACE WANDERER",
-    "finale.escapeIn": "You escape the planet in {duration}",
+    "finale.escapeIn": "You escaped the planet in {duration}",
     "finale.lessThanAMinute": "less than a minute",
     "map.title": "Wreckage map",
     "map.close": "close",

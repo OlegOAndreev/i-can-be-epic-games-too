@@ -1,8 +1,11 @@
 // Generates the one-shot footstep samples used by the game, including the metallic steps the robot
 // makes on megastructure decks, plus the laser, impact, switch, jump, recovery, power-down, and
-// lightning one-shots.
+// lightning one-shots. Each sample is written as a WAV fallback and as an Ogg Opus file for
+// browsers that support it.
+// Requires opusenc from opus-tools (brew install opus-tools).
 // Run with: npm run generate:audio
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -12,6 +15,9 @@ import { mulberry32 } from '../src/noise.ts';
 const SAMPLE_RATE = 44100;
 const TAU = Math.PI * 2;
 const OUTPUT_DIRECTORY = fileURLToPath(new URL('../assets/audio/', import.meta.url));
+// Opus is transparent enough for these synthetic one-shots at 96 kbit/s mono, and the files stay
+// small enough that the whole effects set ships in a few hundred kilobytes.
+const OPUS_BITRATE_KBPS = 96;
 
 function renderFootstep(seed: number): Float32Array {
     const rng = mulberry32(seed);
@@ -863,7 +869,7 @@ function normalize(samples: Float32Array, peak: number): void {
     }
 }
 
-function writeWav(name: string, samples: Float32Array): void {
+function writeSample(name: string, samples: Float32Array): void {
     const dataSize = samples.length * 2;
     const buffer = Buffer.alloc(44 + dataSize);
 
@@ -886,45 +892,64 @@ function writeWav(name: string, samples: Float32Array): void {
         buffer.writeInt16LE(Math.round(value * 32767), 44 + i * 2);
     }
 
-    const filePath = join(OUTPUT_DIRECTORY, `${name}.wav`);
-    writeFileSync(filePath, buffer);
+    const wavPath = join(OUTPUT_DIRECTORY, `${name}.wav`);
+    writeFileSync(wavPath, buffer);
+
+    const opusPath = join(OUTPUT_DIRECTORY, `${name}.opus`);
+    execFileSync('opusenc', [
+        '--quiet',
+        '--bitrate',
+        String(OPUS_BITRATE_KBPS),
+        wavPath,
+        opusPath,
+    ]);
 
     const seconds = samples.length / SAMPLE_RATE;
-    console.log(`Generated ${filePath} (${seconds.toFixed(2)}s, ${Math.round(buffer.length / 1024)} KB)`);
+    const opusSize = statSync(opusPath).size;
+    console.log(
+        `Generated ${name} (${seconds.toFixed(2)}s, wav ${Math.round(buffer.length / 1024)} KB, opus ${Math.round(opusSize / 1024)} KB)`,
+    );
 }
 
-
 mkdirSync(OUTPUT_DIRECTORY, { recursive: true });
+
+try {
+    execFileSync('opusenc', ['--version'], { stdio: 'ignore' });
+} catch {
+    throw new Error(
+        'opusenc is required to generate audio. Install opus-tools (brew install opus-tools on macOS, apt install opus-tools on Debian/Ubuntu).',
+    );
+}
 
 for (let index = 0; index < 4; index++) {
     const footstep = renderFootstep(0x51a7_0100 + index);
     removeDc(footstep);
     normalize(footstep, 0.85);
-    writeWav(`footstep-${String(index).padStart(2, '0')}`, footstep);
+    writeSample(`footstep-${String(index).padStart(2, '0')}`, footstep);
 }
 
 for (let index = 0; index < 4; index++) {
     const metalFootstep = renderMetalFootstep(0x3a1d_2000 + index);
     removeDc(metalFootstep);
     normalize(metalFootstep, 0.8);
-    writeWav(`metal-footstep-${String(index).padStart(2, '0')}`, metalFootstep);
+    writeSample(`metal-footstep-${String(index).padStart(2, '0')}`, metalFootstep);
 }
 
 const structureBuzz = renderStructureBuzz(0x1a2b_3c4d);
 removeDc(structureBuzz);
 normalize(structureBuzz, 0.8);
-writeWav('structure-buzz', structureBuzz);
+writeSample('structure-buzz', structureBuzz);
 
 const shipEngine = renderShipEngine(0x5b19_e0a0);
 removeDc(shipEngine);
 normalize(shipEngine, 0.8);
-writeWav('ship-engine', shipEngine);
+writeSample('ship-engine', shipEngine);
 
 for (let index = 0; index < 4; index++) {
     const jumpBop = renderJumpBop(0x2b0b_7000 + index * 0x1111);
     removeDc(jumpBop);
     normalize(jumpBop, 0.85);
-    writeWav(`jump-bop-${String(index).padStart(2, '0')}`, jumpBop);
+    writeSample(`jump-bop-${String(index).padStart(2, '0')}`, jumpBop);
 }
 
 const VARIANT_COUNT = 3;
@@ -935,40 +960,40 @@ for (let index = 0; index < VARIANT_COUNT; index++) {
     const laser = renderLaser(0x7c1d_3000 + index * 0x1111);
     removeDc(laser);
     normalize(laser, 0.85);
-    writeWav(`laser-${suffix}`, laser);
+    writeSample(`laser-${suffix}`, laser);
 
     const playerHit = renderPlayerHit(0x5b2a_4000 + index * 0x1111);
     removeDc(playerHit);
     normalize(playerHit, 0.8);
-    writeWav(`player-hit-${suffix}`, playerHit);
+    writeSample(`player-hit-${suffix}`, playerHit);
 
     const enemyHit = renderEnemyHit(0x2f6c_5000 + index * 0x1111);
     removeDc(enemyHit);
     normalize(enemyHit, 0.85);
-    writeWav(`enemy-hit-${suffix}`, enemyHit);
+    writeSample(`enemy-hit-${suffix}`, enemyHit);
 
     const switchClick = renderSwitchClick(0x6d3e_6000 + index * 0x1111);
     removeDc(switchClick);
     normalize(switchClick, 0.85);
-    writeWav(`switch-click-${suffix}`, switchClick);
+    writeSample(`switch-click-${suffix}`, switchClick);
 
     const partRecovered = renderPartRecovered(0x4e2a_7000 + index * 0x1111);
     removeDc(partRecovered);
     normalize(partRecovered, 0.85);
-    writeWav(`part-recovered-${suffix}`, partRecovered);
+    writeSample(`part-recovered-${suffix}`, partRecovered);
 
     const ringPassed = renderRingPassed(0x1c7a_a000 + index * 0x1111);
     removeDc(ringPassed);
     normalize(ringPassed, 0.7);
-    writeWav(`ring-passed-${suffix}`, ringPassed);
+    writeSample(`ring-passed-${suffix}`, ringPassed);
 
     const powerDown = renderPowerDown(0x7a3c_8000 + index * 0x1111);
     removeDc(powerDown);
     normalize(powerDown, 0.8);
-    writeWav(`power-down-${suffix}`, powerDown);
+    writeSample(`power-down-${suffix}`, powerDown);
 
     const lightningStrike = renderLightningStrike(0x1f5e_9000 + index * 0x1111);
     removeDc(lightningStrike);
     normalize(lightningStrike, 0.9);
-    writeWav(`lightning-strike-${suffix}`, lightningStrike);
+    writeSample(`lightning-strike-${suffix}`, lightningStrike);
 }

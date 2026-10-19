@@ -12,44 +12,82 @@ import solemnMusic1Url from '../assets/audio/solemn-wanderer-01.mid?url&no-inlin
 import solemnMusic2Url from '../assets/audio/solemn-wanderer-02.mid?url&no-inline';
 import solemnMusic3Url from '../assets/audio/solemn-wanderer-03.mid?url&no-inline';
 import triumphantReturnUrl from '../assets/audio/triumphant-return.mid?url&no-inline';
-import footstep00Url from '../assets/audio/footstep-00.wav';
-import footstep01Url from '../assets/audio/footstep-01.wav';
-import footstep02Url from '../assets/audio/footstep-02.wav';
-import footstep03Url from '../assets/audio/footstep-03.wav';
-import metalFootstep00Url from '../assets/audio/metal-footstep-00.wav';
-import metalFootstep01Url from '../assets/audio/metal-footstep-01.wav';
-import metalFootstep02Url from '../assets/audio/metal-footstep-02.wav';
-import metalFootstep03Url from '../assets/audio/metal-footstep-03.wav';
-import laser00Url from '../assets/audio/laser-00.wav';
-import laser01Url from '../assets/audio/laser-01.wav';
-import laser02Url from '../assets/audio/laser-02.wav';
-import playerHit00Url from '../assets/audio/player-hit-00.wav';
-import playerHit01Url from '../assets/audio/player-hit-01.wav';
-import playerHit02Url from '../assets/audio/player-hit-02.wav';
-import enemyHit00Url from '../assets/audio/enemy-hit-00.wav';
-import enemyHit01Url from '../assets/audio/enemy-hit-01.wav';
-import enemyHit02Url from '../assets/audio/enemy-hit-02.wav';
-import switchClick00Url from '../assets/audio/switch-click-00.wav';
-import switchClick01Url from '../assets/audio/switch-click-01.wav';
-import switchClick02Url from '../assets/audio/switch-click-02.wav';
-import jumpBop00Url from '../assets/audio/jump-bop-00.wav';
-import jumpBop01Url from '../assets/audio/jump-bop-01.wav';
-import jumpBop02Url from '../assets/audio/jump-bop-02.wav';
-import jumpBop03Url from '../assets/audio/jump-bop-03.wav';
-import partRecovered00Url from '../assets/audio/part-recovered-00.wav';
-import partRecovered01Url from '../assets/audio/part-recovered-01.wav';
-import partRecovered02Url from '../assets/audio/part-recovered-02.wav';
-import ringPassed00Url from '../assets/audio/ring-passed-00.wav';
-import ringPassed01Url from '../assets/audio/ring-passed-01.wav';
-import ringPassed02Url from '../assets/audio/ring-passed-02.wav';
-import powerDown00Url from '../assets/audio/power-down-00.wav';
-import powerDown01Url from '../assets/audio/power-down-01.wav';
-import powerDown02Url from '../assets/audio/power-down-02.wav';
-import lightningStrike00Url from '../assets/audio/lightning-strike-00.wav';
-import lightningStrike01Url from '../assets/audio/lightning-strike-01.wav';
-import lightningStrike02Url from '../assets/audio/lightning-strike-02.wav';
-import structureBuzzUrl from '../assets/audio/structure-buzz.wav';
-import shipEngineUrl from '../assets/audio/ship-engine.wav';
+import footstep00WavUrl from '../assets/audio/footstep-00.wav';
+import footstep00OpusUrl from '../assets/audio/footstep-00.opus?url&no-inline';
+import footstep01WavUrl from '../assets/audio/footstep-01.wav';
+import footstep01OpusUrl from '../assets/audio/footstep-01.opus?url&no-inline';
+import footstep02WavUrl from '../assets/audio/footstep-02.wav';
+import footstep02OpusUrl from '../assets/audio/footstep-02.opus?url&no-inline';
+import footstep03WavUrl from '../assets/audio/footstep-03.wav';
+import footstep03OpusUrl from '../assets/audio/footstep-03.opus?url&no-inline';
+import metalFootstep00WavUrl from '../assets/audio/metal-footstep-00.wav';
+import metalFootstep00OpusUrl from '../assets/audio/metal-footstep-00.opus?url&no-inline';
+import metalFootstep01WavUrl from '../assets/audio/metal-footstep-01.wav';
+import metalFootstep01OpusUrl from '../assets/audio/metal-footstep-01.opus?url&no-inline';
+import metalFootstep02WavUrl from '../assets/audio/metal-footstep-02.wav';
+import metalFootstep02OpusUrl from '../assets/audio/metal-footstep-02.opus?url&no-inline';
+import metalFootstep03WavUrl from '../assets/audio/metal-footstep-03.wav';
+import metalFootstep03OpusUrl from '../assets/audio/metal-footstep-03.opus?url&no-inline';
+import laser00WavUrl from '../assets/audio/laser-00.wav';
+import laser00OpusUrl from '../assets/audio/laser-00.opus?url&no-inline';
+import laser01WavUrl from '../assets/audio/laser-01.wav';
+import laser01OpusUrl from '../assets/audio/laser-01.opus?url&no-inline';
+import laser02WavUrl from '../assets/audio/laser-02.wav';
+import laser02OpusUrl from '../assets/audio/laser-02.opus?url&no-inline';
+import playerHit00WavUrl from '../assets/audio/player-hit-00.wav';
+import playerHit00OpusUrl from '../assets/audio/player-hit-00.opus?url&no-inline';
+import playerHit01WavUrl from '../assets/audio/player-hit-01.wav';
+import playerHit01OpusUrl from '../assets/audio/player-hit-01.opus?url&no-inline';
+import playerHit02WavUrl from '../assets/audio/player-hit-02.wav';
+import playerHit02OpusUrl from '../assets/audio/player-hit-02.opus?url&no-inline';
+import enemyHit00WavUrl from '../assets/audio/enemy-hit-00.wav';
+import enemyHit00OpusUrl from '../assets/audio/enemy-hit-00.opus?url&no-inline';
+import enemyHit01WavUrl from '../assets/audio/enemy-hit-01.wav';
+import enemyHit01OpusUrl from '../assets/audio/enemy-hit-01.opus?url&no-inline';
+import enemyHit02WavUrl from '../assets/audio/enemy-hit-02.wav';
+import enemyHit02OpusUrl from '../assets/audio/enemy-hit-02.opus?url&no-inline';
+import switchClick00WavUrl from '../assets/audio/switch-click-00.wav';
+import switchClick00OpusUrl from '../assets/audio/switch-click-00.opus?url&no-inline';
+import switchClick01WavUrl from '../assets/audio/switch-click-01.wav';
+import switchClick01OpusUrl from '../assets/audio/switch-click-01.opus?url&no-inline';
+import switchClick02WavUrl from '../assets/audio/switch-click-02.wav';
+import switchClick02OpusUrl from '../assets/audio/switch-click-02.opus?url&no-inline';
+import jumpBop00WavUrl from '../assets/audio/jump-bop-00.wav';
+import jumpBop00OpusUrl from '../assets/audio/jump-bop-00.opus?url&no-inline';
+import jumpBop01WavUrl from '../assets/audio/jump-bop-01.wav';
+import jumpBop01OpusUrl from '../assets/audio/jump-bop-01.opus?url&no-inline';
+import jumpBop02WavUrl from '../assets/audio/jump-bop-02.wav';
+import jumpBop02OpusUrl from '../assets/audio/jump-bop-02.opus?url&no-inline';
+import jumpBop03WavUrl from '../assets/audio/jump-bop-03.wav';
+import jumpBop03OpusUrl from '../assets/audio/jump-bop-03.opus?url&no-inline';
+import partRecovered00WavUrl from '../assets/audio/part-recovered-00.wav';
+import partRecovered00OpusUrl from '../assets/audio/part-recovered-00.opus?url&no-inline';
+import partRecovered01WavUrl from '../assets/audio/part-recovered-01.wav';
+import partRecovered01OpusUrl from '../assets/audio/part-recovered-01.opus?url&no-inline';
+import partRecovered02WavUrl from '../assets/audio/part-recovered-02.wav';
+import partRecovered02OpusUrl from '../assets/audio/part-recovered-02.opus?url&no-inline';
+import ringPassed00WavUrl from '../assets/audio/ring-passed-00.wav';
+import ringPassed00OpusUrl from '../assets/audio/ring-passed-00.opus?url&no-inline';
+import ringPassed01WavUrl from '../assets/audio/ring-passed-01.wav';
+import ringPassed01OpusUrl from '../assets/audio/ring-passed-01.opus?url&no-inline';
+import ringPassed02WavUrl from '../assets/audio/ring-passed-02.wav';
+import ringPassed02OpusUrl from '../assets/audio/ring-passed-02.opus?url&no-inline';
+import powerDown00WavUrl from '../assets/audio/power-down-00.wav';
+import powerDown00OpusUrl from '../assets/audio/power-down-00.opus?url&no-inline';
+import powerDown01WavUrl from '../assets/audio/power-down-01.wav';
+import powerDown01OpusUrl from '../assets/audio/power-down-01.opus?url&no-inline';
+import powerDown02WavUrl from '../assets/audio/power-down-02.wav';
+import powerDown02OpusUrl from '../assets/audio/power-down-02.opus?url&no-inline';
+import lightningStrike00WavUrl from '../assets/audio/lightning-strike-00.wav';
+import lightningStrike00OpusUrl from '../assets/audio/lightning-strike-00.opus?url&no-inline';
+import lightningStrike01WavUrl from '../assets/audio/lightning-strike-01.wav';
+import lightningStrike01OpusUrl from '../assets/audio/lightning-strike-01.opus?url&no-inline';
+import lightningStrike02WavUrl from '../assets/audio/lightning-strike-02.wav';
+import lightningStrike02OpusUrl from '../assets/audio/lightning-strike-02.opus?url&no-inline';
+import structureBuzzWavUrl from '../assets/audio/structure-buzz.wav';
+import structureBuzzOpusUrl from '../assets/audio/structure-buzz.opus?url&no-inline';
+import shipEngineWavUrl from '../assets/audio/ship-engine.wav';
+import shipEngineOpusUrl from '../assets/audio/ship-engine.opus?url&no-inline';
 
 import type { MidiMusicPlayback } from './midi-music';
 import { clamp } from './math-utils';
@@ -60,30 +98,80 @@ export interface MusicPlaybackState {
     offset: number;
 }
 
-const FOOTSTEP_URLS = [footstep00Url, footstep01Url, footstep02Url, footstep03Url];
+// decodeAudioData has no format negotiation, so ask a media element once. Ogg Opus is supported by
+// Chromium, Firefox, and Safari 18.4+; the WAV files remain as the fallback for older Safari.
+const OPUS_SUPPORTED =
+    typeof document !== 'undefined' &&
+    document.createElement('audio').canPlayType('audio/ogg; codecs="opus"') !== '';
+
+function effectUrl(wavUrl: string, opusUrl: string): string {
+    return OPUS_SUPPORTED ? opusUrl : wavUrl;
+}
+
+const FOOTSTEP_URLS = [
+    effectUrl(footstep00WavUrl, footstep00OpusUrl),
+    effectUrl(footstep01WavUrl, footstep01OpusUrl),
+    effectUrl(footstep02WavUrl, footstep02OpusUrl),
+    effectUrl(footstep03WavUrl, footstep03OpusUrl),
+];
 const MUSIC_URLS = [solemnMusic1Url, solemnMusic2Url, solemnMusic3Url];
 // Pick once per page load so a fresh session gets a random variation, unless the stored player
 // state restores the variation that was playing when the page was last closed.
 let musicIndex = Math.floor(Math.random() * MUSIC_URLS.length);
 const METAL_FOOTSTEP_URLS = [
-    metalFootstep00Url,
-    metalFootstep01Url,
-    metalFootstep02Url,
-    metalFootstep03Url,
+    effectUrl(metalFootstep00WavUrl, metalFootstep00OpusUrl),
+    effectUrl(metalFootstep01WavUrl, metalFootstep01OpusUrl),
+    effectUrl(metalFootstep02WavUrl, metalFootstep02OpusUrl),
+    effectUrl(metalFootstep03WavUrl, metalFootstep03OpusUrl),
 ];
-const LASER_URLS = [laser00Url, laser01Url, laser02Url];
-const PLAYER_HIT_URLS = [playerHit00Url, playerHit01Url, playerHit02Url];
-const ENEMY_HIT_URLS = [enemyHit00Url, enemyHit01Url, enemyHit02Url];
-const SWITCH_CLICK_URLS = [switchClick00Url, switchClick01Url, switchClick02Url];
-const JUMP_BOP_URLS = [jumpBop00Url, jumpBop01Url, jumpBop02Url, jumpBop03Url];
-const PART_RECOVERED_URLS = [partRecovered00Url, partRecovered01Url, partRecovered02Url];
-const RING_PASSED_URLS = [ringPassed00Url, ringPassed01Url, ringPassed02Url];
-const POWER_DOWN_URLS = [powerDown00Url, powerDown01Url, powerDown02Url];
+const LASER_URLS = [
+    effectUrl(laser00WavUrl, laser00OpusUrl),
+    effectUrl(laser01WavUrl, laser01OpusUrl),
+    effectUrl(laser02WavUrl, laser02OpusUrl),
+];
+const PLAYER_HIT_URLS = [
+    effectUrl(playerHit00WavUrl, playerHit00OpusUrl),
+    effectUrl(playerHit01WavUrl, playerHit01OpusUrl),
+    effectUrl(playerHit02WavUrl, playerHit02OpusUrl),
+];
+const ENEMY_HIT_URLS = [
+    effectUrl(enemyHit00WavUrl, enemyHit00OpusUrl),
+    effectUrl(enemyHit01WavUrl, enemyHit01OpusUrl),
+    effectUrl(enemyHit02WavUrl, enemyHit02OpusUrl),
+];
+const SWITCH_CLICK_URLS = [
+    effectUrl(switchClick00WavUrl, switchClick00OpusUrl),
+    effectUrl(switchClick01WavUrl, switchClick01OpusUrl),
+    effectUrl(switchClick02WavUrl, switchClick02OpusUrl),
+];
+const JUMP_BOP_URLS = [
+    effectUrl(jumpBop00WavUrl, jumpBop00OpusUrl),
+    effectUrl(jumpBop01WavUrl, jumpBop01OpusUrl),
+    effectUrl(jumpBop02WavUrl, jumpBop02OpusUrl),
+    effectUrl(jumpBop03WavUrl, jumpBop03OpusUrl),
+];
+const PART_RECOVERED_URLS = [
+    effectUrl(partRecovered00WavUrl, partRecovered00OpusUrl),
+    effectUrl(partRecovered01WavUrl, partRecovered01OpusUrl),
+    effectUrl(partRecovered02WavUrl, partRecovered02OpusUrl),
+];
+const RING_PASSED_URLS = [
+    effectUrl(ringPassed00WavUrl, ringPassed00OpusUrl),
+    effectUrl(ringPassed01WavUrl, ringPassed01OpusUrl),
+    effectUrl(ringPassed02WavUrl, ringPassed02OpusUrl),
+];
+const POWER_DOWN_URLS = [
+    effectUrl(powerDown00WavUrl, powerDown00OpusUrl),
+    effectUrl(powerDown01WavUrl, powerDown01OpusUrl),
+    effectUrl(powerDown02WavUrl, powerDown02OpusUrl),
+];
 const LIGHTNING_STRIKE_URLS = [
-    lightningStrike00Url,
-    lightningStrike01Url,
-    lightningStrike02Url,
+    effectUrl(lightningStrike00WavUrl, lightningStrike00OpusUrl),
+    effectUrl(lightningStrike01WavUrl, lightningStrike01OpusUrl),
+    effectUrl(lightningStrike02WavUrl, lightningStrike02OpusUrl),
 ];
+const STRUCTURE_BUZZ_URL = effectUrl(structureBuzzWavUrl, structureBuzzOpusUrl);
+const SHIP_ENGINE_URL = effectUrl(shipEngineWavUrl, shipEngineOpusUrl);
 const MUSIC_LEVEL = 0.2;
 // The finale fanfare is a full ensemble instead of a sparse drone, so it sits a little louder.
 const ENDING_MUSIC_LEVEL = 0.24;
@@ -1038,8 +1126,8 @@ export class GameAudio {
             ...RING_PASSED_URLS,
             ...POWER_DOWN_URLS,
             ...LIGHTNING_STRIKE_URLS,
-            structureBuzzUrl,
-            shipEngineUrl,
+            STRUCTURE_BUZZ_URL,
+            SHIP_ENGINE_URL,
         ];
 
         try {

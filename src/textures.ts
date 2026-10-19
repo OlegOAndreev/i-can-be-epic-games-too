@@ -2,7 +2,6 @@ import {
     ClampToEdgeWrapping,
     DataArrayTexture,
     DataTexture,
-    ImageLoader,
     LinearFilter,
     LinearMipmapLinearFilter,
     MeshStandardMaterial,
@@ -12,13 +11,11 @@ import {
     Texture,
     TextureLoader,
 } from 'three';
+import type { CompressedArrayTexture, WebGLRenderer } from 'three';
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 
-const GRASS_SIZE = 512;
-const SAND_SIZE = 512;
-const STONE_SIZE = 512;
-const METAL_SIZE = 512;
-const SIGN_SIZE = 256;
-const WATER_SIZE = 1024;
+// Headless tests use flat fallbacks; the browser reads the real count from the KTX2 array.
+const SIGN_LAYERS = 14;
 
 const GRASS_TILE = 12;
 const SAND_TILE = 28;
@@ -32,40 +29,40 @@ const MACRO_TILE = 190;
 // World-space size of one repeat of the water texture, used by the water shader.
 const WATER_TILE_SIZE = 160;
 
-const grassUrls = sortedUrls(
-    import.meta.glob<string>('../assets/textures/grass-*.png', { eager: true, import: 'default' }),
+const grassUrl = firstUrl(
+    import.meta.glob<string>('../assets/textures/grass.ktx2', { eager: true, import: 'default' }),
 );
-const sandUrls = sortedUrls(
-    import.meta.glob<string>('../assets/textures/sand-*.png', { eager: true, import: 'default' }),
+const sandUrl = firstUrl(import.meta.glob<string>('../assets/textures/sand.ktx2', { eager: true, import: 'default' }));
+const stoneUrl = firstUrl(
+    import.meta.glob<string>('../assets/textures/stone.ktx2', { eager: true, import: 'default' }),
 );
-const stoneUrls = sortedUrls(
-    import.meta.glob<string>('../assets/textures/stone-*.png', { eager: true, import: 'default' }),
+const metalUrl = firstUrl(
+    import.meta.glob<string>('../assets/textures/metal.ktx2', { eager: true, import: 'default' }),
 );
-const metalUrls = sortedUrls(
-    import.meta.glob<string>('../assets/textures/metal-*.png', { eager: true, import: 'default' }),
+const waterUrl = firstUrl(
+    import.meta.glob<string>('../assets/textures/water.ktx2', { eager: true, import: 'default' }),
 );
-const waterUrls = sortedUrls(
-    import.meta.glob<string>('../assets/textures/water-*.png', { eager: true, import: 'default' }),
-);
-const macroUrl = Object.values(
+const macroUrl = firstUrl(
     import.meta.glob<string>('../assets/textures/macro.png', { eager: true, import: 'default' }),
-)[0];
+);
 
-const dentUrl = Object.values(
+const dentUrl = firstUrl(
     import.meta.glob<string>('../assets/textures/dent.png', { eager: true, import: 'default' }),
-)[0];
-const footprintUrl = Object.values(
+);
+const footprintUrl = firstUrl(
     import.meta.glob<string>('../assets/textures/footprint.png', { eager: true, import: 'default' }),
-)[0];
-const signUrls = sortedUrls(import.meta.glob<string>('../assets/signs/sign-*.png', { eager: true, import: 'default' }));
+);
+const signUrl = firstUrl(import.meta.glob<string>('../assets/signs/signs.ktx2', { eager: true, import: 'default' }));
+
+type SurfaceArrayTexture = CompressedArrayTexture | DataArrayTexture;
 
 export interface SurfaceTextures {
-    grass: DataArrayTexture;
-    sand: DataArrayTexture;
-    stone: DataArrayTexture;
-    metal: DataArrayTexture;
-    water: DataArrayTexture;
-    signs: DataArrayTexture;
+    grass: SurfaceArrayTexture;
+    sand: SurfaceArrayTexture;
+    stone: SurfaceArrayTexture;
+    metal: SurfaceArrayTexture;
+    water: SurfaceArrayTexture;
+    signs: SurfaceArrayTexture;
     macro: Texture;
     dent: Texture;
     footprint: Texture;
@@ -98,7 +95,7 @@ export function getSurfaceTextures(): SurfaceTextures {
 }
 
 // Await all asset loads before the scene is built, so the first rendered frame already has maps.
-export async function preloadSurfaceTextures(): Promise<SurfaceTextures> {
+export async function preloadSurfaceTextures(renderer: WebGLRenderer): Promise<SurfaceTextures> {
     if (cachedTextures) {
         return cachedTextures;
     }
@@ -108,20 +105,30 @@ export async function preloadSurfaceTextures(): Promise<SurfaceTextures> {
         return cachedTextures;
     }
 
-    const imageLoader = new ImageLoader();
     const textureLoader = new TextureLoader();
+    const ktx2Loader = new KTX2Loader()
+        .setTranscoderPath(`${import.meta.env.BASE_URL}basis/`)
+        .detectSupport(renderer);
 
     const [grass, sand, stone, metal, water, signs, macro, dent, footprint] = await Promise.all([
-        buildTextureArray(imageLoader, grassUrls, GRASS_SIZE),
-        buildTextureArray(imageLoader, sandUrls, SAND_SIZE),
-        buildTextureArray(imageLoader, stoneUrls, STONE_SIZE),
-        buildTextureArray(imageLoader, metalUrls, METAL_SIZE),
-        buildTextureArray(imageLoader, waterUrls, WATER_SIZE),
-        buildTextureArray(imageLoader, signUrls, SIGN_SIZE),
+        ktx2Loader.loadAsync(grassUrl) as Promise<CompressedArrayTexture>,
+        ktx2Loader.loadAsync(sandUrl) as Promise<CompressedArrayTexture>,
+        ktx2Loader.loadAsync(stoneUrl) as Promise<CompressedArrayTexture>,
+        ktx2Loader.loadAsync(metalUrl) as Promise<CompressedArrayTexture>,
+        ktx2Loader.loadAsync(waterUrl) as Promise<CompressedArrayTexture>,
+        ktx2Loader.loadAsync(signUrl) as Promise<CompressedArrayTexture>,
         textureLoader.loadAsync(macroUrl),
         textureLoader.loadAsync(dentUrl),
         textureLoader.loadAsync(footprintUrl),
     ]);
+    ktx2Loader.dispose();
+
+    configureArrayTexture(grass);
+    configureArrayTexture(sand);
+    configureArrayTexture(stone);
+    configureArrayTexture(metal);
+    configureArrayTexture(water);
+    configureArrayTexture(signs);
     configureTexture(macro);
     // Signs are alpha masks stamped on a face, so they must not tile past their transparent border.
     signs.wrapS = ClampToEdgeWrapping;
@@ -140,12 +147,12 @@ export async function preloadSurfaceTextures(): Promise<SurfaceTextures> {
         macro,
         dent,
         footprint,
-        grassLayers: grassUrls.length,
-        sandLayers: sandUrls.length,
-        stoneLayers: stoneUrls.length,
-        metalLayers: metalUrls.length,
-        waterLayers: waterUrls.length,
-        signLayers: signUrls.length,
+        grassLayers: layerCount(grass),
+        sandLayers: layerCount(sand),
+        stoneLayers: layerCount(stone),
+        metalLayers: layerCount(metal),
+        waterLayers: layerCount(water),
+        signLayers: layerCount(signs),
     };
     return cachedTextures;
 }
@@ -413,35 +420,17 @@ diffuseColor.rgb *= metalSample;`,
     material.customProgramCacheKey = () => 'metal-surface-textures-v7';
 }
 
-async function buildTextureArray(loader: ImageLoader, urls: string[], size: number): Promise<DataArrayTexture> {
-    const images = await Promise.all(urls.map((url) => loader.loadAsync(url)));
-
-    const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
-    const context = canvas.getContext('2d', { willReadFrequently: true });
-    if (!context) {
-        throw new Error('Canvas 2D is not available');
-    }
-
-    const layerLength = size * size * 4;
-    const data = new Uint8Array(layerLength * images.length);
-    images.forEach((image, index) => {
-        context.clearRect(0, 0, size, size);
-        context.drawImage(image, 0, 0, size, size);
-        data.set(context.getImageData(0, 0, size, size).data, index * layerLength);
-    });
-
-    const texture = new DataArrayTexture(data, size, size, images.length);
+// Compressed arrays carry their own mip chain and colour space; only sampling needs configuring.
+function configureArrayTexture(texture: SurfaceArrayTexture): void {
     texture.wrapS = RepeatWrapping;
     texture.wrapT = RepeatWrapping;
-    texture.colorSpace = SRGBColorSpace;
     texture.minFilter = LinearMipmapLinearFilter;
     texture.magFilter = LinearFilter;
-    texture.generateMipmaps = true;
     texture.anisotropy = 8;
-    texture.needsUpdate = true;
-    return texture;
+}
+
+function layerCount(texture: SurfaceArrayTexture): number {
+    return texture.image.depth;
 }
 
 function configureTexture(texture: Texture): void {
@@ -479,10 +468,10 @@ function createFallbackTextures(): SurfaceTextures {
     const footprint = new DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1);
     footprint.needsUpdate = true;
     const signs = new DataArrayTexture(
-        new Uint8Array(4 * Math.max(1, signUrls.length)).fill(255),
+        new Uint8Array(4 * SIGN_LAYERS).fill(255),
         1,
         1,
-        Math.max(1, signUrls.length),
+        SIGN_LAYERS,
     );
     signs.needsUpdate = true;
 
@@ -501,12 +490,10 @@ function createFallbackTextures(): SurfaceTextures {
         stoneLayers: 1,
         metalLayers: 1,
         waterLayers: 1,
-        signLayers: Math.max(1, signUrls.length),
+        signLayers: SIGN_LAYERS,
     };
 }
 
-function sortedUrls(modules: Record<string, string>): string[] {
-    return Object.entries(modules)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([, url]) => url);
+function firstUrl(modules: Record<string, string>): string {
+    return Object.values(modules)[0];
 }

@@ -1,4 +1,6 @@
 // Generates the stylized surface textures used by the terrain, water, and megastructure shaders.
+// The biome layers are also packed into KTX2 arrays for GPU-compressed loading.
+// Requires Khronos KTX-Software's `ktx` CLI.
 // Run with: npm run generate:textures
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -8,6 +10,7 @@ import { createCanvas } from '@napi-rs/canvas';
 
 import { hash2, smoothstep } from '../src/math-utils.ts';
 import { mulberry32 } from '../src/noise.ts';
+import { createKtx2, ensureKtx } from './ktx.ts';
 
 const GRASS_SIZE = 512;
 const SAND_SIZE = 512;
@@ -630,58 +633,66 @@ const WATER_STYLES: WaterStyle[] = [
     },
 ];
 
+ensureKtx();
 rmSync(OUTPUT_DIRECTORY, { recursive: true, force: true });
 mkdirSync(OUTPUT_DIRECTORY, { recursive: true });
 
-GRASS_STYLES.forEach((style, index) => {
+const grassFiles = GRASS_STYLES.map((style, index) =>
     renderTexture(
         `grass-${String(index).padStart(2, '0')}`,
         (context, size) => paintGrass(context, size, style),
         GRASS_SIZE,
-    );
-});
+    ),
+);
 
-SAND_STYLES.forEach((style, index) => {
+const sandFiles = SAND_STYLES.map((style, index) =>
     renderTexture(
         `sand-${String(index).padStart(2, '0')}`,
         (context, size) => paintSand(context, size, style),
         SAND_SIZE,
-    );
-});
+    ),
+);
 
-STONE_STYLES.forEach((style, index) => {
+const stoneFiles = STONE_STYLES.map((style, index) =>
     renderTexture(
         `stone-${String(index).padStart(2, '0')}`,
         (context, size) => paintStone(context, size, style),
         STONE_SIZE,
-    );
-});
+    ),
+);
 
-METAL_STYLES.forEach((style, index) => {
+const metalFiles = METAL_STYLES.map((style, index) =>
     renderTexture(
         `metal-${String(index).padStart(2, '0')}`,
         (context, size) => paintMetal(context, size, style),
         METAL_SIZE,
-    );
-});
+    ),
+);
 
-WATER_STYLES.forEach((style, index) => {
+const waterFiles = WATER_STYLES.map((style, index) =>
     renderTexture(
         `water-${String(index).padStart(2, '0')}`,
         (context, size) => paintWater(context, size, style),
         WATER_SIZE,
-    );
-});
+    ),
+);
 
 renderTexture('macro', paintMacro, MACRO_SIZE);
 renderTexture('dent', paintDent, DENT_SIZE);
 renderTexture('footprint', paintFootprint, FOOTPRINT_SIZE);
 
+// Single maps stay PNG; the KTX2 win is in the layered biome arrays.
+createKtx2(join(OUTPUT_DIRECTORY, 'grass.ktx2'), grassFiles, 'srgb', 'wrap');
+createKtx2(join(OUTPUT_DIRECTORY, 'sand.ktx2'), sandFiles, 'srgb', 'wrap');
+createKtx2(join(OUTPUT_DIRECTORY, 'stone.ktx2'), stoneFiles, 'srgb', 'wrap');
+createKtx2(join(OUTPUT_DIRECTORY, 'metal.ktx2'), metalFiles, 'srgb', 'wrap');
+createKtx2(join(OUTPUT_DIRECTORY, 'water.ktx2'), waterFiles, 'srgb', 'wrap');
+
 function renderTexture(
     name: string,
     paint: (context: CanvasRenderingContext2D, size: number) => void,
     size: number,
-): void {
+): string {
     const canvas = createCanvas(size, size);
     const context = canvas.getContext('2d');
     paint(context, size);
@@ -689,6 +700,7 @@ function renderTexture(
     const filePath = join(OUTPUT_DIRECTORY, `${name}.png`);
     writeFileSync(filePath, canvas.toBuffer('image/png'));
     console.log(`Generated ${filePath} (${size}x${size})`);
+    return filePath;
 }
 
 // Grass is built from loose painterly clumps on a mottled base. All stamps are duplicated across
