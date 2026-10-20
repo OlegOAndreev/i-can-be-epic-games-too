@@ -95,6 +95,38 @@ describe('robot remains', () => {
         remains.dispose();
     });
 
+    it('limits a regular swing to the forward arc', () => {
+        const aheadTerrain = testTerrain();
+        const aheadRemains = new RobotRemains(aheadTerrain, stubAudio());
+        const aheadSite = aheadRemains.getSites().find((site) => site.id === 'sweeper')!;
+        // Facing 0 (+Z), stand 2.5 m south of the sweeper so it is dead ahead.
+        const ahead = new Vector3(aheadSite.x, aheadSite.y + 0.1, aheadSite.z - 2.5);
+        expect(aheadRemains.wrenchStrike(ahead, 0, Math.PI / 2)?.id).toBe('sweeper');
+        aheadRemains.dispose();
+
+        const behindTerrain = testTerrain();
+        const behindRemains = new RobotRemains(behindTerrain, stubAudio());
+        const behindSite = behindRemains.getSites().find((site) => site.id === 'sweeper')!;
+        const behind = new Vector3(behindSite.x, behindSite.y + 0.1, behindSite.z + 2.5);
+        expect(behindRemains.wrenchStrike(behind, 0, Math.PI / 2)).toBeNull();
+        // The charged spin omits the facing and still reaches behind.
+        expect(behindRemains.wrenchStrike(behind)?.id).toBe('sweeper');
+        behindRemains.dispose();
+    });
+
+    it('applies the first-person reach to charged swings too', () => {
+        const terrain = testTerrain();
+        const remains = new RobotRemains(terrain, stubAudio());
+        const sweeper = remains.getSites().find((site) => site.id === 'sweeper')!;
+        // 3.7 m is outside the sweeper's 3.2 m reach but inside 3.2 * 1.2 = 3.84 m.
+        const player = new Vector3(sweeper.x, sweeper.y + 0.1, sweeper.z - 3.7);
+
+        expect(remains.wrenchStrike(player)).toBeNull();
+        // No facing and a full circle is the charged spin; the reach still scales.
+        expect(remains.wrenchStrike(player, null, Math.PI * 2, 1.2)?.id).toBe('sweeper');
+        remains.dispose();
+    });
+
     it('plays the tidewalker and drowned transmissions only once', () => {
         const terrain = testTerrain();
         const remains = new RobotRemains(terrain, stubAudio());

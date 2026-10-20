@@ -7,10 +7,14 @@ import type { Player } from './player';
 import {
     chargedWrenchArmAngle,
     chargedWrenchSpinAngle,
+    FIRST_PERSON_DEFAULT_FOV,
+    FIRST_PERSON_WRENCH_STRIKE_ARC,
     isFullySubmerged,
     PLAYER_HEIGHT,
     thrusterGlowStrength,
     wrenchCircleAngle,
+    WRENCH_ATTACK_SECONDS,
+    WRENCH_CHARGED_ATTACK_SECONDS,
 } from './player';
 import {
     ANTENNA_IDLE_HALO_OPACITY,
@@ -70,7 +74,8 @@ describe('wrench attack', () => {
 
         // The swing itself still needs to finish before another charge can start.
         expect(full.beginWrenchCharge()).toBe(false);
-        full.update(0.7, NO_INPUT, 0, terrain);
+        full.update(WRENCH_CHARGED_ATTACK_SECONDS + 0.01, NO_INPUT, 0, terrain);
+        expect(full.isWrenchSwinging).toBe(false);
         expect(full.beginWrenchCharge()).toBe(true);
 
         quick.group.removeFromParent();
@@ -102,14 +107,15 @@ describe('wrench attack', () => {
         };
 
         player.swingWrench();
-        player.update(0.22, NO_INPUT, 0, terrain);
+        const remaining = 0.15;
+        player.update(WRENCH_ATTACK_SECONDS - remaining, NO_INPUT, 0, terrain);
         expect(player.isWrenchSwinging).toBe(true);
-        // 0.105 s of the swing remains, inside the medium difficulty's 0.2 s buffer.
+        // 0.15 s of the swing remains, inside the medium difficulty's 0.2 s buffer.
         expect(player.beginWrenchCharge()).toBe(false);
         expect(player.isWrenchChargeBuffered).toBe(true);
         expect(player.isWrenchCharging).toBe(false);
 
-        player.update(0.12, NO_INPUT, 0, terrain);
+        player.update(remaining + 0.01, NO_INPUT, 0, terrain);
         expect(player.isWrenchSwinging).toBe(false);
         expect(player.isWrenchCharging).toBe(true);
         expect(chargeStarts).toBe(1);
@@ -126,9 +132,9 @@ describe('wrench attack', () => {
 
         player.swingWrench();
         player.update(0.1, NO_INPUT, 0, terrain);
-        // 0.225 s of the swing remains, beyond the medium difficulty's 0.2 s buffer.
+        // 0.35 s of the swing remains, beyond the medium difficulty's 0.2 s buffer.
         expect(player.beginWrenchCharge()).toBe(false);
-        player.update(0.3, NO_INPUT, 0, terrain);
+        player.update(WRENCH_ATTACK_SECONDS, NO_INPUT, 0, terrain);
 
         expect(player.isWrenchSwinging).toBe(false);
         expect(player.isWrenchCharging).toBe(false);
@@ -145,14 +151,14 @@ describe('wrench attack', () => {
             player.swingWrench();
             player.update(0.1, NO_INPUT, 0, terrain);
             player.beginWrenchCharge();
-            player.update(0.25, NO_INPUT, 0, terrain);
+            player.update(WRENCH_ATTACK_SECONDS - 0.09, NO_INPUT, 0, terrain);
 
             const charging = player.isWrenchCharging;
             player.group.removeFromParent();
             return charging;
         };
 
-        // 0.225 s of the swing remains: within easy's 0.4 s buffer, outside medium's 0.2 s.
+        // 0.35 s of the swing remains: within easy's 0.4 s buffer, outside medium's 0.2 s.
         expect(chargesAfterEarlyPress('easy')).toBe(true);
         expect(chargesAfterEarlyPress('medium')).toBe(false);
     });
@@ -206,7 +212,7 @@ describe('wrench attack', () => {
         expect(player.releaseWrench()).toBe(true);
         player.update(0.1, NO_INPUT, 0, terrain);
         expect(boltMesh?.visible).toBe(true);
-        player.update(0.6, NO_INPUT, 0, terrain);
+        player.update(WRENCH_CHARGED_ATTACK_SECONDS, NO_INPUT, 0, terrain);
         expect(player.isWrenchCharged).toBe(false);
         expect(boltMesh?.visible).toBe(false);
     });
@@ -251,9 +257,9 @@ describe('wrench attack', () => {
         };
 
         player.swingWrench();
-        player.update(0.2, NO_INPUT, 0, terrain);
+        player.update(WRENCH_ATTACK_SECONDS / 2, NO_INPUT, 0, terrain);
         expect(completions).toBe(0);
-        player.update(0.2, NO_INPUT, 0, terrain);
+        player.update(WRENCH_ATTACK_SECONDS / 2, NO_INPUT, 0, terrain);
         expect(completions).toBe(1);
 
         // Unequipping mid-swing cancels it without a completion callback.
@@ -279,11 +285,11 @@ describe('wrench attack', () => {
         expect(player.releaseWrench()).toBe(true);
 
         // Still spinning where the regular swing would already have finished.
-        player.update(0.34, NO_INPUT, 0, terrain);
+        player.update(WRENCH_ATTACK_SECONDS + 0.01, NO_INPUT, 0, terrain);
         expect(completions).toBe(0);
         expect(player.isWrenchSwingCharged).toBe(true);
 
-        player.update(0.21, NO_INPUT, 0, terrain);
+        player.update(WRENCH_CHARGED_ATTACK_SECONDS, NO_INPUT, 0, terrain);
         expect(completions).toBe(1);
         expect(player.isWrenchSwingCharged).toBe(false);
     });
@@ -348,7 +354,9 @@ describe('wrench circle', () => {
         const startYaw = player.group.rotation.y;
         let maxYawDelta = 0;
         let midSpinArmX = 0;
-        for (let elapsed = 0; elapsed < 0.5; elapsed += 0.01) {
+        // Stop on the frame the swing ends: the same frame resets the body and arm, while a later
+        // idle update would start easing the arm into its breathing pose.
+        for (let frame = 0; frame < 100 && player.isWrenchSwinging; frame++) {
             player.update(0.01, NO_INPUT, 0, terrain);
             maxYawDelta = Math.max(maxYawDelta, player.group.rotation.y - startYaw);
             if (midSpinArmX === 0 && player.wrenchSwingAngle > Math.PI) {
@@ -361,7 +369,7 @@ describe('wrench circle', () => {
         expect(midSpinArmX).toBeCloseTo(-Math.PI / 2, 5);
 
         // The turn ends on the exact starting facing with the wrench back at rest.
-        player.update(0.1, NO_INPUT, 0, terrain);
+        expect(player.isWrenchSwinging).toBe(false);
         expect(player.group.rotation.y).toBeCloseTo(startYaw, 5);
         expect(arm!.rotation.x).toBeCloseTo(0, 5);
     });
@@ -848,6 +856,47 @@ describe('Player turning', () => {
         expect(frameDeltas[firstTurningFrame + 1]).toBeGreaterThan(frameDeltas[firstTurningFrame]);
         // The robot still reaches the direction of travel (-Z is yaw π).
         expect(Math.abs(angleDelta(player.group.rotation.y, Math.PI))).toBeLessThan(0.05);
+    });
+
+    it('locks the body to the view and strafes in first person', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        const { x, y, z } = player.group.position;
+        player.restoreSnapshot({ x, y, z, facing: 0, speed: 0, verticalSpeed: 0, grounded: true });
+
+        // Looking along -X: the body faces -X immediately and D moves along -Z, which is screen
+        // right for that heading. The body must not turn toward the velocity like it does in third
+        // person, and the motion should be a clean strafe with no forward component.
+        const cameraYaw = Math.PI / 2;
+        for (let frame = 0; frame < 30; frame++) {
+            player.update(1 / 60, { forward: 0, right: 1, jump: false }, cameraYaw, terrain, [], true);
+        }
+
+        expect(Math.abs(angleDelta(player.group.rotation.y, cameraYaw + Math.PI))).toBeLessThan(1e-9);
+        expect(player.group.position.x).toBeCloseTo(x, 2);
+        expect(player.group.position.z).toBeLessThan(z - 1);
+
+        player.group.removeFromParent();
+    });
+
+    it('keeps the body turning toward travel in third person', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        const { x, y, z } = player.group.position;
+        player.restoreSnapshot({ x, y, z, facing: 0, speed: 0, verticalSpeed: 0, grounded: true });
+
+        player.update(1 / 60, { forward: 0, right: 1, jump: false }, 0, terrain);
+
+        // Camera yaw 0 looks down -Z, so D travels along +X. Third person rotates the body toward
+        // that direction instead of keeping it on the camera heading.
+        expect(Math.abs(angleDelta(player.group.rotation.y, 0))).toBeGreaterThan(0);
+
+        player.group.removeFromParent();
+    });
+
+    it('caps the first-person strike arc to the default lens', () => {
+        expect(FIRST_PERSON_WRENCH_STRIKE_ARC).toBeCloseTo((FIRST_PERSON_DEFAULT_FOV * Math.PI) / 180, 9);
+        expect(FIRST_PERSON_WRENCH_STRIKE_ARC).toBeLessThan(Math.PI);
     });
 
     it('damps the turn more in the air than on the ground', () => {

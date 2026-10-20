@@ -236,8 +236,16 @@ export class RobotRemains {
     }
 
     // A wrench swing near a remnant can cut out a cell, stop the last maintenance loop, or pull a
-    // power core from the feral nest. Returns what was struck so the caller can choose the sound.
-    wrenchStrike(playerPosition: Vector3): RemainsStrike | null {
+    // power core from the feral nest. Pass a facing and arc to restrict the swing to the forward
+    // cone used for enemies and boulders; omit the facing for the charged spin's full circle.
+    // Returns what was struck so the caller can choose the sound.
+    wrenchStrike(
+        playerPosition: Vector3,
+        facing: number | null = null,
+        arc = Math.PI * 2,
+        reachScale = 1,
+    ): RemainsStrike | null {
+        const minForwardDot = Math.cos(arc / 2);
         for (const interactable of this.interactables) {
             if (interactable.used) {
                 continue;
@@ -245,10 +253,17 @@ export class RobotRemains {
             if (Math.abs(playerPosition.y - interactable.position.y) > interactable.verticalRange) {
                 continue;
             }
-            const dx = playerPosition.x - interactable.position.x;
-            const dz = playerPosition.z - interactable.position.z;
-            if (Math.hypot(dx, dz) > interactable.radius) {
+            const dx = interactable.position.x - playerPosition.x;
+            const dz = interactable.position.z - playerPosition.z;
+            const horizontal = Math.hypot(dx, dz);
+            if (horizontal > interactable.radius * reachScale) {
                 continue;
+            }
+            if (facing !== null && horizontal > 1e-4) {
+                const forwardDot = (dx * Math.sin(facing) + dz * Math.cos(facing)) / horizontal;
+                if (forwardDot < minForwardDot) {
+                    continue;
+                }
             }
 
             interactable.used = true;

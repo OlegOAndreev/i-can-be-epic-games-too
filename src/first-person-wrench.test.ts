@@ -27,6 +27,7 @@ const RESTING: FirstPersonWrenchFrame = {
     chargedSwing: false,
     swingAngle: 0,
     bodyYawOffset: 0,
+    cameraYaw: 0,
     cameraPitch: 0,
     chargeProgress: 0,
     knockdownProgress: 0,
@@ -60,15 +61,15 @@ describe('first-person wrench', () => {
         expect(wrench.group.position.z).toBeLessThan(0);
     });
 
-    it('is 1.5x the third-person length and grips low on the handle', () => {
+    it('is 1.4x the third-person length and grips low on the handle', () => {
         const wrench = new FirstPersonWrench();
         const head = wrench.group.getObjectByName('first-person-wrench-head');
         const hand = wrench.group.getObjectByName('first-person-wrench-hand');
         const forearm = wrench.group.getObjectByName('first-person-wrench-forearm');
 
-        // The third-person head sits at -0.66 * 0.9 in model units; lengthwise scaling is 1.5x.
+        // The third-person head sits at -0.66 * 0.9 in model units; lengthwise scaling is 1.4x.
         expect(head?.position.y).toBeCloseTo(-0.66 * FIRST_PERSON_WRENCH_LENGTH_SCALE);
-        expect(FIRST_PERSON_WRENCH_LENGTH_SCALE).toBeCloseTo(0.9 * 1.5);
+        expect(FIRST_PERSON_WRENCH_LENGTH_SCALE).toBeCloseTo(0.9 * 1.4);
         expect(hand).toBeDefined();
         expect(forearm).toBeDefined();
         // The hand sits at the butt end, below the orange grip section at -0.12.
@@ -264,6 +265,53 @@ describe('first-person wrench', () => {
         const strikeLeft = wrench.getTipWorldPosition(0, new Vector3());
         const strikeRight = wrench.getTipWorldPosition(1, new Vector3());
         expect(strikeLeft.distanceTo(strikeRight)).toBeCloseTo(jawWidth, 5);
+    });
+
+    it('trails a fast look and settles back into the camera-space pose', () => {
+        const wrench = new FirstPersonWrench();
+        wrench.update(0, RESTING);
+
+        // The camera turns instantly; the tool lags behind for a frame, limited to a small angle.
+        wrench.update(1 / 60, { ...RESTING, cameraYaw: 0.5 });
+        expect(wrench.attachment.rotation.y).toBeLessThan(0);
+        expect(Math.abs(wrench.attachment.rotation.y)).toBeLessThanOrEqual(0.22 + 1e-9);
+
+        // Holding the new heading lets the lag drain completely.
+        for (let frame = 0; frame < 120; frame++) {
+            wrench.update(1 / 60, { ...RESTING, cameraYaw: 0.5 });
+        }
+        expect(wrench.attachment.rotation.y).toBeCloseTo(0, 2);
+    });
+
+    it('trails a pitch change as well as a yaw change', () => {
+        const wrench = new FirstPersonWrench();
+        wrench.update(0, RESTING);
+        const rest = wrench.attachment.rotation.x;
+
+        wrench.update(1 / 60, { ...RESTING, cameraPitch: 0.4 });
+        expect(wrench.attachment.rotation.x).toBeLessThan(rest);
+        expect(Math.abs(wrench.attachment.rotation.x - rest)).toBeLessThanOrEqual(0.16 + 1e-9);
+    });
+
+    it('keeps drifting and counter-swings after the head stops', () => {
+        const wrench = new FirstPersonWrench();
+        wrench.update(1 / 60, RESTING);
+
+        // Sustain a fast turn so the spring reaches its trailing pose.
+        for (let frame = 1; frame <= 20; frame++) {
+            wrench.update(1 / 60, { ...RESTING, cameraYaw: frame * 0.05 });
+        }
+        expect(wrench.attachment.rotation.y).toBeLessThan(-0.05);
+        expect(wrench.attachment.rotation.z).toBeLessThan(0);
+
+        // The head stops, but the wrench carries its momentum past the rest pose before settling.
+        let counterSwing = 0;
+        for (let frame = 0; frame < 120; frame++) {
+            wrench.update(1 / 60, { ...RESTING, cameraYaw: 1 });
+            counterSwing = Math.max(counterSwing, wrench.attachment.rotation.y);
+        }
+        expect(counterSwing).toBeGreaterThan(0.005);
+        expect(wrench.attachment.rotation.y).toBeCloseTo(0, 2);
     });
 
     it('sweeps the charged release across the view', () => {

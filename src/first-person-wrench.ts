@@ -24,9 +24,9 @@ import { clamp, smoothstep, wrapAngle } from './math-utils';
 // straight down from the arm, which leaves it out of view in first person, so this one sits low
 // on the left with the head raised toward the centre and part of the gripping arm in frame.
 export const FIRST_PERSON_WRENCH_SCALE = 0.58;
-// 1.5x the third-person length. Only the length is stretched; the head and handle stay as wide as
+// 1.4x the third-person length. Only the length is stretched; the head and handle stay as wide as
 // the hand-held tool so it still reads as the same wrench.
-export const FIRST_PERSON_WRENCH_LENGTH_SCALE = 0.9 * 1.5;
+export const FIRST_PERSON_WRENCH_LENGTH_SCALE = 0.9 * 1.4;
 const BASE_X = -0.45;
 const BASE_Y = -0.4;
 const BASE_Z = -0.7;
@@ -42,6 +42,20 @@ const IDLE_BREATH_Y = 0.005;
 // Looking down pushes the viewmodel lower on screen; looking up raises it, as if the arm keeps its
 // own height while the head pitches.
 const PITCH_SWAY = 0.08;
+// The wrench is heavy enough to trail the head. A spring instead of a single smoothing pass gives
+// it inertia: it lags a fast turn, keeps drifting for a moment when the head stops, then is pulled
+// back with a small counter-swing. The target lag grows with the head's angular speed, and the
+// clamps keep a flick from throwing the tool out of frame.
+const VIEW_LAG_SPEED = 0.06;
+const VIEW_LAG_STIFFNESS = 220;
+const VIEW_LAG_DAMPING = 18;
+const VIEW_LAG_YAW_LIMIT = 0.22;
+const VIEW_LAG_PITCH_LIMIT = 0.16;
+// Roll follows the sideways lag so the tool reads as a heavy object on a wrist, not a rigid panel.
+const VIEW_LAG_ROLL = 0.4;
+const VIEW_LAG_ROLL_LIMIT = 0.14;
+// Fixed spring substeps keep the integration stable on slow frames without slowing the response.
+const VIEW_LAG_MAX_STEP = 1 / 120;
 // The viewmodel dips when the robot lands, then eases back over a fraction of a second.
 const LANDING_DIP_SECONDS = 0.25;
 const LANDING_DIP_HEIGHT = 0.06;
@@ -167,6 +181,8 @@ export interface FirstPersonWrenchFrame {
     swingAngle: number;
     // Robot facing minus camera facing, in radians. Zero when the viewer looks along the body.
     bodyYawOffset: number;
+    // Absolute view yaw, sampled so the tool can trail a fast turn and then settle.
+    cameraYaw: number;
     // Positive when the camera looks down. The viewmodel follows this to stay low/high on screen.
     cameraPitch: number;
     // 0..1 charge progress. Above zero shows the electric cage, matching the third-person wrench.
@@ -201,6 +217,12 @@ export class FirstPersonWrench {
     private elapsed = 0;
     private pop = 1;
     private wasVisible = false;
+    private previousCameraYaw = 0;
+    private previousCameraPitch = 0;
+    private lagYaw = 0;
+    private lagPitch = 0;
+    private lagYawVelocity = 0;
+    private lagPitchVelocity = 0;
     private landingDipElapsed = LANDING_DIP_SECONDS;
     private landingDipStrength = 0;
 
@@ -309,10 +331,38 @@ export class FirstPersonWrench {
             // Pop the tool into view like the third-person wrench does when it is handed over.
             this.pop = 0;
             this.wasVisible = true;
+            this.previousCameraYaw = frame.cameraYaw;
+            this.previousCameraPitch = frame.cameraPitch;
+            this.lagYaw = 0;
+            this.lagPitch = 0;
+            this.lagYawVelocity = 0;
+            this.lagPitchVelocity = 0;
         }
         this.group.visible = true;
-        this.attachment.rotation.y = wrapAngle(frame.bodyYawOffset);
         this.elapsed += dt;
+        // The trailing pose is a camera-space rotation, so it works equally well while standing
+        // still and while strafing: only the head's rotation drags the tool.
+        const yawRate = dt > 1e-5 ? wrapAngle(frame.cameraYaw - this.previousCameraYaw) / dt : 0;
+        const pitchRate = dt > 1e-5 ? (frame.cameraPitch - this.previousCameraPitch) / dt : 0;
+        this.previousCameraYaw = frame.cameraYaw;
+        this.previousCameraPitch = frame.cameraPitch;
+        const targetLagYaw = clamp(-yawRate * VIEW_LAG_SPEED, -VIEW_LAG_YAW_LIMIT, VIEW_LAG_YAW_LIMIT);
+        const targetLagPitch = clamp(-pitchRate * VIEW_LAG_SPEED, -VIEW_LAG_PITCH_LIMIT, VIEW_LAG_PITCH_LIMIT);
+        let remaining = dt;
+        while (remaining > 0) {
+            const step = Math.min(remaining, VIEW_LAG_MAX_STEP);
+            this.lagYawVelocity += (targetLagYaw - this.lagYaw) * VIEW_LAG_STIFFNESS * step;
+            this.lagYawVelocity *= Math.exp(-VIEW_LAG_DAMPING * step);
+            this.lagYaw += this.lagYawVelocity * step;
+            this.lagPitchVelocity += (targetLagPitch - this.lagPitch) * VIEW_LAG_STIFFNESS * step;
+            this.lagPitchVelocity *= Math.exp(-VIEW_LAG_DAMPING * step);
+            this.lagPitch += this.lagPitchVelocity * step;
+            remaining -= step;
+        }
+        const lagYaw = clamp(this.lagYaw, -VIEW_LAG_YAW_LIMIT, VIEW_LAG_YAW_LIMIT);
+        const lagPitch = clamp(this.lagPitch, -VIEW_LAG_PITCH_LIMIT, VIEW_LAG_PITCH_LIMIT);
+        const lagRoll = clamp(lagYaw * VIEW_LAG_ROLL, -VIEW_LAG_ROLL_LIMIT, VIEW_LAG_ROLL_LIMIT);
+        this.attachment.rotation.set(lagPitch, wrapAngle(frame.bodyYawOffset + lagYaw), lagRoll);
         this.pop = Math.min(1, this.pop + dt * 7);
         const popEase = 1 - (1 - this.pop) ** 3;
         this.model.scale.setScalar(FIRST_PERSON_WRENCH_SCALE * (0.01 + 0.99 * popEase));

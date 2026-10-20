@@ -65,6 +65,9 @@ import { NightSky } from './night-sky';
 import { NpcRobots, parseRobotDialogue } from './npc-robots';
 import type { DialogueLine, DialoguePresenter, RobotDialogue } from './npc-robots';
 import {
+    FIRST_PERSON_DEFAULT_FOV,
+    FIRST_PERSON_WRENCH_REACH_SCALE,
+    FIRST_PERSON_WRENCH_STRIKE_ARC,
     HARD_LANDING_SPEED,
     isFullySubmerged,
     PLAYER_HEIGHT,
@@ -93,7 +96,7 @@ import { SpaceshipParts } from './spaceship-parts';
 import { Terrain, WATER_LEVEL, WORLD_HALF_SIZE, MINERAL_GOAL } from './terrain';
 import type { CylinderCollider } from './terrain';
 import { preloadSurfaceTextures, getSurfaceTextures } from './textures';
-import { ThirdPersonCamera, THIRD_PERSON_DISTANCE } from './third-person-camera';
+import { PlayerCamera, THIRD_PERSON_DISTANCE } from './player-camera';
 import { UnderwaterEffect } from './underwater';
 import { WaterSplash } from './water-splash';
 import { WindTrails } from './wind-trails';
@@ -188,7 +191,7 @@ const DEFAULT_SETTINGS = {
     jumpSpeed: 12,
     sensitivity: 0.0022,
     firstPerson: false,
-    firstPersonFov: 70,
+    firstPersonFov: FIRST_PERSON_DEFAULT_FOV,
     thirdPersonFov: FOV,
     antialias: false,
     shadowQuality: 'high' as ShadowQuality,
@@ -664,11 +667,10 @@ let wrenchHitTrail: WrenchWindTrail;
 let firstPersonWrench: FirstPersonWrench;
 let waterSplash: WaterSplash;
 let shoreFoam: ShoreFoam;
-let cameraController: ThirdPersonCamera;
+let cameraController: PlayerCamera;
 let input: Input;
 let idleManager: IdleManager | null = null;
 let gui: GUI | null = null;
-let firstPersonController: { updateDisplay: () => void } | null = null;
 let seedText: { text: string } | null = null;
 let worldSeedController: Controller | null = null;
 let renderReportController: Controller | null = null;
@@ -1037,7 +1039,7 @@ async function init(): Promise<void> {
     view.scene.add(grassField.group);
     grassField.update(player.group.position);
 
-    cameraController = new ThirdPersonCamera(view.camera);
+    cameraController = new PlayerCamera(view.camera);
     cameraController.sensitivity = storedNumber(
         storedSettings,
         'sensitivity',
@@ -1573,7 +1575,13 @@ function formatVolume(volume: number): string {
     return `${Math.round(volume * 100)}%`;
 }
 
+function syncViewModeButtons(): void {
+    getById<HTMLButtonElement>('first-person-button').setAttribute('aria-pressed', String(viewSettings.firstPerson));
+    getById<HTMLButtonElement>('third-person-button').setAttribute('aria-pressed', String(!viewSettings.firstPerson));
+}
+
 function syncMenuSettings(): void {
+    syncViewModeButtons();
     getById<HTMLInputElement>('antialias-checkbox').checked = renderSettings.antialias;
     getById<HTMLSelectElement>('shadow-quality-select').value = renderSettings.shadowQuality;
     const volume = getById<HTMLInputElement>('volume-slider');
@@ -1584,6 +1592,18 @@ function syncMenuSettings(): void {
 }
 
 function setupMenuSettings(): void {
+    const firstPerson = getById<HTMLButtonElement>('first-person-button');
+    firstPerson.addEventListener('click', () => {
+        setFirstPerson(true);
+        storeSettings();
+    });
+
+    const thirdPerson = getById<HTMLButtonElement>('third-person-button');
+    thirdPerson.addEventListener('click', () => {
+        setFirstPerson(false);
+        storeSettings();
+    });
+
     const antialias = getById<HTMLInputElement>('antialias-checkbox');
     antialias.addEventListener('change', () => {
         renderSettings.antialias = antialias.checked;
@@ -1686,7 +1706,7 @@ function resetSettingsToDefaults(): void {
 }
 
 function createGui(GuiConstructor: typeof GUI): GUI {
-    const guiInstance = new GuiConstructor({ title: t('overlay.title', 'Advanced Settings') });
+    const guiInstance = new GuiConstructor({ title: t('gui.title', 'Advanced settings') });
     guiInstance.open();
     guiInstance.onFinishChange(() => storeSettings());
 
@@ -1717,10 +1737,6 @@ function createGui(GuiConstructor: typeof GUI): GUI {
         .name(t('gui.mouseSensitivity', 'Mouse sensitivity'));
 
     const viewFolder = guiInstance.addFolder(t('gui.view', 'View')).close();
-    firstPersonController = viewFolder
-        .add(viewSettings, 'firstPerson')
-        .name(t('gui.firstPerson', 'First person'))
-        .onChange((value: boolean) => setFirstPerson(value));
     viewFolder
         .add(viewSettings, 'thirdPersonFov', 40, 110, 1)
         .name(t('gui.thirdPersonFov', 'Third-person FOV'))
@@ -2503,6 +2519,7 @@ function updateSpeedFov(dt: number, speed: number): void {
 function setFirstPerson(firstPerson: boolean): void {
     viewSettings.firstPerson = firstPerson;
     cameraController.setFirstPerson(firstPerson);
+    syncViewModeButtons();
     if (firstPerson) {
         // First person puts the camera inside the robot, so the wake streaks would sometimes
         // pop across the lens. Drop any live ones and stop emitting while the view is inside.
@@ -2531,7 +2548,6 @@ function updatePlayerAppearance(): void {
 
 function toggleFirstPerson(): void {
     setFirstPerson(!viewSettings.firstPerson);
-    firstPersonController?.updateDisplay();
     storeSettings();
 }
 
@@ -2791,8 +2807,17 @@ function onPointerLockChange(locked: boolean): void {
 function strikeWithWrench(charged: boolean): void {
     gameAudio.playWrenchSwing(charged);
     const damage = charged ? WRENCH_CHARGED_DAMAGE : 1;
-    const facing = charged ? null : player.group.rotation.y;
-    const arc = player.wrenchStrikeArc;
+    const firstPerson = cameraController.firstPerson;
+    // Use the live camera yaw rather than the body, which is updated later in the frame. In first
+    // person this keeps the hit cone exactly on the crosshair even during a fast flick.
+    const facing = charged ? null : firstPerson ? cameraController.yaw + Math.PI : player.group.rotation.y;
+    // The charged spin keeps its full-circle sweep. A regular first-person swing uses the fixed
+    // default-FOV arc instead of the wider difficulty arcs, so off-screen targets stay safe.
+    const arc = firstPerson ? FIRST_PERSON_WRENCH_STRIKE_ARC : player.wrenchStrikeArc;
+    // First person uses a narrower arc, so its wrench reaches 20% further to keep the effective
+    // threat area comparable. The multiplier depends only on the view mode, so both regular and
+    // charged attacks use it.
+    const reachScale = firstPerson ? FIRST_PERSON_WRENCH_REACH_SCALE : 1;
     if (charged) {
         for (const trail of wrenchTrails) {
             trail.start();
@@ -2800,8 +2825,8 @@ function strikeWithWrench(charged: boolean): void {
     } else {
         wrenchHitTrail.start();
     }
-    strikeEnemiesWithWrench(charged, facing);
-    const rockHits = terrain.wrenchStrike(player.group.position, damage, facing, arc);
+    strikeEnemiesWithWrench(charged, facing, arc, reachScale);
+    const rockHits = terrain.wrenchStrike(player.group.position, damage, facing, arc, reachScale);
     if (rockHits.length > 0) {
         const impact = rockHits.reduce((nearest, hit) =>
             hit.position.distanceToSquared(player.group.position) <
@@ -2811,11 +2836,11 @@ function strikeWithWrench(charged: boolean): void {
         );
         gameAudio.playWrenchClang(impact.position, charged);
     }
-    const switchPosition = terrain.megastructures.wrenchHit(player.group.position);
+    const switchPosition = terrain.megastructures.wrenchHit(player.group.position, facing, arc, reachScale);
     if (switchPosition) {
         gameAudio.playSwitchClick(switchPosition);
     }
-    const remainsHit = robotRemains.wrenchStrike(player.group.position);
+    const remainsHit = robotRemains.wrenchStrike(player.group.position, facing, arc, reachScale);
     if (remainsHit) {
         if (remainsHit.kind === 'powerdown') {
             gameAudio.playPowerDown(remainsHit.position);
@@ -2827,10 +2852,16 @@ function strikeWithWrench(charged: boolean): void {
 
 // Only the charged strike hits enemies twice: once when it starts and again when the animation
 // ends. The second pass catches robots that moved into reach mid-spin; wrenchStrike skips anyone
-// still immune from the first pass, so a robot in range for both checks only takes one hit.
-function strikeEnemiesWithWrench(charged = false, facing: number | null = null): void {
+// still immune from the first pass, so a robot in range for both checks only takes one hit. The
+// default reach follows the current view mode, so both charged passes use the first-person reach.
+function strikeEnemiesWithWrench(
+    charged = false,
+    facing: number | null = null,
+    arc = player.wrenchStrikeArc,
+    reachScale = cameraController.firstPerson ? FIRST_PERSON_WRENCH_REACH_SCALE : 1,
+): void {
     const damage = charged ? WRENCH_CHARGED_DAMAGE : 1;
-    const enemyHits = enemyRobots.wrenchStrike(player.group.position, damage, facing, player.wrenchStrikeArc);
+    const enemyHits = enemyRobots.wrenchStrike(player.group.position, damage, facing, arc, reachScale);
     if (enemyHits.length > 0) {
         gameAudio.playEnemyHit(enemyHits[0].position, enemyHits[0].health, charged ? 2 : 1);
     }
@@ -3028,6 +3059,7 @@ function animate(): void {
         cameraController.yaw,
         terrain,
         actorColliders,
+        cameraController.firstPerson,
     );
     // A knockdown, destruction, or lost wrench cancels the charge without striking.
     if (player.updateWrenchCharge(dt)) {
@@ -3078,7 +3110,7 @@ function animate(): void {
     }
 
     updateSpeedFov(dt, player.horizontalSpeed);
-    cameraController.update(dt, player.group.position, terrain);
+    cameraController.update(dt, player.group.position, terrain, player.knockdownProgress);
     updateCinematicCamera(dt);
     underwater.update(dt, view.camera.position.y, WATER_LEVEL);
     view.camera.getWorldDirection(cameraForward);
@@ -3099,6 +3131,7 @@ function animate(): void {
         chargedSwing: player.isWrenchSwingCharged,
         swingAngle: player.wrenchSwingAngle,
         bodyYawOffset: player.group.rotation.y - cameraController.yaw - Math.PI,
+        cameraYaw: cameraController.yaw,
         cameraPitch: cameraController.pitch,
         chargeProgress: player.wrenchChargeProgress,
         knockdownProgress: player.knockdownProgress,

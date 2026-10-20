@@ -1361,9 +1361,11 @@ export class Terrain {
         damage = 1,
         facing: number | null = null,
         arc = DEFAULT_ROCK_WRENCH_STRIKE_ARC,
+        reachScale = 1,
     ): RockWrenchHit[] {
         const hits: RockWrenchHit[] = [];
         const minForwardDot = Math.cos(arc / 2);
+        const reach = ROCK_WRENCH_RANGE * reachScale;
 
         for (const boulder of this.boulders) {
             if (boulder.destroyed) {
@@ -1375,7 +1377,7 @@ export class Terrain {
             const centreDistance = Math.hypot(dx, dz);
             // Measure reach from the boulder's cylinder wall rather than its centre, so a wide
             // boulder is as easy to reach as a small one.
-            if (Math.max(0, centreDistance - boulder.radius) > ROCK_WRENCH_RANGE) {
+            if (Math.max(0, centreDistance - boulder.radius) > reach) {
                 continue;
             }
             if (

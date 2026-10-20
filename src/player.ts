@@ -74,6 +74,14 @@ const WRENCH_STRIKE_ARC: Record<Difficulty, number> = {
     medium: Math.PI,
     hard: Math.PI,
 };
+// First person uses the default lens as its threat range instead of the wider third-person
+// difficulty arcs: a wrench swing must not connect with robots or boulders that are off screen,
+// and changing the first-person FOV setting must not change that range.
+export const FIRST_PERSON_DEFAULT_FOV = 70;
+export const FIRST_PERSON_WRENCH_STRIKE_ARC = (FIRST_PERSON_DEFAULT_FOV * Math.PI) / 180;
+// First person trades the wide third-person arc for a narrower one, so the wrench reaches a little
+// further to keep the effective threat area comparable.
+export const FIRST_PERSON_WRENCH_REACH_SCALE = 1.2;
 // A jump pressed while falling this close (in seconds) to touchdown counts as a ground jump, so a
 // press that lands a frame before touchdown still launches the robot instead of being eaten.
 const JUMP_LANDING_GRACE_SECONDS: Record<Difficulty, number> = {
@@ -118,9 +126,9 @@ const GROUND_TURN_ACCELERATION = TURN_GAIN * 2;
 const AIR_TURN_ACCELERATION = GROUND_TURN_ACCELERATION / 2;
 // Regular swing duration. The first- and third-person animations both run off this timer, and the
 // charged spin below scales from it as well.
-const WRENCH_ATTACK_SECONDS = 0.45;
+export const WRENCH_ATTACK_SECONDS = 0.45;
 // The charged spin gets extra time so both turns read, 20% faster than the doubled pace.
-const WRENCH_CHARGED_ATTACK_SECONDS = (WRENCH_ATTACK_SECONDS * 2) / 1.2;
+export const WRENCH_CHARGED_ATTACK_SECONDS = (WRENCH_ATTACK_SECONDS * 2) / 1.2;
 // The charged strike fills the wrench in this long after a press. A full charge triples the
 // damage and turns the release into a spinning strike: the robot makes two full turns with the
 // wrench held forward.
@@ -745,6 +753,7 @@ export class Player {
         cameraYaw: number,
         terrain: Terrain,
         actorColliders: readonly CylinderCollider[] = [],
+        firstPerson = false,
     ): void {
         this.shockBurst.update(dt);
         if (this.destroyed) {
@@ -931,22 +940,36 @@ export class Player {
         }
 
         const horizontalSpeed = Math.hypot(this.velocity.x + shockKnockbackX, this.velocity.z + shockKnockbackZ);
-        const targetTurnVelocity =
-            horizontalSpeed > 0.5
-                ? angleDelta(
-                      this.group.rotation.y,
-                      Math.atan2(this.velocity.x + shockKnockbackX, this.velocity.z + shockKnockbackZ),
-                  ) * TURN_GAIN
-                : 0;
-        this.turnVelocity = damp(
-            this.turnVelocity,
-            targetTurnVelocity,
-            this.grounded ? GROUND_TURN_ACCELERATION : AIR_TURN_ACCELERATION,
-            dt,
-        );
-        this.group.rotation.y += this.turnVelocity * dt;
+        if (firstPerson) {
+            // In first person the mouse is the robot's neck. Locking the body to the view makes A/D
+            // strafe instead of turning the robot away from the crosshair, and it keeps the wrench
+            // arc and viewmodel aligned with what the player sees. The ground/air turn split below
+            // stays a third-person feature.
+            this.turnVelocity = 0;
+        } else {
+            const targetTurnVelocity =
+                horizontalSpeed > 0.5
+                    ? angleDelta(
+                          this.group.rotation.y,
+                          Math.atan2(this.velocity.x + shockKnockbackX, this.velocity.z + shockKnockbackZ),
+                      ) * TURN_GAIN
+                    : 0;
+            this.turnVelocity = damp(
+                this.turnVelocity,
+                targetTurnVelocity,
+                this.grounded ? GROUND_TURN_ACCELERATION : AIR_TURN_ACCELERATION,
+                dt,
+            );
+            this.group.rotation.y += this.turnVelocity * dt;
+        }
 
         this.animate(dt, horizontalSpeed);
+
+        // The charged strike spins the body itself; leave that rotation alone so the viewmodel still
+        // sweeps through the spin, then snap back to the view when the swing ends.
+        if (firstPerson && !(this.wrenchAttackElapsed >= 0 && this.wrenchSwingCharged)) {
+            this.group.rotation.y = cameraYaw + Math.PI;
+        }
     }
 
     private jumpFromGround(): void {

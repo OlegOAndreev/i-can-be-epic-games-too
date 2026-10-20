@@ -755,12 +755,19 @@ export class Megastructures {
     }
 
     // Flips the nearest untriggered switch inside the wrench's reach. Called when the player swings
-    // the wrench; walking up to a switch no longer flips it. The check is purely positional, so the
-    // player's facing or the direction of the swing never matters. Returns the switch housing
-    // position.
-    wrenchHit(playerPosition: Vector3): Vector3 | null {
+    // the wrench; walking up to a switch no longer flips it. Pass a facing and arc to keep regular
+    // swings inside the same forward cone as enemies and boulders; omit the facing for the charged
+    // spin's full circle. Returns the switch housing position.
+    wrenchHit(
+        playerPosition: Vector3,
+        facing: number | null = null,
+        arc = Math.PI * 2,
+        reachScale = 1,
+    ): Vector3 | null {
         let closest: MegastructureSwitch | null = null;
         let closestDistance = Infinity;
+        const minForwardDot = Math.cos(arc / 2);
+        const reach = SWITCH_WRENCH_RADIUS * reachScale;
 
         for (const structureSwitch of this.switches) {
             if (structureSwitch.triggered) {
@@ -769,8 +776,16 @@ export class Megastructures {
 
             const horizontal = Math.hypot(playerPosition.x - structureSwitch.x, playerPosition.z - structureSwitch.z);
             const vertical = Math.abs(playerPosition.y - structureSwitch.y);
-            if (horizontal > SWITCH_WRENCH_RADIUS || vertical > SWITCH_WRENCH_HEIGHT || horizontal >= closestDistance) {
+            if (horizontal > reach || vertical > SWITCH_WRENCH_HEIGHT || horizontal >= closestDistance) {
                 continue;
+            }
+            if (facing !== null && horizontal > 1e-4) {
+                const dx = structureSwitch.x - playerPosition.x;
+                const dz = structureSwitch.z - playerPosition.z;
+                const forwardDot = (dx * Math.sin(facing) + dz * Math.cos(facing)) / horizontal;
+                if (forwardDot < minForwardDot) {
+                    continue;
+                }
             }
 
             closestDistance = horizontal;

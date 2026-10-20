@@ -3,13 +3,13 @@ import { describe, expect, it } from 'vitest';
 
 import { fakeTerrain, testTerrain } from './test-helpers';
 import { WATER_LEVEL } from './terrain';
-import { ThirdPersonCamera } from './third-person-camera';
+import { FIRST_PERSON_EYE_HEIGHT, PlayerCamera } from './player-camera';
 
-describe('ThirdPersonCamera', () => {
+describe('PlayerCamera', () => {
     it('sits at eye height and looks along yaw and pitch in first person', () => {
         const terrain = testTerrain();
         const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
-        const controller = new ThirdPersonCamera(camera);
+        const controller = new PlayerCamera(camera);
         controller.setFirstPerson(true);
         controller.yaw = Math.PI / 2;
         controller.pitch = 0.4;
@@ -18,7 +18,7 @@ describe('ThirdPersonCamera', () => {
         controller.update(1 / 60, position, terrain);
 
         expect(camera.position.x).toBeCloseTo(position.x);
-        expect(camera.position.y).toBeCloseTo(position.y + 1.75);
+        expect(camera.position.y).toBeCloseTo(position.y + FIRST_PERSON_EYE_HEIGHT);
         expect(camera.position.z).toBeCloseTo(position.z);
 
         const forward = new Vector3();
@@ -29,9 +29,91 @@ describe('ThirdPersonCamera', () => {
         expect(forward.z).toBeCloseTo(-Math.cos(controller.yaw) * cosPitch, 4);
     });
 
+    it('eases the eye into a jump and out of a landing', () => {
+        const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
+        const controller = new PlayerCamera(camera);
+        controller.setFirstPerson(true);
+        const terrain = fakeTerrain({
+            walkSurfaceAt: () => 0,
+            heightAt: () => 0,
+            intersectsStructure: () => false,
+        });
+        const position = new Vector3(0, 0, 0);
+        controller.update(1 / 60, position, terrain);
+        expect(camera.position.y).toBeCloseTo(FIRST_PERSON_EYE_HEIGHT);
+
+        // The first frame of a jump moves the feet up by one frame of jump speed. The eye should
+        // follow most of the way, but not instantly, so takeoff does not feel like a hard cut.
+        position.y = 0.2;
+        controller.update(1 / 60, position, terrain);
+        expect(camera.position.y).toBeGreaterThan(FIRST_PERSON_EYE_HEIGHT);
+        expect(camera.position.y).toBeLessThan(FIRST_PERSON_EYE_HEIGHT + 0.2);
+
+        // A long frame or a slow follow lets the eye settle exactly on the new head position.
+        for (let frame = 0; frame < 120; frame++) {
+            controller.update(1 / 60, position, terrain);
+        }
+        expect(camera.position.y).toBeCloseTo(FIRST_PERSON_EYE_HEIGHT + 0.2, 3);
+
+        // Landing stops the feet in one frame, so the eye keeps easing down instead of snapping.
+        position.y = 0;
+        controller.update(1 / 60, position, terrain);
+        expect(camera.position.y).toBeGreaterThan(FIRST_PERSON_EYE_HEIGHT);
+        for (let frame = 0; frame < 120; frame++) {
+            controller.update(1 / 60, position, terrain);
+        }
+        expect(camera.position.y).toBeCloseTo(FIRST_PERSON_EYE_HEIGHT, 3);
+    });
+
+    it('drops and tilts the first-person eye through a knockdown', () => {
+        const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
+        const controller = new PlayerCamera(camera);
+        controller.setFirstPerson(true);
+        controller.pitch = 0;
+        const terrain = fakeTerrain({
+            walkSurfaceAt: () => 0,
+            heightAt: () => 0,
+            intersectsStructure: () => false,
+        });
+        const position = new Vector3(0, 0, 0);
+        controller.update(1 / 60, position, terrain);
+        const standingEyeY = camera.position.y;
+        const standingRotationX = camera.rotation.x;
+
+        // Flat on its face: the eye drops to knee height and the view follows the head down.
+        for (let frame = 0; frame < 120; frame++) {
+            controller.update(1 / 60, position, terrain, 1);
+        }
+        expect(camera.position.y).toBeLessThan(standingEyeY - 1);
+        expect(camera.position.y).toBeGreaterThan(0.4);
+        expect(camera.rotation.x).toBeLessThan(standingRotationX - 0.5);
+
+        // Standing back up restores the normal eye and level view.
+        for (let frame = 0; frame < 120; frame++) {
+            controller.update(1 / 60, position, terrain, 0);
+        }
+        expect(camera.position.y).toBeCloseTo(standingEyeY, 3);
+        expect(camera.rotation.x).toBeCloseTo(standingRotationX, 6);
+    });
+
+    it('snaps the first-person eye after a respawn instead of flying across the world', () => {
+        const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
+        const controller = new PlayerCamera(camera);
+        controller.setFirstPerson(true);
+        const terrain = fakeTerrain({
+            walkSurfaceAt: () => 0,
+            heightAt: () => 0,
+            intersectsStructure: () => false,
+        });
+
+        controller.update(1 / 60, new Vector3(0, 0, 0), terrain);
+        controller.update(1 / 60, new Vector3(0, 20, 0), terrain);
+        expect(camera.position.y).toBeCloseTo(20 + FIRST_PERSON_EYE_HEIGHT);
+    });
+
     it('uses wider pitch limits in first person and clamps back when leaving it', () => {
         const camera = new PerspectiveCamera();
-        const controller = new ThirdPersonCamera(camera);
+        const controller = new PlayerCamera(camera);
 
         controller.rotate(0, -100000);
         expect(controller.pitch).toBeCloseTo(-1.35);
@@ -50,7 +132,7 @@ describe('ThirdPersonCamera', () => {
     it('keeps looking up when the camera is clamped to the ground', () => {
         const terrain = testTerrain();
         const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
-        const controller = new ThirdPersonCamera(camera);
+        const controller = new PlayerCamera(camera);
         const spawn = terrain.spawn;
         const ground = terrain.heightAt(spawn.x, spawn.z);
         const playerPosition = new Vector3(spawn.x, ground, spawn.z);
@@ -66,7 +148,7 @@ describe('ThirdPersonCamera', () => {
     it('pulls the camera in front of a nearby wall instead of pushing it through', () => {
         const terrain = testTerrain();
         const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
-        const controller = new ThirdPersonCamera(camera);
+        const controller = new PlayerCamera(camera);
         const tower = terrain.megastructures.towers[0];
         const centreX = (tower.minX + tower.maxX) / 2;
         const side = tower.entranceSide === 0 ? 1 : 0;
@@ -93,7 +175,7 @@ describe('ThirdPersonCamera', () => {
         });
 
         const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
-        const controller = new ThirdPersonCamera(camera);
+        const controller = new PlayerCamera(camera);
         controller.pitch = 0;
 
         let previousDistance = Number.NaN;
@@ -118,7 +200,7 @@ describe('ThirdPersonCamera', () => {
 
     it('follows the player below the water surface', () => {
         const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
-        const controller = new ThirdPersonCamera(camera);
+        const controller = new PlayerCamera(camera);
         const seabed = -12;
         const terrain = fakeTerrain({
             walkSurfaceAt: () => seabed,

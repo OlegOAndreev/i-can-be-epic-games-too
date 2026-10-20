@@ -1037,9 +1037,11 @@ export class EnemyRobots {
         damage = 1,
         facing: number | null = null,
         arc = DEFAULT_WRENCH_STRIKE_ARC,
+        reachScale = 1,
     ): EnemyWrenchHit[] {
         const hits: EnemyWrenchHit[] = [];
         const minForwardDot = Math.cos(arc / 2);
+        const reach = WRENCH_RANGE * reachScale;
         if (!this.enemiesEnabled) {
             return hits;
         }
@@ -1055,7 +1057,7 @@ export class EnemyRobots {
             const dx = enemy.group.position.x - playerPosition.x;
             const dz = enemy.group.position.z - playerPosition.z;
             const distance = Math.hypot(dx, dz);
-            if (distance > WRENCH_RANGE) {
+            if (distance > reach) {
                 continue;
             }
             if (facing !== null && distance > 1e-4) {

@@ -30,7 +30,7 @@ import type { Difficulty, EnemyDialogue } from './enemies';
 import type { MegastructureTower, Ramp, StructureBox } from './megastructures';
 import { ENEMY_EYE_COLOR } from './npc-robots';
 import { mulberry32 } from './noise';
-import { PLAYER_RADIUS } from './player';
+import { PLAYER_RADIUS, WRENCH_CHARGED_DAMAGE } from './player';
 import { PlayerHealth } from './player-health';
 import { fakeTerrain, installCanvasDocument, stubAudio, testTerrain, visibleMeshes } from './test-helpers';
 import type { Terrain } from './terrain';
@@ -1119,6 +1119,31 @@ describe('enemy robots', () => {
         const beyondReach = new Vector3(enemy.position.x + 5.5, storeyBaseY, enemy.position.z);
         expect(enemies.wrenchStrike(beyondReach)).toHaveLength(0);
         enemies.dispose();
+    });
+
+    it('scales wrench reach for both regular and charged swings', () => {
+        // 5.2 m is outside the normal 4.5 m reach but inside 4.5 * 1.2 = 5.4 m.
+        const regular = singleEnemyLevel();
+        const regularPlayer = new Vector3(
+            regular.enemy.position.x + 5.2,
+            regular.storeyBaseY,
+            regular.enemy.position.z,
+        );
+        expect(regular.enemies.wrenchStrike(regularPlayer)).toHaveLength(0);
+        expect(regular.enemies.wrenchStrike(regularPlayer, 1, null, Math.PI * 2, 1.2)).toHaveLength(1);
+        regular.enemies.dispose();
+
+        const charged = singleEnemyLevel();
+        const chargedPlayer = new Vector3(
+            charged.enemy.position.x + 5.2,
+            charged.storeyBaseY,
+            charged.enemy.position.z,
+        );
+        expect(charged.enemies.wrenchStrike(chargedPlayer, WRENCH_CHARGED_DAMAGE)).toHaveLength(0);
+        expect(charged.enemies.wrenchStrike(chargedPlayer, WRENCH_CHARGED_DAMAGE, null, Math.PI * 2, 1.2)).toHaveLength(
+            1,
+        );
+        charged.enemies.dispose();
     });
 
     it('limits a regular swing to the configured arc ahead', () => {

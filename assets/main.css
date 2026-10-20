@@ -316,6 +316,58 @@ kbd {
     box-sizing: border-box;
 }
 
+.menu-split {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 10px;
+    color: #91aab8;
+    font-size: 13px;
+}
+
+.menu-split-button {
+    display: flex;
+}
+
+.menu-split-button button {
+    flex: 1;
+    padding: 7px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.08);
+    color: #d6e3ea;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: pre-line;
+    transition: background-color 120ms ease;
+}
+
+.menu-split-button button:first-child {
+    border-radius: 8px 0 0 8px;
+}
+
+.menu-split-button button:last-child {
+    border-left: 0;
+    border-radius: 0 8px 8px 0;
+}
+
+.menu-split-button button:hover {
+    background: rgba(255, 255, 255, 0.14);
+}
+
+.menu-split-button button[aria-pressed='true'] {
+    border-color: #e2762f;
+    background: #e2762f;
+    color: #1c120b;
+}
+
+.menu-split-button button:focus-visible {
+    position: relative;
+    z-index: 1;
+    outline: 2px solid #e2762f;
+    outline-offset: 2px;
+}
+
 .menu-toggle {
     display: flex;
     align-items: center;

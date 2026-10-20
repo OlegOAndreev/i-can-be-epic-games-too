@@ -1015,6 +1015,26 @@ describe('megastructures', () => {
         const far = new Vector3(farTarget.x + 5.5, farTarget.y, farTarget.z);
 
         expect(farTerrain.megastructures.wrenchHit(far)).toBeNull();
+
+        // First person reaches 1.2x further, so 5.2 m is inside its 5.4 m reach.
+        const scaled = new Vector3(farTarget.x + 5.2, farTarget.y, farTarget.z);
+        expect(farTerrain.megastructures.wrenchHit(scaled)).toBeNull();
+        expect(farTerrain.megastructures.wrenchHit(scaled, null, Math.PI * 2, 1.2)).not.toBeNull();
+    });
+
+    it('limits a regular swing to the forward arc', () => {
+        // Facing 0 (+Z), stand 3 m south of the console so it is dead ahead.
+        const aheadTerrain = testTerrain();
+        const aheadSwitch = aheadTerrain.megastructures.switches[0];
+        const ahead = new Vector3(aheadSwitch.x, aheadSwitch.y, aheadSwitch.z - 3);
+        expect(aheadTerrain.megastructures.wrenchHit(ahead, 0, Math.PI / 2)).not.toBeNull();
+
+        const behindTerrain = testTerrain();
+        const behindSwitch = behindTerrain.megastructures.switches[0];
+        const behind = new Vector3(behindSwitch.x, behindSwitch.y, behindSwitch.z + 3);
+        expect(behindTerrain.megastructures.wrenchHit(behind, 0, Math.PI / 2)).toBeNull();
+        // The charged spin omits the facing and still reaches behind.
+        expect(behindTerrain.megastructures.wrenchHit(behind)).not.toBeNull();
     });
 
     it('restores flipped switches from a save without replaying the strike', () => {

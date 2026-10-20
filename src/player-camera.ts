@@ -1,12 +1,27 @@
 import { MathUtils, PerspectiveCamera, Vector3 } from 'three';
 
+import { damp } from './math-utils';
 import type { Terrain } from './terrain';
 
 const MIN_PITCH = -1.35;
 const MAX_PITCH = 1.2;
 const FIRST_PERSON_MIN_PITCH = -1.45;
 const FIRST_PERSON_MAX_PITCH = 1.45;
-const FIRST_PERSON_EYE_HEIGHT = 1.75;
+// The robot's head top sits just under two metres once the model scale is applied. First person
+// rides at the crown rather than at chest height so the view clears the shoulders.
+export const FIRST_PERSON_EYE_HEIGHT = 1.9;
+// A jump starts at full vertical speed and a landing stops it in one frame. Following the eye with
+// a short first-order lag turns those two hard velocity changes into a brief ease in and out.
+const FIRST_PERSON_VERTICAL_FOLLOW = 50;
+// Respawns and world rebuilds move the player tens of metres between frames. Those must snap
+// instead of flying the camera through the world.
+const FIRST_PERSON_SNAP_DISTANCE = 2.5;
+// A hard landing puts the robot on its face. First person follows the head down to just above the
+// ground and tilts the view toward the dirt, then comes back up with the get-up animation. The
+// values match the model's own face-plant pose rather than the full 78-degree body tilt, which
+// would leave the player staring straight down.
+const FIRST_PERSON_KNOCKDOWN_EYE_HEIGHT = 0.5;
+const FIRST_PERSON_KNOCKDOWN_PITCH = 0.65;
 export const THIRD_PERSON_DISTANCE = 7.2;
 // When the player is in a tight space (for example inside a tower), the camera may need to move
 // right up to the character instead of being pushed through a wall.
@@ -29,7 +44,7 @@ const OCCLUSION_CACHE_LENGTH_EPSILON = 1e-4;
 
 // Camera controller with an orbit-style third-person mode and a first-person mode, both driven by
 // pointer-locked mouse movement.
-export class ThirdPersonCamera {
+export class PlayerCamera {
     readonly camera: PerspectiveCamera;
     yaw = 0;
     pitch = 0.32;
@@ -48,6 +63,8 @@ export class ThirdPersonCamera {
     private readonly cachedOcclusionTarget = new Vector3();
     private readonly cachedOcclusionDirection = new Vector3();
     private hasOcclusionCache = false;
+    private firstPersonEyeY = FIRST_PERSON_EYE_HEIGHT;
+    private firstPersonEyeInitialized = false;
 
     constructor(camera: PerspectiveCamera) {
         this.camera = camera;
@@ -69,6 +86,9 @@ export class ThirdPersonCamera {
         }
         this.firstPerson = firstPerson;
         this.pitch = this.clampPitch(this.pitch);
+        // Re-entering first person should start at the eye, not ease in from wherever the previous
+        // first-person camera (or the third-person camera) happened to be.
+        this.firstPersonEyeInitialized = false;
         if (!firstPerson) {
             this.snap();
         }
@@ -79,6 +99,7 @@ export class ThirdPersonCamera {
         this.currentDistance = this.distance;
         this.effectiveDistance = this.distance;
         this.hasOcclusionCache = false;
+        this.firstPersonEyeInitialized = false;
     }
 
     get cameraDistance(): number {
@@ -96,10 +117,30 @@ export class ThirdPersonCamera {
         this.pitch = this.clampPitch(this.pitch + deltaY * this.sensitivity);
     }
 
-    update(dt: number, playerPosition: Vector3, terrain: Terrain): void {
+    update(dt: number, playerPosition: Vector3, terrain: Terrain, knockdownProgress = 0): void {
         if (this.firstPerson) {
-            this.camera.position.set(playerPosition.x, playerPosition.y + FIRST_PERSON_EYE_HEIGHT, playerPosition.z);
-            this.camera.rotation.set(-this.pitch, this.yaw, 0);
+            // The robot's face-plant is driven by the same 0..1 progress the viewmodel uses. Only
+            // the first-person eye follows it; the third-person camera keeps its orbit height and
+            // lets the visible robot do the acting.
+            const knockdown = MathUtils.clamp(knockdownProgress, 0, 1);
+            const eyeHeight =
+                FIRST_PERSON_EYE_HEIGHT + (FIRST_PERSON_KNOCKDOWN_EYE_HEIGHT - FIRST_PERSON_EYE_HEIGHT) * knockdown;
+            const targetEyeY = playerPosition.y + eyeHeight;
+            if (
+                !this.firstPersonEyeInitialized ||
+                Math.abs(targetEyeY - this.firstPersonEyeY) > FIRST_PERSON_SNAP_DISTANCE
+            ) {
+                this.firstPersonEyeY = targetEyeY;
+                this.firstPersonEyeInitialized = true;
+            } else {
+                this.firstPersonEyeY = damp(this.firstPersonEyeY, targetEyeY, FIRST_PERSON_VERTICAL_FOLLOW, dt);
+            }
+            this.camera.position.set(playerPosition.x, this.firstPersonEyeY, playerPosition.z);
+            const knockdownPitch = Math.min(
+                FIRST_PERSON_MAX_PITCH,
+                this.pitch + FIRST_PERSON_KNOCKDOWN_PITCH * knockdown,
+            );
+            this.camera.rotation.set(-knockdownPitch, this.yaw, 0);
             this.effectiveDistance = 0;
             return;
         }
