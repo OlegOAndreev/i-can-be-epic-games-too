@@ -1,10 +1,14 @@
 import {
+    AdditiveBlending,
     DataTexture,
     LinearFilter,
     LinearMipmapLinearFilter,
+    MeshBasicMaterial,
     RGBAFormat,
     SRGBColorSpace,
+    SpriteMaterial,
 } from 'three';
+import type { ColorRepresentation, Texture } from 'three';
 
 import { smoothstep } from './math-utils';
 
@@ -16,6 +20,42 @@ export const GLOW_RING_TEXTURE_RADIUS = 0.4;
 
 let radialGlowTexture: DataTexture | null = null;
 let glowRingTexture: DataTexture | null = null;
+
+export function glowMaterial(options: {
+    color: ColorRepresentation;
+    opacity?: number;
+    map?: Texture;
+    fog?: boolean;
+}): MeshBasicMaterial {
+    return new MeshBasicMaterial({
+        color: options.color,
+        transparent: true,
+        blending: AdditiveBlending,
+        depthWrite: false,
+        toneMapped: false,
+        opacity: options.opacity ?? 0,
+        fog: options.fog ?? false,
+        ...(options.map ? { map: options.map } : {}),
+    });
+}
+
+export function glowSpriteMaterial(options: {
+    color: ColorRepresentation;
+    opacity?: number;
+    map?: Texture;
+    fog?: boolean;
+}): SpriteMaterial {
+    return new SpriteMaterial({
+        color: options.color,
+        transparent: true,
+        blending: AdditiveBlending,
+        depthWrite: false,
+        toneMapped: false,
+        opacity: options.opacity ?? 0,
+        fog: options.fog ?? false,
+        ...(options.map ? { map: options.map } : {}),
+    });
+}
 
 // Soft radial alpha mask shared by the ship engines and the robot's rear thrusters. Building it as
 // a DataTexture keeps constructors headless for tests and avoids shipping another asset.
@@ -81,13 +121,7 @@ export function getGlowRingTexture(): DataTexture {
 }
 
 function ringAlpha(radius: number): number {
-    const inner = smoothstep(
-        GLOW_RING_TEXTURE_INNER_RADIUS,
-        GLOW_RING_TEXTURE_INNER_RADIUS + 0.04,
-        radius,
-    );
-    const outer =
-        1 -
-        smoothstep(GLOW_RING_TEXTURE_RADIUS + 0.03, GLOW_RING_TEXTURE_RADIUS + 0.07, radius);
+    const inner = smoothstep(GLOW_RING_TEXTURE_INNER_RADIUS, GLOW_RING_TEXTURE_INNER_RADIUS + 0.04, radius);
+    const outer = 1 - smoothstep(GLOW_RING_TEXTURE_RADIUS + 0.03, GLOW_RING_TEXTURE_RADIUS + 0.07, radius);
     return inner * outer;
 }

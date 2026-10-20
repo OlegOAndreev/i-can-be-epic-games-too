@@ -1,14 +1,6 @@
-import {
-    BufferAttribute,
-    Color,
-    Mesh,
-    MeshStandardMaterial,
-    PlaneGeometry,
-    Scene,
-    Texture,
-    Vector3,
-} from 'three';
+import { Color, Mesh, MeshStandardMaterial, Scene, Texture, Vector3 } from 'three';
 
+import { buildGroundPlane, conformPlaneToTerrain } from './ground-decal';
 import type { Terrain } from './terrain';
 
 const MAX_DENTS = 24;
@@ -41,24 +33,16 @@ export class GroundDents {
 
     spawn(position: Vector3, impactSpeed: number, groundColor: Color, terrain: Terrain): void {
         const size = Math.min(MAX_SIZE, Math.max(MIN_SIZE, 2.2 + impactSpeed * 0.045));
-        const geometry = new PlaneGeometry(size, size, 8, 8);
-        geometry.rotateX(-Math.PI / 2);
+        const geometry = buildGroundPlane(size, size, 8, 8);
         geometry.rotateY(Math.random() * Math.PI * 2);
 
         // Metal roofs are flat; natural ground follows the height field so the decal hugs the slope.
         const flat = terrain.isOnStructure(position.x, position.z, position.y);
-        const vertices = geometry.getAttribute('position') as BufferAttribute;
-        for (let i = 0; i < vertices.count; i++) {
-            const worldX = position.x + vertices.getX(i);
-            const worldZ = position.z + vertices.getZ(i);
-            const worldY = flat
-                ? position.y + GROUND_OFFSET
-                : terrain.heightAt(worldX, worldZ) + GROUND_OFFSET;
-            vertices.setY(i, worldY);
-        }
-        vertices.needsUpdate = true;
-        geometry.computeVertexNormals();
-        geometry.computeBoundingSphere();
+        conformPlaneToTerrain(geometry, position, (x, z) => terrain.heightAt(x, z), {
+            yOffset: GROUND_OFFSET,
+            flatY: flat ? position.y : undefined,
+            computeNormals: true,
+        });
 
         const material = new MeshStandardMaterial({
             map: this.texture,

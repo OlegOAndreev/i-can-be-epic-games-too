@@ -23,10 +23,16 @@ import {
     Vector3,
 } from 'three';
 import type { Material } from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
-import { getGlowRingTexture, getRadialGlowTexture, GLOW_RING_TEXTURE_RADIUS } from './glow';
+import {
+    getGlowRingTexture,
+    getRadialGlowTexture,
+    GLOW_RING_TEXTURE_RADIUS,
+    glowMaterial,
+    glowSpriteMaterial,
+} from './glow';
 import { smoothstep } from './math-utils';
+import { mergeParts } from './mesh-optimize';
 import { mulberry32 } from './noise';
 import { applyMetalSurfaceShader, getSurfaceTextures } from './textures';
 
@@ -428,35 +434,20 @@ export class Megastructures {
         depthWrite: false,
         fog: false,
     });
-    private lampGlowSpriteMaterial = new SpriteMaterial({
+    private lampGlowSpriteMaterial = glowSpriteMaterial({
         map: getRadialGlowTexture(),
         color: 0xff4028,
-        transparent: true,
         opacity: 0.5,
-        blending: AdditiveBlending,
-        depthWrite: false,
-        fog: false,
-        toneMapped: false,
     });
-    private trimGlowMaterial = new MeshBasicMaterial({
+    private trimGlowMaterial = glowMaterial({
         map: getRadialGlowTexture(),
         color: 0x51d6c9,
-        transparent: true,
         opacity: 0.28,
-        blending: AdditiveBlending,
-        depthWrite: false,
-        fog: false,
-        toneMapped: false,
     });
-    private entranceGlowMaterial = new MeshBasicMaterial({
+    private entranceGlowMaterial = glowMaterial({
         map: getRadialGlowTexture(),
         color: 0x7df3e2,
-        transparent: true,
         opacity: 0.32,
-        blending: AdditiveBlending,
-        depthWrite: false,
-        fog: false,
-        toneMapped: false,
     });
     // One shader animates every generated glyph. The color and wave parameters live in vertex
     // attributes, so the floor glyphs and tower glyphs share the same material and animation.
@@ -539,14 +530,9 @@ export class Megastructures {
         roughness: 0.3,
         metalness: 0.85,
     });
-    private boltMaterial = new MeshBasicMaterial({
+    private boltMaterial = glowMaterial({
         color: 0xffffff,
-        transparent: true,
         opacity: 0.95,
-        blending: AdditiveBlending,
-        depthWrite: false,
-        fog: false,
-        toneMapped: false,
     });
     // The crowns keep the shared orange materials until their switch is thrown, then swap to these.
     private blueLampMaterial = new MeshStandardMaterial({
@@ -564,15 +550,10 @@ export class Megastructures {
         depthWrite: false,
         fog: false,
     });
-    private blueLampGlowSpriteMaterial = new SpriteMaterial({
+    private blueLampGlowSpriteMaterial = glowSpriteMaterial({
         map: getRadialGlowTexture(),
         color: 0x4fa8ff,
-        transparent: true,
         opacity: 0.5,
-        blending: AdditiveBlending,
-        depthWrite: false,
-        fog: false,
-        toneMapped: false,
     });
     private boltLight = new PointLight(0xbfe0ff, 0, 70, 2);
     private stoneParts: BufferGeometry[] = [];
@@ -733,14 +714,9 @@ export class Megastructures {
             const distanceFactor = playerPosition
                 ? 1 -
                   (1 - CROWN_SHIELD_MIN_DISTANCE_FACTOR) *
-                      smoothstep(
-                          CROWN_SHIELD_DIM_START_DISTANCE,
-                          CROWN_SHIELD_DIM_END_DISTANCE,
-                          horizontal,
-                      )
+                      smoothstep(CROWN_SHIELD_DIM_START_DISTANCE, CROWN_SHIELD_DIM_END_DISTANCE, horizontal)
                 : 1;
-            const pulse =
-                0.85 + 0.15 * Math.sin(this.glowTime * CROWN_SHIELD_PULSE_SPEED + field.towerIndex);
+            const pulse = 0.85 + 0.15 * Math.sin(this.glowTime * CROWN_SHIELD_PULSE_SPEED + field.towerIndex);
             field.material.opacity = CROWN_SHIELD_OPACITY * distanceFactor * pulse;
 
             if (!playerPosition) {
@@ -793,11 +769,7 @@ export class Megastructures {
 
             const horizontal = Math.hypot(playerPosition.x - structureSwitch.x, playerPosition.z - structureSwitch.z);
             const vertical = Math.abs(playerPosition.y - structureSwitch.y);
-            if (
-                horizontal > SWITCH_WRENCH_RADIUS ||
-                vertical > SWITCH_WRENCH_HEIGHT ||
-                horizontal >= closestDistance
-            ) {
+            if (horizontal > SWITCH_WRENCH_RADIUS || vertical > SWITCH_WRENCH_HEIGHT || horizontal >= closestDistance) {
                 continue;
             }
 
@@ -815,7 +787,9 @@ export class Megastructures {
 
     // Stable tower indices of every switch already thrown, so a save can restore them.
     getFlippedTowerIndices(): number[] {
-        return this.switches.filter((structureSwitch) => structureSwitch.triggered).map((structureSwitch) => structureSwitch.towerIndex);
+        return this.switches
+            .filter((structureSwitch) => structureSwitch.triggered)
+            .map((structureSwitch) => structureSwitch.towerIndex);
     }
 
     // Re-applies the drained look from a save without replaying the strike, its sound, or the
@@ -1037,10 +1011,7 @@ export class Megastructures {
             pieces.push(makeTube(makePoints(from, branchEnd, 5, 0.1), thickness * 0.47));
         }
 
-        const geometry = mergeGeometries(pieces) ?? new BufferGeometry();
-        for (const piece of pieces) {
-            piece.dispose();
-        }
+        const geometry = mergeParts(pieces, new BufferGeometry());
         return geometry;
     }
 
@@ -1187,20 +1158,12 @@ export class Megastructures {
 
         if (y <= field.coneTopY) {
             const t = (y - field.baseY) / Math.max(0.001, field.coneTopY - field.baseY);
-            return (
-                field.coneBaseRadius +
-                (field.coneTopRadius - field.coneBaseRadius) * t +
-                CROWN_SHOCK_CLEARANCE
-            );
+            return field.coneBaseRadius + (field.coneTopRadius - field.coneBaseRadius) * t + CROWN_SHOCK_CLEARANCE;
         }
 
         if (y <= field.spireTopY) {
             const t = (y - field.coneTopY) / Math.max(0.001, field.spireTopY - field.coneTopY);
-            return (
-                field.spireBaseRadius +
-                (field.spireTopRadius - field.spireBaseRadius) * t +
-                CROWN_SHOCK_CLEARANCE
-            );
+            return field.spireBaseRadius + (field.spireTopRadius - field.spireBaseRadius) * t + CROWN_SHOCK_CLEARANCE;
         }
 
         return field.spireTopRadius + CROWN_SHOCK_CLEARANCE;
@@ -2233,15 +2196,10 @@ export class Megastructures {
         indicator.position.set(0.19, 1.15, -0.16);
         mount.add(indicator);
 
-        const indicatorSpriteMaterial = new SpriteMaterial({
+        const indicatorSpriteMaterial = glowSpriteMaterial({
             map: getRadialGlowTexture(),
             color: 0xff4a18,
-            transparent: true,
             opacity: 0.45,
-            blending: AdditiveBlending,
-            depthWrite: false,
-            fog: false,
-            toneMapped: false,
         });
         const indicatorGlow = new Sprite(indicatorSpriteMaterial);
         indicatorGlow.position.copy(indicator.position);
@@ -2249,30 +2207,18 @@ export class Megastructures {
         indicatorGlow.layers.set(MEGASTRUCTURE_LAYER);
         mount.add(indicatorGlow);
 
-        const flashMaterial = new SpriteMaterial({
+        const flashMaterial = glowSpriteMaterial({
             map: getRadialGlowTexture(),
             color: 0xffffff,
-            transparent: true,
-            opacity: 0,
-            blending: AdditiveBlending,
-            depthWrite: false,
-            fog: false,
-            toneMapped: false,
         });
         const flashSprite = new Sprite(flashMaterial);
         flashSprite.visible = false;
         flashSprite.layers.set(MEGASTRUCTURE_LAYER);
         this.group.add(flashSprite);
 
-        const chargeMaterial = new SpriteMaterial({
+        const chargeMaterial = glowSpriteMaterial({
             map: getRadialGlowTexture(),
             color: 0xffffff,
-            transparent: true,
-            opacity: 0,
-            blending: AdditiveBlending,
-            depthWrite: false,
-            fog: false,
-            toneMapped: false,
         });
         const chargeSprite = new Sprite(chargeMaterial);
         chargeSprite.position.copy(this.crownGlows[towerIndex].core.position);
@@ -2602,17 +2548,7 @@ export class Megastructures {
             false,
         );
 
-        this.addEntranceGlow(
-            minX,
-            maxX,
-            minZ,
-            maxZ,
-            groundY,
-            doorTop,
-            doorMin,
-            doorMax,
-            entranceSide,
-        );
+        this.addEntranceGlow(minX, maxX, minZ, maxZ, groundY, doorTop, doorMin, doorMax, entranceSide);
 
         return { groundY, doorWidth };
     }
@@ -2673,10 +2609,7 @@ export class Megastructures {
             frameZ,
         );
 
-        const halo = new PlaneGeometry(
-            doorWidth + ENTRANCE_GLOW_SPREAD * 2,
-            doorHeight + ENTRANCE_GLOW_SPREAD * 2,
-        );
+        const halo = new PlaneGeometry(doorWidth + ENTRANCE_GLOW_SPREAD * 2, doorHeight + ENTRANCE_GLOW_SPREAD * 2);
         halo.rotateY(Math.atan2(normalX, normalZ));
         halo.translate(
             wallX + normalX * (ENTRANCE_FRAME_DEPTH + 0.06),
@@ -2978,11 +2911,7 @@ export class Megastructures {
             return;
         }
 
-        const geometry = mergeGeometries(parts)!;
-        geometry.computeBoundingSphere();
-        for (const part of parts) {
-            part.dispose();
-        }
+        const geometry = mergeParts(parts);
 
         const mesh = new Mesh(geometry, material);
         mesh.name = name;

@@ -13,6 +13,7 @@ import type { Material } from 'three';
 
 import { buildElectricBolts } from './electric-bolts';
 import { GLOW_RING_TEXTURE_INNER_RADIUS } from './glow';
+import { clamp, dampAngle, smoothstep } from './math-utils';
 import {
     ANTENNA_IDLE_HALO_OPACITY,
     ANTENNA_IDLE_HALO_SCALE,
@@ -69,8 +70,7 @@ const KNOCKDOWN_FALL_SECONDS = 0.24;
 const KNOCKDOWN_HOLD_SECONDS = 0.5;
 const KNOCKDOWN_GET_UP_SECONDS = 0.7;
 const KNOCKDOWN_TILT = 1.36;
-const KNOCKDOWN_TOTAL_SECONDS =
-    KNOCKDOWN_FALL_SECONDS + KNOCKDOWN_HOLD_SECONDS + KNOCKDOWN_GET_UP_SECONDS;
+const KNOCKDOWN_TOTAL_SECONDS = KNOCKDOWN_FALL_SECONDS + KNOCKDOWN_HOLD_SECONDS + KNOCKDOWN_GET_UP_SECONDS;
 const LANDING_BOOST_GAIN = 1.5;
 const MAX_LANDING_BOOST = 7.5;
 const LANDING_BOOST_IMPULSE = 2.0;
@@ -80,6 +80,8 @@ const THRUSTER_GLOW_SPEED = 11;
 const THRUSTER_GLOW_FULL_SPEED = 19;
 // Slows the walk cycle without affecting movement, giving the robot longer, more relaxed steps.
 const WALK_ANIMATION_SPEED = 0.5;
+// Forward torso lean at full walking speed, in radians (15 degrees).
+const WALK_LEAN = Math.PI / 12;
 const WRENCH_ATTACK_SECONDS = 0.325;
 // The charged spin gets extra time so both turns read, 20% faster than the doubled pace.
 const WRENCH_CHARGED_ATTACK_SECONDS = (WRENCH_ATTACK_SECONDS * 2) / 1.2;
@@ -241,9 +243,7 @@ export class Player {
             fog: false,
             toneMapped: false,
         });
-        this.wrenchBoltGeometries = Array.from({ length: WRENCH_BOLT_VARIANTS }, () =>
-            buildWrenchBoltGeometry(),
-        );
+        this.wrenchBoltGeometries = Array.from({ length: WRENCH_BOLT_VARIANTS }, () => buildWrenchBoltGeometry());
         this.wrenchBoltMesh = new Mesh(this.wrenchBoltGeometries[0], this.wrenchBoltMaterial);
         this.wrenchBoltMesh.visible = false;
         boltGroup.add(this.wrenchBoltMesh);
@@ -320,9 +320,7 @@ export class Player {
             return 0;
         }
         const progress = this.wrenchAttackElapsed / this.wrenchSwingSeconds;
-        return this.wrenchSwingCharged
-            ? chargedWrenchSpinAngle(progress)
-            : wrenchCircleAngle(progress);
+        return this.wrenchSwingCharged ? chargedWrenchSpinAngle(progress) : wrenchCircleAngle(progress);
     }
 
     // World-space position of one of the two wrench tips, where the charged swing trails start.
@@ -355,7 +353,7 @@ export class Player {
         this.antennaPulseElapsed = 0;
         this.antennaPulseInterval = Math.max(0.05, interval);
         this.antennaPulseTimeout = this.antennaPulseInterval + ANTENNA_PULSE_FADE_SECONDS;
-        this.antennaPulseCloseness = Math.min(1, Math.max(0, closeness));
+        this.antennaPulseCloseness = clamp(closeness, 0, 1);
         this.antennaRing.visible = true;
     }
 
@@ -418,10 +416,7 @@ export class Player {
             this.cancelWrenchCharge();
             return true;
         }
-        this.wrenchChargeElapsed = Math.min(
-            WRENCH_CHARGE_SECONDS,
-            this.wrenchChargeElapsed + dt,
-        );
+        this.wrenchChargeElapsed = Math.min(WRENCH_CHARGE_SECONDS, this.wrenchChargeElapsed + dt);
         return false;
     }
 
@@ -538,11 +533,7 @@ export class Player {
         this.group.rotation.y = snapshot.facing;
         // A shared snapshot carries speed rather than both velocity components; the robot runs in
         // the direction it faces, which is close enough to the exact velocity at the pause moment.
-        this.velocity.set(
-            Math.sin(snapshot.facing) * snapshot.speed,
-            0,
-            Math.cos(snapshot.facing) * snapshot.speed,
-        );
+        this.velocity.set(Math.sin(snapshot.facing) * snapshot.speed, 0, Math.cos(snapshot.facing) * snapshot.speed);
         this.verticalVelocity = snapshot.verticalSpeed;
         this.grounded = snapshot.grounded;
         this.resetPose();
@@ -732,8 +723,7 @@ export class Player {
         const currentGround = terrain.walkSurfaceAt(position.x, position.z, position.y);
         const groundStepHeight = this.grounded ? RAMP_STEP_HEIGHT : undefined;
         const nextGround = terrain.walkSurfaceAt(nextX, nextZ, position.y, groundStepHeight);
-        const climbingRamp =
-            this.grounded && terrain.isOnRamp(nextX, nextZ, nextGround, 0.05);
+        const climbingRamp = this.grounded && terrain.isOnRamp(nextX, nextZ, nextGround, 0.05);
         const maxRise = climbingRamp
             ? Math.max(RAMP_STEP_HEIGHT, stepDistance * MAX_WALKABLE_RISE)
             : Math.max(0.14, stepDistance * MAX_WALKABLE_RISE);
@@ -797,12 +787,7 @@ export class Player {
 
             // Stop the head at the underside of ledges and floors instead of popping through them.
             if (this.verticalVelocity > 0) {
-                const ceiling = terrain.ceilingAt(
-                    position.x,
-                    position.z,
-                    previousHead,
-                    PLAYER_RADIUS,
-                );
+                const ceiling = terrain.ceilingAt(position.x, position.z, previousHead, PLAYER_RADIUS);
                 if (position.y + PLAYER_HEIGHT > ceiling) {
                     position.y = ceiling - PLAYER_HEIGHT;
                     this.verticalVelocity = 0;
@@ -816,8 +801,7 @@ export class Player {
                 this.grounded = true;
 
                 if (impactSpeed > LANDING_EFFECT_THRESHOLD) {
-                    const hardLanding =
-                        impactSpeed >= HARD_LANDING_SPEED && position.y >= WATER_LEVEL - 0.05;
+                    const hardLanding = impactSpeed >= HARD_LANDING_SPEED && position.y >= WATER_LEVEL - 0.05;
 
                     if (hardLanding) {
                         // Falling from a tower knocks the wind out of the robot: it pitches forward
@@ -828,10 +812,7 @@ export class Player {
                         this.velocity.z *= 0.25;
                     } else {
                         // Each qualifying landing adds a forward impulse and stacks a speed bonus.
-                        this.landingBoost = Math.min(
-                            MAX_LANDING_BOOST,
-                            this.landingBoost + LANDING_BOOST_GAIN,
-                        );
+                        this.landingBoost = Math.min(MAX_LANDING_BOOST, this.landingBoost + LANDING_BOOST_GAIN);
 
                         let forwardX = Math.sin(this.group.rotation.y);
                         let forwardZ = Math.cos(this.group.rotation.y);
@@ -850,15 +831,9 @@ export class Player {
             }
         }
 
-        const horizontalSpeed = Math.hypot(
-            this.velocity.x + shockKnockbackX,
-            this.velocity.z + shockKnockbackZ,
-        );
+        const horizontalSpeed = Math.hypot(this.velocity.x + shockKnockbackX, this.velocity.z + shockKnockbackZ);
         if (horizontalSpeed > 0.5) {
-            const targetFacing = Math.atan2(
-                this.velocity.x + shockKnockbackX,
-                this.velocity.z + shockKnockbackZ,
-            );
+            const targetFacing = Math.atan2(this.velocity.x + shockKnockbackX, this.velocity.z + shockKnockbackZ);
             this.group.rotation.y = dampAngle(this.group.rotation.y, targetFacing, 11, dt);
         }
 
@@ -868,8 +843,7 @@ export class Player {
     private animate(dt: number, horizontalSpeed: number): void {
         this.idleTime += dt;
         this.glowMaterial.emissiveIntensity = 1.25 + Math.sin(this.idleTime * 2.6) * 0.3;
-        this.eyeGlowMaterial.opacity =
-            this.opacity * (0.72 + Math.sin(this.idleTime * 2.2) * 0.16);
+        this.eyeGlowMaterial.opacity = this.opacity * (0.72 + Math.sin(this.idleTime * 2.2) * 0.16);
         this.updateAntennaPulse(dt);
 
         const thrusterGlow = thrusterGlowStrength(horizontalSpeed);
@@ -877,13 +851,11 @@ export class Player {
             THRUSTER_BASE_GLOW + (THRUSTER_MAX_GLOW - THRUSTER_BASE_GLOW) * thrusterGlow;
         const haloOpacity =
             this.opacity *
-            (THRUSTER_BASE_HALO_OPACITY +
-                (THRUSTER_MAX_HALO_OPACITY - THRUSTER_BASE_HALO_OPACITY) * thrusterGlow);
+            (THRUSTER_BASE_HALO_OPACITY + (THRUSTER_MAX_HALO_OPACITY - THRUSTER_BASE_HALO_OPACITY) * thrusterGlow);
         this.thrusterHaloMaterial.opacity = haloOpacity;
         this.thrusterSpriteGlowMaterial.opacity = haloOpacity;
         const glowScale =
-            THRUSTER_BASE_HALO_SCALE +
-            (THRUSTER_MAX_HALO_SCALE - THRUSTER_BASE_HALO_SCALE) * thrusterGlow;
+            THRUSTER_BASE_HALO_SCALE + (THRUSTER_MAX_HALO_SCALE - THRUSTER_BASE_HALO_SCALE) * thrusterGlow;
         for (const halo of this.thrusterHalos) {
             halo.scale.setScalar(0.8 + thrusterGlow * 0.9);
         }
@@ -918,10 +890,7 @@ export class Player {
         if (this.knockdownActive) {
             const fall = Math.min(1, this.knockdownElapsed / KNOCKDOWN_FALL_SECONDS);
             const getUpStart = KNOCKDOWN_FALL_SECONDS + KNOCKDOWN_HOLD_SECONDS;
-            const getUp = Math.min(
-                1,
-                Math.max(0, (this.knockdownElapsed - getUpStart) / KNOCKDOWN_GET_UP_SECONDS),
-            );
+            const getUp = Math.min(1, Math.max(0, (this.knockdownElapsed - getUpStart) / KNOCKDOWN_GET_UP_SECONDS));
             const fallEase = 1 - (1 - fall) * (1 - fall);
             const getUpEase = getUp * getUp * (3 - 2 * getUp);
             lying = fallEase * (1 - getUpEase);
@@ -981,8 +950,7 @@ export class Player {
                 if (this.wrenchSwingCharged) {
                     // The charged strike spins the whole robot through two full turns, with the
                     // wrench raised in front and lowered again over the last 30°.
-                    this.group.rotation.y =
-                        this.wrenchSwingStartYaw + chargedWrenchSpinAngle(progress);
+                    this.group.rotation.y = this.wrenchSwingStartYaw + chargedWrenchSpinAngle(progress);
                     this.rightArm.rotation.x = chargedWrenchArmAngle(progress);
                 } else {
                     // The regular swing circles only the wrench arm, in the same forward/back
@@ -1003,7 +971,8 @@ export class Player {
 
         const bobTarget = this.grounded ? Math.abs(Math.sin(this.walkPhase)) * 0.055 * movingRatio : 0.025;
         const speedRatio = Math.min(1.5, horizontalSpeed / Math.max(this.settings.moveSpeed, 0.01));
-        const leanTarget = this.grounded ? speedRatio * 0.22 : -0.04;
+        // Airborne, ease back to 40% of the walking lean, so a jump reads as a slight backward tilt.
+        const leanTarget = speedRatio * WALK_LEAN * (this.grounded ? 1 : 0.4);
         if (lying > 0.001) {
             this.visual.rotation.x = KNOCKDOWN_TILT * lying;
             this.visual.position.y = bobTarget * (1 - lying) - 0.04 * lying;
@@ -1022,9 +991,7 @@ export class Player {
     private updateAntennaPulse(dt: number): void {
         this.antennaPulseTimeout = Math.max(0, this.antennaPulseTimeout - dt);
         const active =
-            this.antennaPulseInterval > 0
-                ? Math.min(1, this.antennaPulseTimeout / ANTENNA_PULSE_FADE_SECONDS)
-                : 0;
+            this.antennaPulseInterval > 0 ? Math.min(1, this.antennaPulseTimeout / ANTENNA_PULSE_FADE_SECONDS) : 0;
         if (active <= 0) {
             this.antennaPulseInterval = 0;
             this.antennaPulseCloseness = 0;
@@ -1052,8 +1019,7 @@ export class Player {
         this.antennaGlowSprite.scale.setScalar(ANTENNA_IDLE_HALO_SCALE + 0.16 * pulse);
 
         const ringBrightness =
-            ANTENNA_RING_MIN_BRIGHTNESS +
-            (1 - ANTENNA_RING_MIN_BRIGHTNESS) * this.antennaPulseCloseness;
+            ANTENNA_RING_MIN_BRIGHTNESS + (1 - ANTENNA_RING_MIN_BRIGHTNESS) * this.antennaPulseCloseness;
         const ringProgress = cycle;
         if (ringProgress >= 1) {
             this.antennaRing.visible = false;
@@ -1064,9 +1030,7 @@ export class Player {
         // The texture's inner edge is what the eye reads as the circle, so keep that edge on the
         // antenna tip at the start of the pulse and ease it outward from there.
         const ringEase = 1 - (1 - ringProgress) * (1 - ringProgress);
-        const innerRadius =
-            ANTENNA_TIP_RADIUS +
-            (ANTENNA_RING_MAX_INNER_RADIUS - ANTENNA_TIP_RADIUS) * ringEase;
+        const innerRadius = ANTENNA_TIP_RADIUS + (ANTENNA_RING_MAX_INNER_RADIUS - ANTENNA_TIP_RADIUS) * ringEase;
         this.antennaRing.visible = true;
         this.antennaRing.scale.setScalar(innerRadius / GLOW_RING_TEXTURE_INNER_RADIUS);
         this.antennaRingMaterial.opacity =
@@ -1097,8 +1061,7 @@ export class Player {
 
         const growth = Math.min(1, this.wrenchChargeElapsed / WRENCH_CHARGE_SECONDS);
         this.wrenchBoltMesh.scale.setScalar(this.wrenchBoltSize * growth);
-        this.wrenchBoltMaterial.opacity =
-            growth * (0.8 + Math.random() * 0.2) * this.opacity;
+        this.wrenchBoltMaterial.opacity = growth * (0.8 + Math.random() * 0.2) * this.opacity;
     }
 }
 
@@ -1118,52 +1081,34 @@ function buildWrenchBoltGeometry(): BufferGeometry {
     });
 }
 
-// Eased 0-to-1 curve shared by the swing arcs.
-function easeInOut(progress: number): number {
-    const p = Math.min(1, Math.max(0, progress));
-    return p * p * (3 - 2 * p);
-}
-
 // One full backward circle of the wrench arm around its shoulder, eased in and out.
 export function wrenchCircleAngle(progress: number): number {
-    return Math.PI * 2 * easeInOut(progress);
+    return Math.PI * 2 * smoothstep(0, 1, progress);
 }
 
 // Body turn for the charged strike: the robot starts turning immediately and completes two full
 // turns by the end of the swing.
 export function chargedWrenchSpinAngle(progress: number): number {
-    return WRENCH_CHARGED_TURN * easeInOut(progress);
+    return WRENCH_CHARGED_TURN * smoothstep(0, 1, progress);
 }
 
 // Arm angle for the charged strike: raise the wrench from rest to straight forward during the
 // wind-up, hold it through the turn, then lower it over the final 30°.
 export function chargedWrenchArmAngle(progress: number): number {
-    const p = Math.min(1, Math.max(0, progress));
+    const p = clamp(progress, 0, 1);
     if (p < WRENCH_CHARGED_WINDUP_PORTION) {
-        return -WRENCH_CHARGED_LIFT * easeInOut(p / WRENCH_CHARGED_WINDUP_PORTION);
+        return -WRENCH_CHARGED_LIFT * smoothstep(0, 1, p / WRENCH_CHARGED_WINDUP_PORTION);
     }
     const spin = chargedWrenchSpinAngle(p);
     if (spin <= WRENCH_CHARGED_LOWER_START) {
         return -WRENCH_CHARGED_LIFT;
     }
-    const drop =
-        (spin - WRENCH_CHARGED_LOWER_START) /
-        (WRENCH_CHARGED_TURN - WRENCH_CHARGED_LOWER_START);
+    const drop = (spin - WRENCH_CHARGED_LOWER_START) / (WRENCH_CHARGED_TURN - WRENCH_CHARGED_LOWER_START);
     return -WRENCH_CHARGED_LIFT * (1 - drop);
 }
 
 // 0 below the threshold, then rises linearly to 1 as the robot approaches full boosted speed.
 export function thrusterGlowStrength(horizontalSpeed: number): number {
     const span = THRUSTER_GLOW_FULL_SPEED - THRUSTER_GLOW_SPEED;
-    return Math.min(1, Math.max(0, (horizontalSpeed - THRUSTER_GLOW_SPEED) / span));
-}
-
-function dampAngle(current: number, target: number, lambda: number, dt: number): number {
-    const twoPi = Math.PI * 2;
-    let difference = (target - current + Math.PI) % twoPi;
-    if (difference < 0) {
-        difference += twoPi;
-    }
-    difference -= Math.PI;
-    return current + difference * (1 - Math.exp(-lambda * dt));
+    return clamp((horizontalSpeed - THRUSTER_GLOW_SPEED) / span, 0, 1);
 }

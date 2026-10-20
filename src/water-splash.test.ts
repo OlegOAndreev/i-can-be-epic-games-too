@@ -85,11 +85,7 @@ describe('water splash', () => {
     it('spawns a tiny near-circle at each point along the double-jump arc', () => {
         const scene = new Scene();
         const splash = new WaterSplash(scene);
-        const positions = [
-            new Vector3(2, 7.5, -3),
-            new Vector3(2.35, 8.05, -3.25),
-            new Vector3(2.7, 8.45, -3.5),
-        ];
+        const positions = [new Vector3(2, 7.5, -3), new Vector3(2.35, 8.05, -3.25), new Vector3(2.7, 8.45, -3.5)];
 
         for (const position of positions) {
             splash.spawnDoubleJumpRing(position);

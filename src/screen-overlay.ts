@@ -1,5 +1,6 @@
-import { Color, Mesh, OrthographicCamera, PlaneGeometry, Scene, ShaderMaterial, type WebGLRenderer } from 'three';
+import { Color, type WebGLRenderer } from 'three';
 
+import { FullscreenPass } from './fullscreen-pass';
 import { clamp, lerp } from './math-utils';
 
 export type ScreenFadeEasing = 'linear' | 'in' | 'out';
@@ -9,11 +10,7 @@ export type ScreenFadeEasing = 'linear' | 'in' | 'out';
 // the render loop instead of CSS so they pause with the game, survive slow frames, and appear in
 // screenshots.
 export class ScreenOverlay {
-    private readonly renderer: WebGLRenderer;
-    private readonly scene = new Scene();
-    private readonly camera = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    private readonly geometry = new PlaneGeometry(2, 2);
-    private readonly material: ShaderMaterial;
+    private readonly pass: FullscreenPass;
     private current = 0;
     private start = 0;
     private target = 0;
@@ -22,18 +19,9 @@ export class ScreenOverlay {
     private easing: ScreenFadeEasing = 'linear';
 
     constructor(renderer: WebGLRenderer, color: number) {
-        this.renderer = renderer;
-        this.material = new ShaderMaterial({
-            uniforms: {
-                uColor: { value: new Color(color) },
-                uOpacity: { value: 0 },
-            },
-            vertexShader: /* glsl */ `
-                void main() {
-                    gl_Position = vec4(position.xy, 0.0, 1.0);
-                }
-            `,
-            fragmentShader: /* glsl */ `
+        this.pass = new FullscreenPass(
+            renderer,
+            /* glsl */ `
                 uniform vec3 uColor;
                 uniform float uOpacity;
 
@@ -41,14 +29,11 @@ export class ScreenOverlay {
                     gl_FragColor = vec4(uColor, uOpacity);
                 }
             `,
-            transparent: true,
-            depthTest: false,
-            depthWrite: false,
-        });
-
-        const quad = new Mesh(this.geometry, this.material);
-        quad.frustumCulled = false;
-        this.scene.add(quad);
+            {
+                uColor: { value: new Color(color) },
+                uOpacity: { value: 0 },
+            },
+        );
     }
 
     get opacity(): number {
@@ -60,7 +45,7 @@ export class ScreenOverlay {
         this.start = this.current;
         this.target = this.current;
         this.remaining = 0;
-        this.material.uniforms.uOpacity.value = this.current;
+        this.pass.material.uniforms.uOpacity.value = this.current;
     }
 
     fadeTo(opacity: number, seconds: number, easing: ScreenFadeEasing = 'linear'): void {
@@ -88,22 +73,17 @@ export class ScreenOverlay {
                   ? 1 - (1 - progress) * (1 - progress)
                   : progress;
         this.current = lerp(this.start, this.target, eased);
-        this.material.uniforms.uOpacity.value = this.current;
+        this.pass.material.uniforms.uOpacity.value = this.current;
     }
 
-    // Draws over the already-composited frame, so the overlay must not clear the canvas.
     render(): void {
         if (this.current < 0.001) {
             return;
         }
-        const autoClear = this.renderer.autoClear;
-        this.renderer.autoClear = false;
-        this.renderer.render(this.scene, this.camera);
-        this.renderer.autoClear = autoClear;
+        this.pass.render();
     }
 
     dispose(): void {
-        this.geometry.dispose();
-        this.material.dispose();
+        this.pass.dispose();
     }
 }

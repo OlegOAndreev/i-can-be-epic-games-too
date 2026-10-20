@@ -1,12 +1,4 @@
-import {
-    BufferGeometry,
-    CatmullRomCurve3,
-    Mesh,
-    MeshBasicMaterial,
-    Scene,
-    TubeGeometry,
-    Vector3,
-} from 'three';
+import { BufferGeometry, CatmullRomCurve3, Mesh, MeshBasicMaterial, Scene, TubeGeometry, Vector3 } from 'three';
 
 // A regular hit leaves a two-thirds-turn wisp from the gap between the jaws.
 export const WRENCH_WIND_TRAIL_ARC = (Math.PI * 2) / 3;
@@ -109,13 +101,7 @@ export class WrenchWindTrail {
             0.5,
         );
         const segments = Math.max(8, (this.points.length - 1) * 4);
-        const geometry = new TubeGeometry(
-            curve,
-            segments,
-            TRAIL_RADIUS,
-            TRAIL_RADIAL_SEGMENTS,
-            false,
-        );
+        const geometry = new TubeGeometry(curve, segments, TRAIL_RADIUS, TRAIL_RADIAL_SEGMENTS, false);
 
         // Shrink the tube toward its tail so the wisp thins into the air instead of ending in a
         // blunt cut, matching the tapered look of the wind streaks.

@@ -17,6 +17,7 @@ import { getRadialGlowTexture } from './glow';
 import { lerp } from './math-utils';
 import { ENEMY_EYE_COLOR } from './npc-robots';
 import type { RobotKind } from './npc-robots';
+import { applySpin, bounceParticle, integrateParticle } from './particle-motion';
 import type { Terrain } from './terrain';
 
 // Enough for several overlapping death bursts across the 15-second debris lifetime.
@@ -232,19 +233,13 @@ export class EnemyDebris {
             chunk.mesh.geometry = geometry;
             chunk.mesh.material = glow
                 ? this.glowMaterial
-                : this.materialFor(
-                      profile.palette[Math.floor(this.rng() * profile.palette.length)],
-                  );
+                : this.materialFor(profile.palette[Math.floor(this.rng() * profile.palette.length)]);
             chunk.mesh.position.set(
                 position.x + Math.cos(angle) * spawnDistance,
                 lerp(minimumY, maximumY, this.rng()),
                 position.z + Math.sin(angle) * spawnDistance,
             );
-            chunk.mesh.rotation.set(
-                this.rng() * TAU,
-                this.rng() * TAU,
-                this.rng() * TAU,
-            );
+            chunk.mesh.rotation.set(this.rng() * TAU, this.rng() * TAU, this.rng() * TAU);
             chunk.mesh.scale.copy(scale);
             chunk.mesh.visible = true;
 
@@ -258,11 +253,7 @@ export class EnemyDebris {
                 lerp(profile.upwardSpeed[0], profile.upwardSpeed[1], this.rng()),
                 Math.sin(angle) * radialSpeed,
             );
-            chunk.spin.set(
-                (this.rng() - 0.5) * 13,
-                (this.rng() - 0.5) * 13,
-                (this.rng() - 0.5) * 13,
-            );
+            chunk.spin.set((this.rng() - 0.5) * 13, (this.rng() - 0.5) * 13, (this.rng() - 0.5) * 13);
             chunk.gravity = profile.gravity;
             chunk.restitution = profile.restitution;
             chunk.lifetime = DEBRIS_LIFETIME_SECONDS;
@@ -290,14 +281,11 @@ export class EnemyDebris {
 
             if (!chunk.resting) {
                 const previousY = chunk.mesh.position.y;
-                chunk.velocity.y -= chunk.gravity * dt;
-                const drag = Math.exp(-HORIZONTAL_DRAG * dt);
-                chunk.velocity.x *= drag;
-                chunk.velocity.z *= drag;
-                chunk.mesh.position.addScaledVector(chunk.velocity, dt);
-                chunk.mesh.rotation.x += chunk.spin.x * dt;
-                chunk.mesh.rotation.y += chunk.spin.y * dt;
-                chunk.mesh.rotation.z += chunk.spin.z * dt;
+                integrateParticle(chunk.mesh.position, chunk.velocity, dt, {
+                    gravity: chunk.gravity,
+                    horizontalDrag: HORIZONTAL_DRAG,
+                });
+                applySpin(chunk.mesh, chunk.spin, dt);
 
                 const surface = this.terrain.walkSurfaceAt(
                     chunk.mesh.position.x,
@@ -305,13 +293,19 @@ export class EnemyDebris {
                     previousY - chunk.halfHeight + 0.05,
                 );
                 if (chunk.velocity.y < 0 && chunk.mesh.position.y - chunk.halfHeight <= surface) {
-                    chunk.mesh.position.y = surface + chunk.halfHeight;
+                    const surfaceY = surface + chunk.halfHeight;
+                    chunk.mesh.position.y = surfaceY;
                     const impactSpeed = -chunk.velocity.y;
                     if (chunk.bounces < MAX_BOUNCES && impactSpeed > 1.5) {
-                        chunk.velocity.y = impactSpeed * chunk.restitution;
-                        chunk.velocity.x *= BOUNCE_FRICTION;
-                        chunk.velocity.z *= BOUNCE_FRICTION;
-                        chunk.spin.multiplyScalar(0.6);
+                        bounceParticle(
+                            chunk.mesh.position,
+                            chunk.velocity,
+                            chunk.spin,
+                            surfaceY,
+                            chunk.restitution,
+                            BOUNCE_FRICTION,
+                            { spinDamping: 0.6 },
+                        );
                         chunk.bounces++;
                     } else {
                         chunk.velocity.set(0, 0, 0);
@@ -396,18 +390,12 @@ export class EnemyDebris {
                 position.y + height * (0.4 + this.rng() * 0.3),
                 position.z + Math.sin(angle) * radius,
             );
-            burst.velocity.set(
-                Math.cos(angle) * speed,
-                0.4 + this.rng() * 1.4,
-                Math.sin(angle) * speed,
-            );
+            burst.velocity.set(Math.cos(angle) * speed, 0.4 + this.rng() * 1.4, Math.sin(angle) * speed);
             burst.age = 0;
             burst.lifetime = BURST_FADE_SECONDS * (0.65 + this.rng() * 0.35);
             burst.startScale = scale;
             burst.active = true;
-            burst.material.color.setHex(
-                profile.burstColors[Math.floor(this.rng() * profile.burstColors.length)],
-            );
+            burst.material.color.setHex(profile.burstColors[Math.floor(this.rng() * profile.burstColors.length)]);
             burst.material.opacity = 0.9;
             burst.sprite.scale.setScalar(scale);
             burst.sprite.visible = true;
@@ -437,11 +425,7 @@ export class EnemyDebris {
             );
         }
         if (geometry === this.cylinderGeometry) {
-            return new Vector3(
-                size * 0.75,
-                size * (1.3 + this.rng() * 0.8),
-                size * 0.75,
-            );
+            return new Vector3(size * 0.75, size * (1.3 + this.rng() * 0.8), size * 0.75);
         }
         if (geometry === this.shardGeometry) {
             return new Vector3(size, size * (0.8 + this.rng() * 0.8), size);

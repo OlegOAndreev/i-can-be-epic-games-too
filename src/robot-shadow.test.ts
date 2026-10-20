@@ -1,19 +1,8 @@
-import {
-    Group,
-    Mesh,
-    MeshStandardMaterial,
-    Scene,
-    SphereGeometry,
-    WebGLRenderer,
-} from 'three';
+import { Group, Mesh, MeshStandardMaterial, Scene, SphereGeometry, WebGLRenderer } from 'three';
 import { SunLight } from 'three/addons/lights/SunLight.js';
 import { describe, expect, it } from 'vitest';
 
-import {
-    applyRobotWorldOnlyShadows,
-    createRobotShadowSun,
-    sunShadowIndex,
-} from './robot-shadow';
+import { applyRobotWorldOnlyShadows, createRobotShadowSun, sunShadowIndex } from './robot-shadow';
 import { CascadedSunLightShadow, SHADOW_PRESETS } from './sun-light-shadow';
 
 const PRESET = SHADOW_PRESETS.high;
@@ -81,27 +70,11 @@ describe('robot shadows', () => {
         const scene = new Scene();
         const geometry = new SphereGeometry();
 
-        mesh.onBeforeShadow(
-            renderer,
-            scene,
-            helperCamera,
-            helperCamera,
-            geometry,
-            depthMaterial,
-            null as never,
-        );
+        mesh.onBeforeShadow(renderer, scene, helperCamera, helperCamera, geometry, depthMaterial, null as never);
         expect(depthMaterial.colorWrite).toBe(false);
         expect(depthMaterial.depthWrite).toBe(false);
 
-        mesh.onAfterShadow(
-            renderer,
-            scene,
-            helperCamera,
-            helperCamera,
-            geometry,
-            depthMaterial,
-            null as never,
-        );
+        mesh.onAfterShadow(renderer, scene, helperCamera, helperCamera, geometry, depthMaterial, null as never);
         expect(depthMaterial.colorWrite).toBe(true);
         expect(depthMaterial.depthWrite).toBe(true);
     });

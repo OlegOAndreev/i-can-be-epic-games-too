@@ -1,5 +1,4 @@
 import {
-    AdditiveBlending,
     Box3,
     BoxGeometry,
     CanvasTexture,
@@ -17,8 +16,9 @@ import {
 
 import type { GameAudio, RobotBeepHandle } from './audio';
 import type { Difficulty } from './enemies';
-import { getRadialGlowTexture } from './glow';
-import { disposeGeometry, mergeMeshesByMaterial, registerSharedGeometry } from './mesh-optimize';
+import { getRadialGlowTexture, glowSpriteMaterial } from './glow';
+import { damp, dampAngle, wrapAngle } from './math-utils';
+import { disposeSceneGraph, mergeMeshesByMaterial, registerSharedGeometry } from './mesh-optimize';
 import { mulberry32 } from './noise';
 import { PLAYER_HEIGHT } from './player';
 import type { CylinderCollider, Terrain } from './terrain';
@@ -44,13 +44,7 @@ export interface DialoguePresenter {
 
 export interface RobotModel {
     visual: Group;
-    update: (
-        dt: number,
-        elapsed: number,
-        targetYaw: number,
-        targetPitch?: number,
-        waving?: boolean,
-    ) => void;
+    update: (dt: number, elapsed: number, targetYaw: number, targetPitch?: number, waving?: boolean) => void;
 }
 
 export interface RobotDialogue {
@@ -65,13 +59,7 @@ export const ENEMY_EYE_COLOR = 0xff2a1a;
 interface RobotActor {
     id: string;
     group: Group;
-    update: (
-        dt: number,
-        elapsed: number,
-        targetYaw: number,
-        targetPitch?: number,
-        waving?: boolean,
-    ) => void;
+    update: (dt: number, elapsed: number, targetYaw: number, targetPitch?: number, waving?: boolean) => void;
     eyeHeight: number;
     voicePitch: number;
     speechDurationScale: number;
@@ -127,9 +115,7 @@ export function parseRobotDialogue(data: unknown): RobotDialogue {
             ? lines.filter(isDialogueLine).map((line) => ({
                   speaker: line.speaker,
                   text: line.text,
-                  ...(Array.isArray(line.tags)
-                      ? { tags: line.tags.filter((tag) => typeof tag === 'string') }
-                      : {}),
+                  ...(Array.isArray(line.tags) ? { tags: line.tags.filter((tag) => typeof tag === 'string') } : {}),
                   ...(line.givesWrench === true ? { givesWrench: true } : {}),
               }))
             : [];
@@ -212,8 +198,7 @@ export class NpcRobots {
     // Keeps the story in step with the mode. Peaceful skips lines that describe hostile robots,
     // including the one already on screen when the setting changes.
     setDifficulty(difficulty: Difficulty): void {
-        this.excludedTags =
-            difficulty === 'peaceful' ? new Set(PEACEFUL_EXCLUDED_TAGS) : new Set();
+        this.excludedTags = difficulty === 'peaceful' ? new Set(PEACEFUL_EXCLUDED_TAGS) : new Set();
 
         if (this.activeLine && this.isExcluded(this.activeLine)) {
             this.presenter?.hideLine();
@@ -255,10 +240,7 @@ export class NpcRobots {
     // can sit behind them while they face the repaired ship and the sky.
     faceTowards(x: number, z: number): void {
         for (const actor of this.actors) {
-            actor.group.rotation.y = Math.atan2(
-                x - actor.group.position.x,
-                z - actor.group.position.z,
-            );
+            actor.group.rotation.y = Math.atan2(x - actor.group.position.x, z - actor.group.position.z);
         }
     }
 
@@ -283,10 +265,7 @@ export class NpcRobots {
             (nearest, actor) =>
                 Math.min(
                     nearest,
-                    Math.hypot(
-                        playerPosition.x - actor.group.position.x,
-                        playerPosition.z - actor.group.position.z,
-                    ),
+                    Math.hypot(playerPosition.x - actor.group.position.x, playerPosition.z - actor.group.position.z),
                 ),
             Infinity,
         );
@@ -299,10 +278,7 @@ export class NpcRobots {
         }
 
         if (!this.started) {
-            const distance = Math.hypot(
-                playerPosition.x - this.origin.x,
-                playerPosition.z - this.origin.z,
-            );
+            const distance = Math.hypot(playerPosition.x - this.origin.x, playerPosition.z - this.origin.z);
             if (!this.audio.started || distance > ACTIVATION_RADIUS) {
                 return;
             }
@@ -341,30 +317,14 @@ export class NpcRobots {
     dispose(): void {
         this.presenter?.hideLine();
         this.stopSpeechBeeps();
-        this.group.removeFromParent();
+        disposeSceneGraph(this.group);
         this.colliders.length = 0;
-        this.group.traverse((child) => {
-            if (child instanceof Mesh) {
-                disposeGeometry(child.geometry);
-            }
-            if (child instanceof Mesh || child instanceof Sprite) {
-                const materials = Array.isArray(child.material) ? child.material : [child.material];
-                for (const material of materials) {
-                    if (material instanceof SpriteMaterial && material.map instanceof CanvasTexture) {
-                        material.map.dispose();
-                    }
-                    material.dispose();
-                }
-            }
-        });
     }
 
     private isExcluded(line: DialogueLine): boolean {
         return (
             line.tags?.some((tag) =>
-                tag.startsWith('!')
-                    ? !this.excludedTags.has(tag.slice(1))
-                    : this.excludedTags.has(tag),
+                tag.startsWith('!') ? !this.excludedTags.has(tag.slice(1)) : this.excludedTags.has(tag),
             ) === true
         );
     }
@@ -404,8 +364,7 @@ export class NpcRobots {
     private buildFormation(terrain: Terrain): void {
         // The player owns the lowest corner; the caretakers fill the other three.
         const corners = terrain.startPoints.filter(
-            (point) =>
-                Math.hypot(point.x - terrain.spawn.x, point.z - terrain.spawn.z) > 0.01,
+            (point) => Math.hypot(point.x - terrain.spawn.x, point.z - terrain.spawn.z) > 0.01,
         );
 
         for (let index = 0; index < FORMATION.length; index++) {
@@ -507,7 +466,7 @@ export class SpeechLabel {
     }
 
     update(dt: number): void {
-        this.opacity += (this.targetOpacity - this.opacity) * (1 - Math.exp(-14 * dt));
+        this.opacity = damp(this.opacity, this.targetOpacity, 14, dt);
         this.material.opacity = this.opacity;
         if (this.targetOpacity === 0 && this.opacity < 0.01) {
             this.sprite.visible = false;
@@ -680,9 +639,7 @@ function buildMatronModel(hostile: boolean, mergeStatic = false): RobotModel {
             body.position.y = Math.sin(elapsed * 1.05) * 0.015;
             body.rotation.z = Math.sin(elapsed * 0.62) * 0.008;
             trackHead(head, targetYaw, dt, 1.25, 5.5);
-            head.rotation.x =
-                -Math.max(-1.3, Math.min(1.3, targetPitch)) * 0.7 +
-                Math.sin(elapsed * 0.52 + 1.2) * 0.02;
+            head.rotation.x = -Math.max(-1.3, Math.min(1.3, targetPitch)) * 0.7 + Math.sin(elapsed * 0.52 + 1.2) * 0.02;
             if (waving) {
                 arms[1].rotation.x = -0.18 + Math.sin(elapsed * 9) * 0.07;
                 arms[1].rotation.z = 2.05 + Math.sin(elapsed * 7.5) * 0.2;
@@ -713,17 +670,7 @@ function buildTrackedModel(hostile: boolean, mergeStatic = false): RobotModel {
         addBox(visual, 0.36, 0.42, 1.18, rubber, side * 0.42, 0.28, 0);
         addBox(visual, 0.38, 0.06, 1.02, shellDark, side * 0.42, 0.5, 0);
         for (const z of [-0.34, 0, 0.34]) {
-            const wheel = addCylinder(
-                visual,
-                0.14,
-                0.14,
-                0.06,
-                10,
-                metal,
-                side * 0.62,
-                0.27,
-                z,
-            );
+            const wheel = addCylinder(visual, 0.14, 0.14, 0.06, 10, metal, side * 0.62, 0.27, z);
             wheel.rotation.z = Math.PI / 2;
             const hub = addCylinder(visual, 0.05, 0.05, 0.07, 8, accent, side * 0.66, 0.27, z);
             hub.rotation.z = Math.PI / 2;
@@ -772,9 +719,7 @@ function buildTrackedModel(hostile: boolean, mergeStatic = false): RobotModel {
         update(dt, elapsed, targetYaw, targetPitch = 0, waving = false) {
             hull.position.y = Math.sin(elapsed * 1.7) * 0.012;
             trackHead(head, targetYaw, dt, 1.15, 6.5);
-            head.rotation.x =
-                -Math.max(-1.3, Math.min(1.3, targetPitch)) * 0.7 +
-                Math.sin(elapsed * 0.72 + 0.8) * 0.02;
+            head.rotation.x = -Math.max(-1.3, Math.min(1.3, targetPitch)) * 0.7 + Math.sin(elapsed * 0.72 + 0.8) * 0.02;
             if (waving) {
                 toolArm.rotation.x = -1.9 + Math.sin(elapsed * 7) * 0.2;
                 toolArm.rotation.z = Math.sin(elapsed * 9) * 0.18;
@@ -864,13 +809,7 @@ function buildProbeModel(hostile: boolean, mergeStatic = false): RobotModel {
 
         addSegment(arm, new Vector3(0, 0, 0), new Vector3(side * 0.16, -0.3, 0.2), 0.025, metal);
         addSphere(arm, 0.04, panel, side * 0.16, -0.3, 0.2);
-        addSegment(
-            arm,
-            new Vector3(side * 0.16, -0.3, 0.2),
-            new Vector3(side * 0.12, -0.55, 0.32),
-            0.022,
-            dark,
-        );
+        addSegment(arm, new Vector3(side * 0.16, -0.3, 0.2), new Vector3(side * 0.12, -0.55, 0.32), 0.022, dark);
         addBox(arm, 0.08, 0.05, 0.12, panel, side * 0.12, -0.57, 0.34);
     }
 
@@ -889,19 +828,14 @@ function buildProbeModel(hostile: boolean, mergeStatic = false): RobotModel {
         update(dt, elapsed, targetYaw, targetPitch = 0, waving = false) {
             visual.position.y = Math.sin(elapsed * 1.25) * 0.075;
             trackHead(head, targetYaw, dt, Math.PI, 4.5);
-            head.rotation.x =
-                -Math.max(-1.3, Math.min(1.3, targetPitch)) * 0.7 +
-                Math.sin(elapsed * 0.9 + 0.4) * 0.03;
+            head.rotation.x = -Math.max(-1.3, Math.min(1.3, targetPitch)) * 0.7 + Math.sin(elapsed * 0.9 + 0.4) * 0.03;
             for (let i = 0; i < legs.length; i++) {
                 legs[i].rotation.z = Math.sin(elapsed * 1.1 + i * 0.9) * 0.035;
             }
             for (const manipulator of manipulators) {
-                manipulator.group.rotation.z = waving
-                    ? manipulator.side * (1.15 + Math.sin(elapsed * 7) * 0.18)
-                    : 0;
+                manipulator.group.rotation.z = waving ? manipulator.side * (1.15 + Math.sin(elapsed * 7) * 0.18) : 0;
             }
-            eye.emissiveIntensity =
-                (hostile ? 3.6 : 2.2) + Math.sin(elapsed * 3.1) * (hostile ? 0.9 : 0.5);
+            eye.emissiveIntensity = (hostile ? 3.6 : 2.2) + Math.sin(elapsed * 3.1) * (hostile ? 0.9 : 0.5);
         },
     };
 }
@@ -932,16 +866,9 @@ export function prepareMeshes(root: Group): void {
 
     const size = bounds.getSize(new Vector3());
     const center = bounds.getCenter(new Vector3());
-    const proxy = new Mesh(
-        UNIT_BOX_GEOMETRY,
-        SHADOW_PROXY_MATERIAL,
-    );
+    const proxy = new Mesh(UNIT_BOX_GEOMETRY, SHADOW_PROXY_MATERIAL);
     proxy.name = 'shadow-proxy';
-    proxy.scale.set(
-        Math.max(0.05, size.x),
-        Math.max(0.05, size.y),
-        Math.max(0.05, size.z),
-    );
+    proxy.scale.set(Math.max(0.05, size.x), Math.max(0.05, size.y), Math.max(0.05, size.z));
     proxy.position.copy(root.worldToLocal(center));
     proxy.castShadow = true;
     proxy.receiveShadow = false;
@@ -1006,15 +933,10 @@ function addEyeGlow(
     height: number,
     color: number,
 ): void {
-    const material = new SpriteMaterial({
+    const material = glowSpriteMaterial({
         map: getRadialGlowTexture(),
         color,
-        transparent: true,
         opacity: 0.85,
-        blending: AdditiveBlending,
-        depthWrite: false,
-        fog: false,
-        toneMapped: false,
     });
     const sprite = new Sprite(material);
     sprite.position.set(x, y, z);
@@ -1033,10 +955,7 @@ export function addCylinder(
     y: number,
     z: number,
 ): Mesh {
-    const mesh = new Mesh(
-        new CylinderGeometry(radiusTop, radiusBottom, height, segments),
-        material,
-    );
+    const mesh = new Mesh(new CylinderGeometry(radiusTop, radiusBottom, height, segments), material);
     mesh.position.set(x, y, z);
     parent.add(mesh);
     return mesh;
@@ -1051,10 +970,7 @@ export function addSegment(
     material: MeshStandardMaterial,
 ): Mesh {
     const direction = new Vector3().subVectors(to, from);
-    const mesh = new Mesh(
-        new CylinderGeometry(radius, radius, direction.length(), 6),
-        material,
-    );
+    const mesh = new Mesh(new CylinderGeometry(radius, radius, direction.length(), 6), material);
     mesh.position.addVectors(from, to).multiplyScalar(0.5);
     mesh.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), direction.normalize());
     parent.add(mesh);
@@ -1069,42 +985,12 @@ function modelHeight(visual: Group): number {
 
 // Turns a head toward the player's bearing, clamped for the humanoid necks. The probe allows a full
 // turn because its sensor dome is a turret.
-function trackHead(
-    head: Group,
-    targetYaw: number,
-    dt: number,
-    limit: number,
-    rate: number,
-): void {
-    const yaw = Math.max(-limit, Math.min(limit, normalizeAngle(targetYaw)));
+function trackHead(head: Group, targetYaw: number, dt: number, limit: number, rate: number): void {
+    const yaw = Math.max(-limit, Math.min(limit, wrapAngle(targetYaw)));
     head.rotation.y = dampAngle(head.rotation.y, yaw, rate, dt);
 }
 
-function normalizeAngle(angle: number): number {
-    const twoPi = Math.PI * 2;
-    let wrapped = (angle + Math.PI) % twoPi;
-    if (wrapped < 0) {
-        wrapped += twoPi;
-    }
-    return wrapped - Math.PI;
-}
-
-function dampAngle(current: number, target: number, lambda: number, dt: number): number {
-    const twoPi = Math.PI * 2;
-    let difference = (target - current + Math.PI) % twoPi;
-    if (difference < 0) {
-        difference += twoPi;
-    }
-    difference -= Math.PI;
-    return current + difference * (1 - Math.exp(-lambda * dt));
-}
-
-function wrapText(
-    context: CanvasRenderingContext2D,
-    text: string,
-    maxWidth: number,
-    maxLines: number,
-): string[] {
+function wrapText(context: CanvasRenderingContext2D, text: string, maxWidth: number, maxLines: number): string[] {
     const words = text.trim().split(/\s+/);
     const lines: string[] = [];
     let line = '';
@@ -1148,9 +1034,7 @@ const LATIN_VOWEL_GROUP = /[aeiouy]+/gi;
 const CYRILLIC_VOWEL = /[аеёиоуыэюя]/gi;
 
 export function countSyllables(text: string): number {
-    const vowels =
-        (text.match(LATIN_VOWEL_GROUP)?.length ?? 0) +
-        (text.match(CYRILLIC_VOWEL)?.length ?? 0);
+    const vowels = (text.match(LATIN_VOWEL_GROUP)?.length ?? 0) + (text.match(CYRILLIC_VOWEL)?.length ?? 0);
     if (vowels > 0) {
         return vowels;
     }

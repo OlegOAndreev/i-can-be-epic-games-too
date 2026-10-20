@@ -33,7 +33,9 @@
           <div id="loading-fill" class="loading-fill"></div>
         </div>
         <p class="loading-line">
-          <span id="loading-status" role="status" aria-live="polite" aria-atomic="true" data-i18n="overlay.loading">Loading world…</span>
+          <span id="loading-status" role="status" aria-live="polite" aria-atomic="true" data-i18n="overlay.loading"
+            >Loading world…</span
+          >
           <span id="loading-percent" aria-hidden="true">0%</span>
         </p>
       </div>
@@ -49,12 +51,24 @@
       <span class="energy-label" data-i18n="hud.energy">energy collected</span>
     </div>
 
-    <div id="parts-meter" class="is-hidden" role="status" aria-label="Spaceship parts found" data-i18n-aria-label="hud.partsLabel">
+    <div
+      id="parts-meter"
+      class="is-hidden"
+      role="status"
+      aria-label="Spaceship parts found"
+      data-i18n-aria-label="hud.partsLabel"
+    >
       <span id="parts-value">0 / 5</span>
       <span class="parts-label" data-i18n="hud.parts">spaceship parts found</span>
     </div>
 
-    <div id="minerals-meter" class="is-hidden" role="status" aria-label="Fuel minerals" data-i18n-aria-label="hud.mineralsLabel">
+    <div
+      id="minerals-meter"
+      class="is-hidden"
+      role="status"
+      aria-label="Fuel minerals"
+      data-i18n-aria-label="hud.mineralsLabel"
+    >
       <span id="minerals-value">0 / 6</span>
       <span class="minerals-label" data-i18n="hud.minerals">fuel minerals</span>
     </div>
@@ -72,16 +86,23 @@
         </div>
         <canvas id="map-canvas"></canvas>
         <ul class="map-legend">
-          <li><span class="map-swatch map-swatch-part"></span><span data-i18n="map.legendPart">possible part location</span></li>
-          <li><span class="map-swatch map-swatch-structure"></span><span data-i18n="map.legendStructure">megastructure</span></li>
+          <li>
+            <span class="map-swatch map-swatch-part"></span
+            ><span data-i18n="map.legendPart">possible part location</span>
+          </li>
+          <li>
+            <span class="map-swatch map-swatch-structure"></span
+            ><span data-i18n="map.legendStructure">megastructure</span>
+          </li>
           <li><span class="map-swatch map-swatch-player"></span><span data-i18n="map.legendPlayer">you</span></li>
         </ul>
       </div>
     </div>
 
-
     <div id="flight-hud" class="is-hidden" role="status">
-      <p id="flight-instruction" data-i18n="flight.instruction">Pass through all rings to get on hyperdrive trajectory</p>
+      <p id="flight-instruction" data-i18n="flight.instruction">
+        Pass through all rings to get on hyperdrive trajectory
+      </p>
       <p class="flight-progress">
         <span data-i18n="flight.rings">rings</span>
         <span id="ring-progress">0 / 5</span>
@@ -102,17 +123,47 @@
             <p class="tagline" data-i18n="overlay.tagline">A procedurally generated island, made for walking.</p>
 
             <ul class="controls">
-              <li><span class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span><span data-i18n="controls.run">Run</span></li>
-              <li><span class="keys"><kbd>Space</kbd></span><span data-i18n="controls.jump">Jump</span></li>
-              <li><span class="keys"><kbd>LMB</kbd><kbd>F</kbd></span><span data-i18n="controls.hitWrench">Swing wrench</span></li>
-              <li><span class="keys"><kbd>Shift</kbd><kbd>RMB</kbd></span><span data-i18n="controls.chargeWrench">Charged strike</span></li>
+              <li>
+                <span class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span
+                ><span data-i18n="controls.run">Run</span>
+              </li>
+              <li>
+                <span class="keys"><kbd>Space</kbd></span
+                ><span data-i18n="controls.jump">Jump</span>
+              </li>
+              <li>
+                <span class="keys"><kbd>LMB</kbd><kbd>F</kbd></span
+                ><span data-i18n="controls.hitWrench">Swing wrench</span>
+              </li>
+              <li>
+                <span class="keys"><kbd>Shift</kbd><kbd>RMB</kbd></span
+                ><span data-i18n="controls.chargeWrench">Charged strike</span>
+              </li>
 
-              <li><span class="keys"><kbd>V</kbd></span><span data-i18n="controls.person">1st / 3rd person</span></li>
-              <li><span class="keys"><kbd>F11</kbd></span><span data-i18n="controls.fullscreen">Fullscreen</span></li>
-              <li><span class="keys"><kbd>F12</kbd></span><span data-i18n="controls.screenshot">Screenshot</span></li>
-              <li><span class="keys"><kbd>M</kbd></span><span data-i18n="controls.toggleMusic">Toggle music</span></li>
-              <li><span class="keys"><kbd>Tab</kbd></span><span data-i18n="controls.map">Map</span></li>
-              <li><span class="keys"><kbd>Esc</kbd></span><span data-i18n="controls.pause">Pause / resume</span></li>
+              <li>
+                <span class="keys"><kbd>V</kbd></span
+                ><span data-i18n="controls.person">1st / 3rd person</span>
+              </li>
+              <li>
+                <span class="keys"><kbd>F11</kbd></span
+                ><span data-i18n="controls.fullscreen">Fullscreen</span>
+              </li>
+              <li>
+                <span class="keys"><kbd>F12</kbd></span
+                ><span data-i18n="controls.screenshot">Screenshot</span>
+              </li>
+              <li>
+                <span class="keys"><kbd>M</kbd></span
+                ><span data-i18n="controls.toggleMusic">Toggle music</span>
+              </li>
+              <li>
+                <span class="keys"><kbd>Tab</kbd></span
+                ><span data-i18n="controls.map">Map</span>
+              </li>
+              <li>
+                <span class="keys"><kbd>Esc</kbd></span
+                ><span data-i18n="controls.pause">Pause / resume</span>
+              </li>
             </ul>
 
             <div class="rules">
@@ -122,14 +173,18 @@
                 <li data-i18n="rules.doubleJump">Try double jumping</li>
                 <li data-i18n="rules.chargeWrench">Charge the wrench to deal more damage</li>
                 <li data-i18n="rules.emeraldMinerals">Break stones with an emerald sheen to gather fuel minerals</li>
-                <li data-i18n="rules.megastructureSwitch">Hit the switch on top of the megastructure to charge the energy</li>
+                <li data-i18n="rules.megastructureSwitch">
+                  Hit the switch on top of the megastructure to charge the energy
+                </li>
                 <li data-i18n="rules.spaceshipParts">Search the map for spaceship parts</li>
               </ul>
             </div>
 
             <div class="menu-actions">
               <button id="play-button" type="button" data-i18n="overlay.start" disabled>Continue</button>
-              <button id="new-world-button" class="menu-button" type="button" data-i18n="overlay.newWorld" disabled>New world</button>
+              <button id="new-world-button" class="menu-button" type="button" data-i18n="overlay.newWorld" disabled>
+                New world
+              </button>
             </div>
             <p id="overlay-status" class="status" data-i18n="overlay.status">Loading world…</p>
 

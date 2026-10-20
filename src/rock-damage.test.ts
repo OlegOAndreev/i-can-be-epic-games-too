@@ -1,24 +1,16 @@
 import { InstancedMesh, Matrix4, Mesh, MeshStandardMaterial, Quaternion, Sprite, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
-import { Terrain } from './terrain';
-
-function triangleCount(mesh: InstancedMesh): number {
-    const geometry = mesh.geometry;
-    const vertices = geometry.index ? geometry.index.count : geometry.attributes.position.count;
-    return vertices / 3;
-}
+import { testTerrain, triangleCount, visibleMeshes } from './test-helpers';
 
 describe('rock damage', () => {
     it('sprays sparks, dents the rock, and breaks it into rubble', () => {
-        const terrain = new Terrain(13579, { meshes: false });
+        const terrain = testTerrain(13579, { meshes: false });
         const normalBoulderCell = terrain.group.children.find(
-            (child): child is InstancedMesh =>
-                child instanceof InstancedMesh && child.name.startsWith('boulder-cell-'),
+            (child): child is InstancedMesh => child instanceof InstancedMesh && child.name.startsWith('boulder-cell-'),
         );
         expect(normalBoulderCell).toBeDefined();
         if (!normalBoulderCell) {
-            terrain.dispose();
             return;
         }
 
@@ -34,26 +26,18 @@ describe('rock damage', () => {
         );
         expect(rock).toBeDefined();
         if (!rock) {
-            terrain.dispose();
             return;
         }
 
-        const player = new Vector3(
-            rock.x + Math.max(2, rock.radius + 1),
-            rock.base + 0.5,
-            rock.z,
-        );
+        const player = new Vector3(rock.x + Math.max(2, rock.radius + 1), rock.base + 0.5, rock.z);
         const collidersBefore = terrain.colliders.length;
 
         const firstHit = terrain.wrenchStrike(player);
         expect(firstHit.length).toBeGreaterThan(0);
-        const sparks = terrain.group
-            .getObjectByName('rock-effects')
-            ?.children.filter(
-                (child) =>
-                    child instanceof Mesh && child.name === 'rock-spark' && child.visible,
-            );
-        expect(sparks?.length).toBeGreaterThan(0);
+        const sparks = visibleMeshes(terrain.group.getObjectByName('rock-effects')!).filter(
+            (child) => child.name === 'rock-spark',
+        );
+        expect(sparks.length).toBeGreaterThan(0);
 
         terrain.wrenchStrike(player);
         expect(terrain.group.getObjectByName('boulder-small-dent')).toBeUndefined();
@@ -86,33 +70,23 @@ describe('rock damage', () => {
         expect(terrain.group.getObjectByName('boulder-large-dent')).toBeUndefined();
         expect(terrain.colliders.length).toBeLessThan(collidersBefore);
 
-        const rubble = terrain.group
-            .getObjectByName('rock-effects')
-            ?.children.filter(
-                (child) =>
-                    child instanceof Mesh && child.name === 'rock-fragment' && child.visible,
-            );
-        expect(rubble?.length).toBeGreaterThan(0);
+        const rubble = visibleMeshes(terrain.group.getObjectByName('rock-effects')!).filter(
+            (child) => child.name === 'rock-fragment',
+        );
+        expect(rubble.length).toBeGreaterThan(0);
 
         // The broken pieces are transient rubble, not permanent decoration.
         terrain.update(1.1);
-        const remainingRubble = terrain.group
-            .getObjectByName('rock-effects')
-            ?.children.filter(
-                (child) =>
-                    child instanceof Mesh && child.name === 'rock-fragment' && child.visible,
-            );
-        expect(remainingRubble?.length ?? 0).toBe(0);
-
-        terrain.dispose();
+        const remainingRubble = visibleMeshes(terrain.group.getObjectByName('rock-effects')!).filter(
+            (child) => child.name === 'rock-fragment',
+        );
+        expect(remainingRubble.length).toBe(0);
     });
 
     it('measures wrench reach from the boulder wall, not its centre', () => {
-        const terrain = new Terrain(13579, { meshes: false });
+        const terrain = testTerrain(13579, { meshes: false });
         const rocks = terrain.colliders.filter((collider) => collider.kind === 'rock');
-        const rock = rocks.reduce((widest, collider) =>
-            collider.radius > widest.radius ? collider : widest,
-        );
+        const rock = rocks.reduce((widest, collider) => (collider.radius > widest.radius ? collider : widest));
 
         // The widest boulders are over 3.5 m across. Standing one metre from the wall is beyond
         // the 4.5 m wrench range measured from the centre, but within it from the wall.
@@ -121,25 +95,18 @@ describe('rock damage', () => {
         const player = new Vector3(rock.x + rock.radius + 1, rock.base + 0.5, rock.z);
 
         const hits = terrain.wrenchStrike(player);
-        expect(
-            hits.some(
-                (hit) =>
-                    Math.hypot(hit.position.x - rock.x, hit.position.z - rock.z) < rock.radius,
-            ),
-        ).toBe(true);
-
-        terrain.dispose();
+        expect(hits.some((hit) => Math.hypot(hit.position.x - rock.x, hit.position.z - rock.z) < rock.radius)).toBe(
+            true,
+        );
     });
 
     it('scatters several boulder shapes with an uneven silhouette', () => {
-        const terrain = new Terrain(13579, { meshes: false });
+        const terrain = testTerrain(13579, { meshes: false });
         const boulderCells = terrain.group.children.filter(
-            (child): child is InstancedMesh =>
-                child instanceof InstancedMesh && child.name.startsWith('boulder-cell-'),
+            (child): child is InstancedMesh => child instanceof InstancedMesh && child.name.startsWith('boulder-cell-'),
         );
         const stoneCell = terrain.group.children.find(
-            (child): child is InstancedMesh =>
-                child instanceof InstancedMesh && child.name.startsWith('stone-cell-'),
+            (child): child is InstancedMesh => child instanceof InstancedMesh && child.name.startsWith('stone-cell-'),
         );
         expect(boulderCells.length).toBeGreaterThan(1);
         expect(stoneCell).toBeDefined();
@@ -158,21 +125,15 @@ describe('rock damage', () => {
         let minimumRadius = Infinity;
         let maximumRadius = 0;
         for (let index = 0; index < position.count; index++) {
-            const radius = Math.hypot(
-                position.getX(index),
-                position.getY(index),
-                position.getZ(index),
-            );
+            const radius = Math.hypot(position.getX(index), position.getY(index), position.getZ(index));
             minimumRadius = Math.min(minimumRadius, radius);
             maximumRadius = Math.max(maximumRadius, radius);
         }
         expect(maximumRadius - minimumRadius).toBeGreaterThan(0.2);
-
-        terrain.dispose();
     });
 
     it('drops an emerald mineral from a sheened boulder and records the pickup', () => {
-        const terrain = new Terrain(13579, { meshes: false });
+        const terrain = testTerrain(13579, { meshes: false });
         const emeraldCell = terrain.group.children.find(
             (child): child is InstancedMesh =>
                 child instanceof InstancedMesh && child.name.startsWith('boulder-emerald-cell-'),
@@ -197,7 +158,6 @@ describe('rock damage', () => {
         expect(mineral?.getObjectByName('emerald-mineral-halo')).toBeInstanceOf(Sprite);
         expect(terrain.mineralsCollected).toBe(0);
         if (!(mineral instanceof Mesh)) {
-            terrain.dispose();
             return;
         }
 
@@ -214,21 +174,17 @@ describe('rock damage', () => {
 
         terrain.restoreMineralsCollected(3);
         expect(terrain.mineralsCollected).toBe(3);
-        terrain.dispose();
     });
 
     it('always places an emerald boulder near the crash site', () => {
         for (const seed of [1, 13579, 20261018]) {
-            const terrain = new Terrain(seed, { meshes: false });
+            const terrain = testTerrain(seed, { meshes: false });
             const matrix = new Matrix4();
             const position = new Vector3();
             let nearest = Infinity;
 
             for (const child of terrain.group.children) {
-                if (
-                    !(child instanceof InstancedMesh) ||
-                    !child.name.startsWith('boulder-emerald-cell-')
-                ) {
+                if (!(child instanceof InstancedMesh) || !child.name.startsWith('boulder-emerald-cell-')) {
                     continue;
                 }
                 for (let index = 0; index < child.count; index++) {
@@ -236,16 +192,12 @@ describe('rock damage', () => {
                     matrix.decompose(position, new Quaternion(), new Vector3());
                     nearest = Math.min(
                         nearest,
-                        Math.hypot(
-                            position.x - terrain.spaceshipSite.x,
-                            position.z - terrain.spaceshipSite.z,
-                        ),
+                        Math.hypot(position.x - terrain.spaceshipSite.x, position.z - terrain.spaceshipSite.z),
                     );
                 }
             }
 
             expect(nearest).toBeLessThanOrEqual(30);
-            terrain.dispose();
         }
     });
 });

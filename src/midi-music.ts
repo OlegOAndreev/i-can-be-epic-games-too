@@ -220,12 +220,7 @@ function createProgramBuses(
     return buses;
 }
 
-function scheduleNote(
-    context: AudioContext,
-    event: NoteEvent,
-    start: number,
-    output: AudioNode,
-): void {
+function scheduleNote(context: AudioContext, event: NoteEvent, start: number, output: AudioNode): void {
     const patch = patchFor(event.program);
     const frequency = midiToFrequency(event.midi);
     const end = start + Math.max(0.05, event.duration);

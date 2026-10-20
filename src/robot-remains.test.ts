@@ -1,34 +1,15 @@
-import { createCanvas } from '@napi-rs/canvas';
 import { Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
-import type { GameAudio } from './audio';
 import { RobotRemains } from './robot-remains';
-import { Terrain, WATER_LEVEL } from './terrain';
+import { installCanvasDocument, stubAudio, testTerrain } from './test-helpers';
+import { WATER_LEVEL } from './terrain';
 
-const FAST_TERRAIN = { meshes: false, decorations: false } as const;
-import { getSurfaceTextures } from './textures';
-
-// The speech labels use a canvas at runtime. Prime the terrain textures before replacing the
-// document, then give the labels the native canvas implementation used by the other robot tests.
-getSurfaceTextures();
-Object.defineProperty(globalThis, 'document', {
-    configurable: true,
-    value: { createElement: () => createCanvas(1024, 320) },
-});
-
-function stubAudio(): GameAudio {
-    return {
-        started: true,
-        playRobotBeeps: () => undefined,
-        playPowerDown: () => undefined,
-        playSwitchClick: () => undefined,
-    } as unknown as GameAudio;
-}
+installCanvasDocument(1024, 320);
 
 describe('robot remains', () => {
     it('places every encounter deterministically from the world seed', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const first = new RobotRemains(terrain, stubAudio());
         const sites = first.getSites();
         const ids = sites.map((site) => site.id);
@@ -53,13 +34,16 @@ describe('robot remains', () => {
         expect(sleeper.y).toBeGreaterThan(0);
 
         const sweeper = sites.find((site) => site.id === 'sweeper')!;
-        const nearestTower = terrain.megastructures.towers.reduce((best, tower) => {
-            const distance = Math.hypot(
-                (tower.minX + tower.maxX) / 2 - sweeper.x,
-                (tower.minZ + tower.maxZ) / 2 - sweeper.z,
-            );
-            return distance < best.distance ? { tower, distance } : best;
-        }, { tower: terrain.megastructures.towers[0], distance: Infinity });
+        const nearestTower = terrain.megastructures.towers.reduce(
+            (best, tower) => {
+                const distance = Math.hypot(
+                    (tower.minX + tower.maxX) / 2 - sweeper.x,
+                    (tower.minZ + tower.maxZ) / 2 - sweeper.z,
+                );
+                return distance < best.distance ? { tower, distance } : best;
+            },
+            { tower: terrain.megastructures.towers[0], distance: Infinity },
+        );
         expect(sweeper.x).toBeGreaterThanOrEqual(nearestTower.tower.minX);
         expect(sweeper.x).toBeLessThanOrEqual(nearestTower.tower.maxX);
         expect(sweeper.z).toBeGreaterThanOrEqual(nearestTower.tower.minZ);
@@ -87,11 +71,10 @@ describe('robot remains', () => {
 
         first.dispose();
         second.dispose();
-        terrain.dispose();
     });
 
     it('powers down the last sweeper once and awards its cell', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const remains = new RobotRemains(terrain, stubAudio());
         const sweeper = remains.getSites().find((site) => site.id === 'sweeper');
         expect(sweeper).toBeDefined();
@@ -110,11 +93,10 @@ describe('robot remains', () => {
         expect(remains.wrenchStrike(player)).toBeNull();
 
         remains.dispose();
-        terrain.dispose();
     });
 
     it('plays the tidewalker and drowned transmissions only once', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const remains = new RobotRemains(terrain, stubAudio());
         const tidewalker = remains.getSites().find((site) => site.id === 'tidewalker');
         const drowned = remains.getSites().find((site) => site.id === 'drowned');
@@ -135,11 +117,10 @@ describe('robot remains', () => {
 
         remains.dispose();
         restored.dispose();
-        terrain.dispose();
     });
 
     it('harvests the sleeper battery and the ossuary core once each', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const remains = new RobotRemains(terrain, stubAudio());
         const battery = remains.getSites().find((site) => site.id === 'sleeper');
         const cache = remains.getSites().find((site) => site.id === 'ossuary');
@@ -150,28 +131,21 @@ describe('robot remains', () => {
         remains.onEnergySalvaged = (amount) => {
             salvaged += amount;
         };
-        const batteryStrike = remains.wrenchStrike(
-            new Vector3(battery!.x, battery!.y, battery!.z),
-        );
-        const cacheStrike = remains.wrenchStrike(
-            new Vector3(cache!.x, cache!.y + 0.45, cache!.z),
-        );
+        const batteryStrike = remains.wrenchStrike(new Vector3(battery!.x, battery!.y, battery!.z));
+        const cacheStrike = remains.wrenchStrike(new Vector3(cache!.x, cache!.y + 0.45, cache!.z));
 
         expect(batteryStrike?.kind).toBe('battery');
         expect(cacheStrike?.kind).toBe('cache');
         expect(batteryStrike?.energy).toBe(25);
         expect(cacheStrike?.energy).toBe(25);
         expect(salvaged).toBe(50);
-        expect(
-            remains.wrenchStrike(new Vector3(battery!.x, battery!.y, battery!.z)),
-        ).toBeNull();
+        expect(remains.wrenchStrike(new Vector3(battery!.x, battery!.y, battery!.z))).toBeNull();
 
         remains.dispose();
-        terrain.dispose();
     });
 
     it('prevents harvested batteries and cores from being taken after a reload', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const remains = new RobotRemains(terrain, stubAudio());
         const battery = remains.getSites().find((site) => site.id === 'sleeper');
         const cache = remains.getSites().find((site) => site.id === 'ossuary');
@@ -179,14 +153,9 @@ describe('robot remains', () => {
         expect(cache).toBeDefined();
 
         remains.restoreClaimedIds(['sleeper-battery', 'ossuary-cache']);
-        expect(
-            remains.wrenchStrike(new Vector3(battery!.x, battery!.y, battery!.z)),
-        ).toBeNull();
-        expect(
-            remains.wrenchStrike(new Vector3(cache!.x, cache!.y + 0.45, cache!.z)),
-        ).toBeNull();
+        expect(remains.wrenchStrike(new Vector3(battery!.x, battery!.y, battery!.z))).toBeNull();
+        expect(remains.wrenchStrike(new Vector3(cache!.x, cache!.y + 0.45, cache!.z))).toBeNull();
 
         remains.dispose();
-        terrain.dispose();
     });
 });

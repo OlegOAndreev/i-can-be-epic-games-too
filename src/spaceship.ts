@@ -1,5 +1,4 @@
 import {
-    AdditiveBlending,
     BoxGeometry,
     BufferGeometry,
     Color,
@@ -18,11 +17,10 @@ import {
     SpriteMaterial,
     Vector3,
 } from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
-import { getRadialGlowTexture } from './glow';
+import { getRadialGlowTexture, glowSpriteMaterial } from './glow';
 import { lcg32, lerp } from './math-utils';
-import { mergeMeshesByMaterial } from './mesh-optimize';
+import { mergeMeshesByMaterial, mergeParts } from './mesh-optimize';
 import { SKY_COLOR } from './sky-color';
 
 export interface SpaceshipSite {
@@ -178,36 +176,33 @@ function createSmokeGeometries(): BufferGeometry[] {
             blobs.push(blob);
         }
 
-        const merged = mergeGeometries(blobs) ?? blobs[0];
-        for (const blob of blobs) {
-            if (blob !== merged) {
-                blob.dispose();
-            }
-        }
-        merged.computeBoundingSphere();
-        return merged;
+        return mergeParts(blobs, blobs[0]);
     });
+}
+
+const shipLocalScratch = new Vector3();
+
+// Maps a point from the ship's compact model space onto the world, applying the site yaw and the
+// model-to-world scale. The caller sets Y from the terrain.
+export function shipLocalToWorld(site: SpaceshipSite, localX: number, localZ: number, target = new Vector3()): Vector3 {
+    const cosYaw = Math.cos(site.yaw);
+    const sinYaw = Math.sin(site.yaw);
+    return target.set(
+        site.x + (localX * cosYaw + localZ * sinYaw) * SHIP_SCALE,
+        0,
+        site.z + (-localX * sinYaw + localZ * cosYaw) * SHIP_SCALE,
+    );
 }
 
 // Smallest horizontal gap between a point and the hull's collision footprint, measured from the
 // footprint circle edges. World generation uses it to keep the opening gathering clear of the
 // wreck without constructing the ship itself.
-export function shipFootprintClearance(
-    site: SpaceshipSite,
-    x: number,
-    z: number,
-): number {
-    const cosYaw = Math.cos(site.yaw);
-    const sinYaw = Math.sin(site.yaw);
+export function shipFootprintClearance(site: SpaceshipSite, x: number, z: number): number {
     let clearance = Infinity;
 
     for (const circle of COLLIDER_FOOTPRINT) {
-        const worldX = site.x + (circle.x * cosYaw + circle.z * sinYaw) * SHIP_SCALE;
-        const worldZ = site.z + (-circle.x * sinYaw + circle.z * cosYaw) * SHIP_SCALE;
-        clearance = Math.min(
-            clearance,
-            Math.hypot(x - worldX, z - worldZ) - circle.radius * SHIP_SCALE,
-        );
+        const world = shipLocalToWorld(site, circle.x, circle.z, shipLocalScratch);
+        clearance = Math.min(clearance, Math.hypot(x - world.x, z - world.z) - circle.radius * SHIP_SCALE);
     }
 
     return clearance;
@@ -248,10 +243,7 @@ export function findSpaceshipSite(
             }
 
             const score =
-                (highest - lowest) * 1.6 +
-                steepest * 5 +
-                Math.abs(offset) * 2.5 +
-                (distance - SITE_DISTANCES[0]) * 0.1;
+                (highest - lowest) * 1.6 + steepest * 5 + Math.abs(offset) * 2.5 + (distance - SITE_DISTANCES[0]) * 0.1;
             if (score < bestScore) {
                 bestScore = score;
                 // Angle the nose slightly off the robot so the delta planform reads from the start.
@@ -331,11 +323,7 @@ export class Spaceship {
     // planform; going through the visual transform keeps them correct for any hull pose.
     getWingtipPosition(side: number, target: Vector3): Vector3 {
         return this.visual.localToWorld(
-            target.set(
-                side * WING_TIP_X * SHIP_SCALE,
-                WING_Y * SHIP_SCALE,
-                WING_TIP_Z * SHIP_SCALE,
-            ),
+            target.set(side * WING_TIP_X * SHIP_SCALE, WING_Y * SHIP_SCALE, WING_TIP_Z * SHIP_SCALE),
         );
     }
 
@@ -347,22 +335,14 @@ export class Spaceship {
         if (this.engineGlowMaterial) {
             this.engineGlowMaterial.opacity = Math.max(
                 0.55,
-                Math.min(
-                    1,
-                    0.82 +
-                        Math.sin(this.elapsed * 17) * 0.07 +
-                        Math.sin(this.elapsed * 5.3 + 1.7) * 0.05,
-                ),
+                Math.min(1, 0.82 + Math.sin(this.elapsed * 17) * 0.07 + Math.sin(this.elapsed * 5.3 + 1.7) * 0.05),
             );
         }
         if (this.engineMaterial) {
             const base = this.repaired ? REPAIRED_ENGINE_INTENSITY : 3.4;
-            const pulse =
-                Math.sin(this.elapsed * 13.7) * 0.7 +
-                Math.sin(this.elapsed * 31.1 + 0.4) * 0.35;
+            const pulse = Math.sin(this.elapsed * 13.7) * 0.7 + Math.sin(this.elapsed * 31.1 + 0.4) * 0.35;
             this.engineMaterial.emissiveIntensity =
-                lerp(base, HYPERDRIVE_EMISSIVE_INTENSITY, this.hyperdriveGlow) +
-                pulse * (1 - this.hyperdriveGlow);
+                lerp(base, HYPERDRIVE_EMISSIVE_INTENSITY, this.hyperdriveGlow) + pulse * (1 - this.hyperdriveGlow);
         }
         if (!this.repaired) {
             this.smokeTimer -= dt;
@@ -388,33 +368,20 @@ export class Spaceship {
             puff.velocity.y += 0.95 * dt;
             // Lean and turbulence scale with height, so the plume leaves the nozzle vertically and
             // bends more the higher it climbs.
-            puff.velocity.x +=
-                (SMOKE_LEAN_X + Math.sin(puff.age * 0.7 + puff.phase) * SMOKE_TURBULENCE) *
-                risen *
-                dt;
-            puff.velocity.z +=
-                (SMOKE_LEAN_Z + Math.cos(puff.age * 0.55 + puff.phase) * SMOKE_TURBULENCE) *
-                risen *
-                dt;
+            puff.velocity.x += (SMOKE_LEAN_X + Math.sin(puff.age * 0.7 + puff.phase) * SMOKE_TURBULENCE) * risen * dt;
+            puff.velocity.z += (SMOKE_LEAN_Z + Math.cos(puff.age * 0.55 + puff.phase) * SMOKE_TURBULENCE) * risen * dt;
             puff.velocity.multiplyScalar(Math.exp(-0.04 * dt));
             puff.mesh.position.addScaledVector(puff.velocity, dt);
 
             const height = Math.max(0, puff.mesh.position.y - puff.startY);
             const quick = Math.min(1, height / SMOKE_QUICK_GROWTH_DISTANCE);
             const quickEase = 1 - (1 - quick) * (1 - quick);
-            const slow = Math.min(
-                1,
-                Math.max(0, (height - SMOKE_QUICK_GROWTH_DISTANCE) / SMOKE_SLOW_GROWTH_DISTANCE),
-            );
+            const slow = Math.min(1, Math.max(0, (height - SMOKE_QUICK_GROWTH_DISTANCE) / SMOKE_SLOW_GROWTH_DISTANCE));
             const scale =
                 puff.startScale +
                 (puff.midScale - puff.startScale) * quickEase +
                 (puff.endScale - puff.midScale) * slow;
-            puff.mesh.scale.set(
-                scale * puff.stretchX,
-                scale * puff.stretchY,
-                scale * puff.stretchZ,
-            );
+            puff.mesh.scale.set(scale * puff.stretchX, scale * puff.stretchY, scale * puff.stretchZ);
             puff.mesh.rotation.x += puff.spin * dt;
             puff.mesh.rotation.y += puff.spin * 0.7 * dt;
 
@@ -473,12 +440,8 @@ export class Spaceship {
         this.hyperdriveGlow = Math.min(1, Math.max(0, progress));
         for (let index = 0; index < this.materials.length; index++) {
             const material = this.materials[index];
-            material.color
-                .copy(this.baseMaterialColors[index])
-                .lerp(HYPERDRIVE_WHITE, this.hyperdriveGlow);
-            material.emissive
-                .copy(this.baseMaterialEmissives[index])
-                .lerp(HYPERDRIVE_WHITE, this.hyperdriveGlow);
+            material.color.copy(this.baseMaterialColors[index]).lerp(HYPERDRIVE_WHITE, this.hyperdriveGlow);
+            material.emissive.copy(this.baseMaterialEmissives[index]).lerp(HYPERDRIVE_WHITE, this.hyperdriveGlow);
             material.emissiveIntensity = lerp(
                 this.baseMaterialIntensities[index],
                 HYPERDRIVE_EMISSIVE_INTENSITY,
@@ -486,9 +449,7 @@ export class Spaceship {
             );
         }
         if (this.engineGlowMaterial) {
-            this.engineGlowMaterial.color
-                .setHex(REPAIRED_GLOW_COLOR)
-                .lerp(HYPERDRIVE_WHITE, this.hyperdriveGlow);
+            this.engineGlowMaterial.color.setHex(REPAIRED_GLOW_COLOR).lerp(HYPERDRIVE_WHITE, this.hyperdriveGlow);
             this.engineGlowMaterial.opacity = 1;
         }
         for (const glow of this.engineGlows) {
@@ -599,8 +560,7 @@ export class Spaceship {
         material.emissive.copy(SMOKE_EMISSIVE_COLOR);
         material.emissiveIntensity = 0.45;
         material.opacity = 0.8;
-        const geometry =
-            this.smokeGeometries[Math.floor(Math.random() * this.smokeGeometries.length)];
+        const geometry = this.smokeGeometries[Math.floor(Math.random() * this.smokeGeometries.length)];
         const mesh = this.acquireSmokeMesh(geometry, material);
         mesh.position.copy(position);
         mesh.rotation.set(0, 0, 0);
@@ -612,11 +572,7 @@ export class Spaceship {
             mesh,
             material,
             hotColor,
-            velocity: new Vector3(
-                (Math.random() - 0.5) * 0.8,
-                2.6 + Math.random() * 1.2,
-                (Math.random() - 0.5) * 0.6,
-            ),
+            velocity: new Vector3((Math.random() - 0.5) * 0.8, 2.6 + Math.random() * 1.2, (Math.random() - 0.5) * 0.6),
             age: 0,
             lifetime: 16 + Math.random() * 4,
             startY: position.y,
@@ -683,21 +639,9 @@ export class Spaceship {
 
         // Blade-shaped wing-root pods break up the top surface without adding boxy silhouettes.
         for (const side of [-1, 1]) {
-            const pod = this.addMesh(
-                new CylinderGeometry(0.04, 0.16, 1.5, 4),
-                dark,
-                side * 1.95,
-                2.3,
-                -0.55,
-            );
+            const pod = this.addMesh(new CylinderGeometry(0.04, 0.16, 1.5, 4), dark, side * 1.95, 2.3, -0.55);
             pod.rotation.x = Math.PI / 2;
-            const sensor = this.addMesh(
-                new CylinderGeometry(0.02, 0.08, 0.46, 4),
-                shade,
-                side * 0.95,
-                2.26,
-                -0.9,
-            );
+            const sensor = this.addMesh(new CylinderGeometry(0.02, 0.08, 0.46, 4), shade, side * 0.95, 2.26, -0.9);
             sensor.rotation.x = Math.PI / 2;
         }
 
@@ -763,15 +707,10 @@ export class Spaceship {
 
         // Engine housing and twin thrusters.
         this.addMesh(new BoxGeometry(1.9, 0.62, 0.7), dark, 0, 2.2, -2.62);
-        this.engineGlowMaterial = new SpriteMaterial({
+        this.engineGlowMaterial = glowSpriteMaterial({
             map: getRadialGlowTexture(),
             color: 0xff1a08,
-            transparent: true,
             opacity: 0.9,
-            blending: AdditiveBlending,
-            depthWrite: false,
-            fog: false,
-            toneMapped: false,
         });
         // Cooling fins on the engine deck.
         for (const x of [-0.65, 0, 0.65]) {
@@ -780,39 +719,26 @@ export class Spaceship {
         for (const x of ENGINE_X) {
             const thruster = this.addMesh(new CylinderGeometry(0.28, 0.28, 0.3, 12), engine, x, ENGINE_Y, ENGINE_Z);
             thruster.rotation.x = Math.PI / 2;
-            const collar = this.addMesh(
-                new CylinderGeometry(0.37, 0.37, 0.1, 12),
-                shade,
-                x,
-                ENGINE_Y,
-                ENGINE_Z + 0.03,
-            );
+            const collar = this.addMesh(new CylinderGeometry(0.37, 0.37, 0.1, 12), shade, x, ENGINE_Y, ENGINE_Z + 0.03);
             collar.rotation.x = Math.PI / 2;
 
             const glow = new Sprite(this.engineGlowMaterial);
-            glow.position.set(
-                x * SHIP_SCALE,
-                ENGINE_Y * SHIP_SCALE,
-                (ENGINE_Z - 0.24) * SHIP_SCALE,
-            );
+            glow.position.set(x * SHIP_SCALE, ENGINE_Y * SHIP_SCALE, (ENGINE_Z - 0.24) * SHIP_SCALE);
             glow.scale.setScalar(2.2 * SHIP_SCALE);
             this.engineGlows.push(glow);
             this.visual.add(glow);
         }
 
-        const cosYaw = Math.cos(site.yaw);
-        const sinYaw = Math.sin(site.yaw);
         const centerY = this.group.position.y;
 
         for (const circle of COLLIDER_FOOTPRINT) {
-            const worldX = site.x + (circle.x * cosYaw + circle.z * sinYaw) * SHIP_SCALE;
-            const worldZ = site.z + (-circle.x * sinYaw + circle.z * cosYaw) * SHIP_SCALE;
+            const world = shipLocalToWorld(site, circle.x, circle.z, shipLocalScratch);
             this.colliders.push({
                 kind: 'spaceship',
-                x: worldX,
-                z: worldZ,
+                x: world.x,
+                z: world.z,
                 radius: circle.radius * SHIP_SCALE,
-                base: Math.min(centerY, heightAt(worldX, worldZ)) - 0.5,
+                base: Math.min(centerY, heightAt(world.x, world.z)) - 0.5,
                 top: centerY + 3.9 * SHIP_SCALE,
             });
         }
@@ -821,30 +747,19 @@ export class Spaceship {
     // Fit a plane through the terrain heights under both wingtips and the nose, plus the centre
     // sample that averages them. The hull is turned to match that plane and placed so its belly
     // reference plane rests on it.
-    private restOnTerrain(
-        site: SpaceshipSite,
-        heightAt: (x: number, z: number) => number,
-    ): void {
-        const cosYaw = Math.cos(site.yaw);
-        const sinYaw = Math.sin(site.yaw);
+    private restOnTerrain(site: SpaceshipSite, heightAt: (x: number, z: number) => number): void {
         const samples = GROUND_SAMPLES.map(([localX, localZ]) => {
-            const worldX = site.x + (localX * cosYaw + localZ * sinYaw) * SHIP_SCALE;
-            const worldZ = site.z + (-localX * sinYaw + localZ * cosYaw) * SHIP_SCALE;
-            return new Vector3(worldX, heightAt(worldX, worldZ), worldZ);
+            const world = shipLocalToWorld(site, localX, localZ);
+            world.y = heightAt(world.x, world.z);
+            return world;
         });
         const [leftWing, rightWing, nose] = samples;
-        const centre = new Vector3()
-            .addVectors(leftWing, rightWing)
-            .add(nose)
-            .divideScalar(samples.length);
+        const centre = new Vector3().addVectors(leftWing, rightWing).add(nose).divideScalar(samples.length);
 
         // The centre sample is the average of the other three, so the plane through them already
         // passes through it. Keep the normal pointing up regardless of the sample winding.
         const normal = new Vector3()
-            .crossVectors(
-                new Vector3().subVectors(rightWing, leftWing),
-                new Vector3().subVectors(nose, leftWing),
-            )
+            .crossVectors(new Vector3().subVectors(rightWing, leftWing), new Vector3().subVectors(nose, leftWing))
             .normalize();
         if (normal.y < 0) {
             normal.negate();
@@ -863,15 +778,10 @@ export class Spaceship {
         heading.normalize();
         const right = new Vector3().crossVectors(normal, heading).normalize();
         const up = new Vector3().crossVectors(heading, right).normalize();
-        const worldRotation = new Quaternion().setFromRotationMatrix(
-            new Matrix4().makeBasis(right, up, heading),
-        );
+        const worldRotation = new Quaternion().setFromRotationMatrix(new Matrix4().makeBasis(right, up, heading));
 
         // The visual sits under the yawed group, so remove the group's yaw from the world rotation.
-        const groupRotation = new Quaternion().setFromAxisAngle(
-            new Vector3(0, 1, 0),
-            site.yaw,
-        );
+        const groupRotation = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), site.yaw);
         this.visual.quaternion.copy(groupRotation.invert().multiply(worldRotation));
 
         // Anchor the belly plane at the averaged sample location and solve for the vertical offset
@@ -880,16 +790,11 @@ export class Spaceship {
             (sum, [x, z]) => sum.add(new Vector3(x, 0, z)),
             new Vector3(),
         ).multiplyScalar(SHIP_SCALE / GROUND_SAMPLES.length);
-        const localContact = new Vector3(
-            localCentre.x,
-            GROUND_REST_OFFSET,
-            localCentre.z,
-        );
+        const localContact = new Vector3(localCentre.x, GROUND_REST_OFFSET, localCentre.z);
         const rotatedContact = localContact.applyQuaternion(worldRotation);
         const planeHeight = normal.dot(centre);
         const group = this.group.position;
-        const offsetY =
-            (planeHeight - normal.dot(group) - normal.dot(rotatedContact)) / normal.y;
+        const offsetY = (planeHeight - normal.dot(group) - normal.dot(rotatedContact)) / normal.y;
         this.visual.position.set(0, offsetY, 0);
     }
 
@@ -899,13 +804,7 @@ export class Spaceship {
         return material;
     }
 
-    private addMesh(
-        geometry: BufferGeometry,
-        material: MeshStandardMaterial,
-        x: number,
-        y: number,
-        z: number,
-    ): Mesh {
+    private addMesh(geometry: BufferGeometry, material: MeshStandardMaterial, x: number, y: number, z: number): Mesh {
         geometry.scale(SHIP_SCALE, SHIP_SCALE, SHIP_SCALE);
         const mesh = new Mesh(geometry, material);
         mesh.position.set(x * SHIP_SCALE, y * SHIP_SCALE, z * SHIP_SCALE);
@@ -913,4 +812,3 @@ export class Spaceship {
         return mesh;
     }
 }
-

@@ -443,12 +443,7 @@ function readGamepadInputInto(gamepad: Gamepad | null, out: GamepadInput): Gamep
 
 const stickScratch = { x: 0, y: 0 };
 
-function readStickInto(
-    gamepad: Gamepad,
-    xAxis: number,
-    yAxis: number,
-    out: { x: number; y: number },
-): void {
+function readStickInto(gamepad: Gamepad, xAxis: number, yAxis: number, out: { x: number; y: number }): void {
     const x = gamepad.axes[xAxis] ?? 0;
     const y = gamepad.axes[yAxis] ?? 0;
     const magnitude = Math.hypot(x, y);
@@ -465,7 +460,6 @@ function readStickInto(
 function isPressed(gamepad: Gamepad, index: number): boolean {
     return gamepad.buttons[index]?.pressed ?? false;
 }
-
 
 function isTextEntry(target: EventTarget | null): boolean {
     return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;

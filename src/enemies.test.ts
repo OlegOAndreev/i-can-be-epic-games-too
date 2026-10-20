@@ -18,9 +18,8 @@ import { ENEMY_EYE_COLOR } from './npc-robots';
 import { mulberry32 } from './noise';
 import { PLAYER_RADIUS } from './player';
 import { PlayerHealth } from './player-health';
-import { Terrain } from './terrain';
-
-const FAST_TERRAIN = { meshes: false, decorations: false } as const;
+import { fakeTerrain, testTerrain, visibleMeshes } from './test-helpers';
+import type { Terrain } from './terrain';
 
 function sequence(values: number[]): () => number {
     let index = 0;
@@ -56,11 +55,11 @@ function singleEnemyLevel(
         entranceSide: 0,
         storeys,
     };
-    const terrain = {
+    const terrain = fakeTerrain({
         seed: 1,
         megastructures: { towers: [tower], ramps, boxes },
         walkSurfaceAt: (_x: number, _z: number, feetY: number) => feetY - 0.4,
-    } as unknown as Terrain;
+    });
     const enemies = new EnemyRobots(
         terrain,
         {
@@ -249,9 +248,9 @@ describe('enemy robots', () => {
             } else {
                 misses++;
                 // A visible miss must clear the player's horizontal radius.
-                expect(
-                    Math.hypot(aim.end.x - target.x, aim.end.z - target.z),
-                ).toBeGreaterThanOrEqual(PLAYER_RADIUS + 0.2);
+                expect(Math.hypot(aim.end.x - target.x, aim.end.z - target.z)).toBeGreaterThanOrEqual(
+                    PLAYER_RADIUS + 0.2,
+                );
             }
         }
 
@@ -302,11 +301,11 @@ describe('enemy robots', () => {
                 { minX: -20, maxX: 20, minZ: -20, maxZ: 20, baseY: 24, topY: 38 },
             ],
         };
-        const terrain = {
+        const terrain = fakeTerrain({
             seed: 1,
             megastructures: { towers: [tower] },
             walkSurfaceAt: () => storey.baseY,
-        } as unknown as Terrain;
+        });
         const enemies = new EnemyRobots(terrain, {
             moveSpeed: 10,
             jumpSpeed: 7,
@@ -429,11 +428,11 @@ describe('enemy robots', () => {
             entranceSide: 0,
             storeys,
         };
-        const terrain = {
+        const terrain = fakeTerrain({
             seed: 1,
             megastructures: { towers: [tower] },
             walkSurfaceAt: (_x: number, _z: number, feetY: number) => feetY - 0.4,
-        } as unknown as Terrain;
+        });
         const enemies = new EnemyRobots(terrain, {
             moveSpeed: 10,
             jumpSpeed: 7,
@@ -502,7 +501,7 @@ describe('enemy robots', () => {
         let firstVolleyBeams = 0;
         for (let step = 0; step < 40; step++) {
             enemies.update(0.1, player);
-            const beamCount = enemies.group.children.filter((child) => child instanceof Mesh && child.visible).length;
+            const beamCount = visibleMeshes(enemies.group).length;
             if (beamCount > 0) {
                 const previous = volleyFrames[volleyFrames.length - 1] ?? -Infinity;
                 if (step - previous > 2) {
@@ -569,11 +568,11 @@ describe('enemy robots', () => {
             maxY: 10,
             axis: 'x',
         };
-        const terrain = {
+        const terrain = fakeTerrain({
             seed: 1,
             megastructures: { towers: [tower], ramps: [previousRamp] },
             walkSurfaceAt: () => storey.baseY,
-        } as unknown as Terrain;
+        });
         const enemies = new EnemyRobots(terrain, {
             moveSpeed: 10,
             jumpSpeed: 7,
@@ -636,11 +635,11 @@ describe('enemy robots', () => {
                 { minX: -20, maxX: 20, minZ: -20, maxZ: 20, baseY: 24, topY: 38 },
             ],
         };
-        const terrain = {
+        const terrain = fakeTerrain({
             seed: 1,
             megastructures: { towers: [tower] },
             walkSurfaceAt: () => storey.baseY,
-        } as unknown as Terrain;
+        });
         const enemies = new EnemyRobots(terrain, {
             moveSpeed: 10,
             jumpSpeed: 7,
@@ -771,7 +770,7 @@ describe('enemy robots', () => {
     });
 
     it('stands one or two red-eyed robots on every storey below the crown', () => {
-        const terrain = new Terrain(20260419, FAST_TERRAIN);
+        const terrain = testTerrain(20260419);
         const enemies = new EnemyRobots(terrain, { moveSpeed: 10, jumpSpeed: 7, gravity: 20 });
         expect(enemies.getColliders().length).toBeGreaterThan(0);
         expect(enemies.getColliders().every((collider) => collider.kind === 'enemy')).toBe(true);
@@ -881,9 +880,7 @@ describe('enemy robots', () => {
             if (hit < required) {
                 const effect = enemy.children.find((child) => child.name === 'enemy-hit-effect');
                 expect(effect?.visible).toBe(true);
-                expect(
-                    effect?.children.filter((child) => child instanceof Mesh && child.visible).length,
-                ).toBeGreaterThan(1);
+                expect(visibleMeshes(effect!).length).toBeGreaterThan(1);
 
                 // A second strike during the immunity window does nothing.
                 expect(enemies.wrenchStrike(player)).toHaveLength(0);
@@ -917,7 +914,7 @@ describe('enemy robots', () => {
         expect(enemy.getObjectByName('enemy-visual')?.visible).toBe(false);
         const debris = enemies.group.children.find((child) => child.name === 'enemy-debris');
         expect(debris).toBeDefined();
-        const chunks = debris!.children.filter((child): child is Mesh => child instanceof Mesh && child.visible);
+        const chunks = visibleMeshes(debris!);
         expect(chunks.length).toBeGreaterThan(0);
 
         const averageStart = chunks.reduce((sum, chunk) => sum + chunk.position.y, 0) / chunks.length;
@@ -1029,11 +1026,11 @@ describe('enemy robots', () => {
             storeys,
         };
         // Seed 4 rolls two robots onto the single populated floor.
-        const terrain = {
+        const terrain = fakeTerrain({
             seed: 4,
             megastructures: { towers: [tower] },
             walkSurfaceAt: (_x: number, _z: number, feetY: number) => feetY - 0.4,
-        } as unknown as Terrain;
+        });
         const enemies = new EnemyRobots(terrain, {
             moveSpeed: 10,
             jumpSpeed: 7,

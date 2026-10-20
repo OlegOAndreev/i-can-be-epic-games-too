@@ -1,6 +1,7 @@
 import { CanvasTexture, Color, Scene, Sprite, SpriteMaterial, Vector3 } from 'three';
 
 import { lcg32 } from './math-utils';
+import { integrateParticle } from './particle-motion';
 
 const DUST_NEUTRAL = new Color(0xb9ac91);
 const MAX_PARTICLES_PER_LANDING = 14;
@@ -80,10 +81,7 @@ export class DustPuffs {
     // puffs, each several times larger, spreading further across the ground and lingering longer.
     spawnHardLanding(position: Vector3, impactSpeed: number, groundColor: Color): void {
         const strength = Math.min(1.6, Math.max(1, impactSpeed / 24));
-        const count = Math.min(
-            MAX_PARTICLES_PER_HARD_LANDING,
-            Math.max(22, Math.round(16 + impactSpeed * 0.45)),
-        );
+        const count = Math.min(MAX_PARTICLES_PER_HARD_LANDING, Math.max(22, Math.round(16 + impactSpeed * 0.45)));
 
         for (let i = 0; i < count; i++) {
             const size = (0.45 + Math.random() * 0.4) * strength;
@@ -106,7 +104,6 @@ export class DustPuffs {
             });
         }
     }
-
 
     // Metal decks hold no loose dust, so a landing only knocks a small, brief puff off the plating
     // instead of the full cloud. It stays lifted above the deck so it reads against the dark metal.
@@ -169,9 +166,11 @@ export class DustPuffs {
             }
 
             const progress = particle.age / particle.lifetime;
-            particle.velocity.y -= 1.5 * dt;
-            particle.velocity.multiplyScalar(Math.exp(-2.1 * dt));
-            particle.sprite.position.addScaledVector(particle.velocity, dt);
+            integrateParticle(particle.sprite.position, particle.velocity, dt, {
+                gravity: 1.5,
+                drag: 2.1,
+            });
+            // Dust spins the sprite material's 2D rotation, not the object's Euler rotation.
             particle.material.rotation += particle.spin * dt;
 
             const growth = Math.sqrt(progress);
@@ -235,8 +234,7 @@ export class DustPuffs {
             };
         }
 
-        particle.material.map =
-            this.textures[Math.floor(Math.random() * this.textures.length)];
+        particle.material.map = this.textures[Math.floor(Math.random() * this.textures.length)];
         particle.material.color
             .copy(groundColor)
             .lerp(DUST_NEUTRAL, options.neutralMix)
@@ -315,13 +313,7 @@ function drawJaggedBlob(
     context.fill();
 }
 
-function drawShard(
-    context: CanvasRenderingContext2D,
-    x: number,
-    y: number,
-    size: number,
-    random: () => number,
-): void {
+function drawShard(context: CanvasRenderingContext2D, x: number, y: number, size: number, random: () => number): void {
     context.beginPath();
     const rotation = random() * Math.PI;
     for (let i = 0; i < 4; i++) {

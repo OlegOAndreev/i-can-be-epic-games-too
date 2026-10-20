@@ -100,7 +100,12 @@ interface StopRecordingSource extends FakeBufferSource {
     stopAt: number | null;
 }
 
-function createAudio(): { audio: GameAudio; context: FakeAudioContext; effects: FakeGainNode; sources: StopRecordingSource[] } {
+function createAudio(): {
+    audio: GameAudio;
+    context: FakeAudioContext;
+    effects: FakeGainNode;
+    sources: StopRecordingSource[];
+} {
     const audio = new GameAudio();
     const context = new FakeAudioContext();
     const master = new FakeGainNode();
@@ -197,9 +202,7 @@ describe('structure hum', () => {
             effectsGain: new FakeGainNode() as unknown as GainNode,
             structureBuzzBuffer: { duration: 1 } as AudioBuffer,
         });
-        (
-            audio as unknown as { startPendingStructureHums: () => void }
-        ).startPendingStructureHums();
+        (audio as unknown as { startPendingStructureHums: () => void }).startPendingStructureHums();
 
         expect(context.sources).toHaveLength(1);
         expect(context.sources[0].loop).toBe(true);
@@ -209,9 +212,7 @@ describe('structure hum', () => {
     it('only keeps a structure hum audible within 100 m', () => {
         const { audio } = createAudio();
         audio.playStructureHum(0, new Vector3());
-        const hums = (
-            audio as unknown as { structureHums: Map<number, { distance: FakeGainNode }> }
-        ).structureHums;
+        const hums = (audio as unknown as { structureHums: Map<number, { distance: FakeGainNode }> }).structureHums;
         const distanceGain = hums.get(0)!.distance;
 
         audio.setStructureHumDistance(0, 20);
@@ -280,9 +281,7 @@ describe('ship engine', () => {
         audio.setShipEnginePitch(2);
         expect(sources[0].playbackRate.target).toBeCloseTo(3.4, 5);
 
-        const engineGain = (
-            audio as unknown as { shipEngineGain: FakeGainNode }
-        ).shipEngineGain;
+        const engineGain = (audio as unknown as { shipEngineGain: FakeGainNode }).shipEngineGain;
         const fullGain = engineGain.gain.target;
         audio.setShipEngineVolume(0.5);
         expect(engineGain.gain.target).toBeCloseTo(fullGain * 0.5, 5);
@@ -336,6 +335,25 @@ describe('wrench swing', () => {
 
         audio.playWrenchSwing(true);
         expect(context.sources).toHaveLength(2);
+        expect(sources[1].playbackRate.value).toBeLessThan(sources[0].playbackRate.value);
+    });
+});
+
+describe('wrench clang', () => {
+    it('plays a generated variation at the impact point, heavier when charged', () => {
+        const { audio, context, sources } = createAudio();
+        const buffers = Array.from({ length: 4 }, () => ({ duration: 2.8 }) as AudioBuffer);
+        Object.assign(audio, { wrenchClangBuffers: buffers });
+
+        audio.playWrenchClang(new Vector3(1, 2, 3));
+        expect(context.sources).toHaveLength(1);
+        expect(sources[0].loop).toBe(false);
+        expect(buffers).toContain(sources[0].buffer);
+        expect(sources[0].playbackRate.value).toBeLessThan(1);
+
+        audio.playWrenchClang(new Vector3(1, 2, 3), true);
+        expect(context.sources).toHaveLength(2);
+        expect(buffers).toContain(sources[1].buffer);
         expect(sources[1].playbackRate.value).toBeLessThan(sources[0].playbackRate.value);
     });
 });

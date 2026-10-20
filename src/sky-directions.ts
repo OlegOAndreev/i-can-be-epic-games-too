@@ -6,6 +6,4 @@ import { Vector3 } from 'three';
 export const SUN_DIRECTION = new Vector3(-0.42, 0.78, -0.46).normalize();
 export const SECOND_SUN_DIRECTION = new Vector3(-0.3, 0.82, -0.48).normalize();
 
-export const SUN_BISECTOR_DIRECTION = new Vector3()
-    .addVectors(SUN_DIRECTION, SECOND_SUN_DIRECTION)
-    .normalize();
+export const SUN_BISECTOR_DIRECTION = new Vector3().addVectors(SUN_DIRECTION, SECOND_SUN_DIRECTION).normalize();

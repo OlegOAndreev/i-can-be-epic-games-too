@@ -972,12 +972,7 @@ function paintMetal(context: CanvasRenderingContext2D, size: number, style: Meta
             if (rng() < 0.2) {
                 const rivetInset = style.rivetRadius * 2.4;
                 context.fillStyle = rgba(style.rust, 0.05 + rng() * 0.08);
-                context.fillRect(
-                    left + rivetInset,
-                    top + rivetInset,
-                    1 + rng() * 1.6,
-                    6 + rng() * 30,
-                );
+                context.fillRect(left + rivetInset, top + rivetInset, 1 + rng() * 1.6, 6 + rng() * 30);
             }
 
             const streakCount = 2 + Math.floor(rng() * 3);
@@ -985,10 +980,7 @@ function paintMetal(context: CanvasRenderingContext2D, size: number, style: Meta
                 const streakX = left + rng() * width;
                 const streakY = top + rng() * height;
                 const streakLength = 4 + rng() * 28;
-                context.strokeStyle = rgba(
-                    rng() < 0.5 ? style.highlight : style.shadow,
-                    0.05 + rng() * 0.09,
-                );
+                context.strokeStyle = rgba(rng() < 0.5 ? style.highlight : style.shadow, 0.05 + rng() * 0.09);
                 context.lineWidth = 0.6 + rng() * 0.8;
                 context.beginPath();
                 context.moveTo(streakX, streakY);
@@ -1058,14 +1050,7 @@ function paintMetal(context: CanvasRenderingContext2D, size: number, style: Meta
     context.putImageData(image, 0, 0);
 }
 
-
-function paintRivet(
-    context: CanvasRenderingContext2D,
-    x: number,
-    y: number,
-    radius: number,
-    style: MetalStyle,
-): void {
+function paintRivet(context: CanvasRenderingContext2D, x: number, y: number, radius: number, style: MetalStyle): void {
     context.fillStyle = rgba(style.shadow, 0.55);
     context.beginPath();
     context.arc(x + radius * 0.25, y + radius * 0.3, radius, 0, TAU);
@@ -1102,9 +1087,7 @@ function paintSand(context: CanvasRenderingContext2D, size: number, style: SandS
             const crest = Math.pow(Math.max(0, ripple), 14);
             const shadow = Math.pow(Math.max(0, -ripple), 9);
             const fineRipple = Math.sin(TAU * (17 * u + 7 * v) + style.finePhase);
-            const broad =
-                Math.sin(TAU * (2 * u + 0 * v) + 1.2) * 0.5 +
-                Math.sin(TAU * (0 * u + 3 * v) + 3.4) * 0.5;
+            const broad = Math.sin(TAU * (2 * u + 0 * v) + 1.2) * 0.5 + Math.sin(TAU * (0 * u + 3 * v) + 3.4) * 0.5;
             const grain = (hash2(x, y, style.seed) - 0.5) * style.grainAmount;
             const shade = ripple * 0.5 + 0.5;
 
@@ -1167,14 +1150,7 @@ function paintDent(context: CanvasRenderingContext2D, size: number): void {
 
     context.clearRect(0, 0, size, size);
 
-    const hollow = context.createRadialGradient(
-        centreX,
-        centreY,
-        radius * 0.02,
-        centreX,
-        centreY,
-        radius,
-    );
+    const hollow = context.createRadialGradient(centreX, centreY, radius * 0.02, centreX, centreY, radius);
     hollow.addColorStop(0, rgba('#17110c', 0.92));
     hollow.addColorStop(0.42, rgba('#2a2017', 0.82));
     hollow.addColorStop(0.68, rgba('#443526', 0.55));
@@ -1195,15 +1171,7 @@ function paintDent(context: CanvasRenderingContext2D, size: number): void {
 
         context.fillStyle = rgba(rng() < 0.4 ? '#2f2418' : '#9c8764', 0.08 + rng() * 0.2);
         context.beginPath();
-        context.ellipse(
-            x,
-            y,
-            blobRadius * (0.7 + rng() * 0.9),
-            blobRadius * (0.35 + rng() * 0.55),
-            angle,
-            0,
-            TAU,
-        );
+        context.ellipse(x, y, blobRadius * (0.7 + rng() * 0.9), blobRadius * (0.35 + rng() * 0.55), angle, 0, TAU);
         context.fill();
     }
 
@@ -1275,12 +1243,7 @@ function paintFootprintShape(context: CanvasRenderingContext2D, size: number): v
         const spread = 1.02 + ring * 0.03;
         context.strokeStyle = rgba('#9c8764', 0.06);
         context.lineWidth = size * (0.005 + ring * 0.008);
-        context.strokeRect(
-            centreX - half * spread,
-            centreY - half * spread,
-            half * 2 * spread,
-            half * 2 * spread,
-        );
+        context.strokeRect(centreX - half * spread, centreY - half * spread, half * 2 * spread, half * 2 * spread);
     }
 
     // Nested, shrinking squares darken toward the middle and soften the outer edge without
@@ -1292,18 +1255,10 @@ function paintFootprintShape(context: CanvasRenderingContext2D, size: number): v
     for (let layer = 0; layer < layers; layer++) {
         const t = layer / (layers - 1);
         const layerHalf = half * (1 - Math.pow(t, 3) * 0.14);
-        const color =
-            t < 0.5
-                ? mixRgb(rimColor, midColor, t / 0.5)
-                : mixRgb(midColor, coreColor, (t - 0.5) / 0.5);
+        const color = t < 0.5 ? mixRgb(rimColor, midColor, t / 0.5) : mixRgb(midColor, coreColor, (t - 0.5) / 0.5);
 
         context.fillStyle = rgbaRgb(color, 0.025 + t * 0.055);
-        context.fillRect(
-            centreX - layerHalf,
-            centreY - layerHalf,
-            layerHalf * 2,
-            layerHalf * 2,
-        );
+        context.fillRect(centreX - layerHalf, centreY - layerHalf, layerHalf * 2, layerHalf * 2);
     }
 
     // Short cracks running out from the edges where the sand was compressed.
@@ -1356,15 +1311,7 @@ function paintFootprintShape(context: CanvasRenderingContext2D, size: number): v
 
         context.fillStyle = rgba(rng() < 0.55 ? '#a08a66' : '#241a11', 0.18 + rng() * 0.42);
         context.beginPath();
-        context.ellipse(
-            x,
-            y,
-            radius * (0.7 + rng() * 0.8),
-            radius * (0.4 + rng() * 0.6),
-            rng() * TAU,
-            0,
-            TAU,
-        );
+        context.ellipse(x, y, radius * (0.7 + rng() * 0.8), radius * (0.4 + rng() * 0.6), rng() * TAU, 0, TAU);
         context.fill();
     }
 }
@@ -1564,14 +1511,7 @@ function paintBlob(
     alpha: number,
 ): void {
     forWrappedPosition(x, y, radius, size, (wrappedX, wrappedY) => {
-        const gradient = context.createRadialGradient(
-            wrappedX,
-            wrappedY,
-            radius * 0.05,
-            wrappedX,
-            wrappedY,
-            radius,
-        );
+        const gradient = context.createRadialGradient(wrappedX, wrappedY, radius * 0.05, wrappedX, wrappedY, radius);
         gradient.addColorStop(0, rgba(color, alpha));
         gradient.addColorStop(0.65, rgba(color, alpha * 0.55));
         gradient.addColorStop(1, rgba(color, 0));
@@ -1681,12 +1621,7 @@ function forWrappedPosition(
             const wrappedX = x + offsetX * size;
             const wrappedY = y + offsetY * size;
 
-            if (
-                wrappedX + reach < 0 ||
-                wrappedX - reach > size ||
-                wrappedY + reach < 0 ||
-                wrappedY - reach > size
-            ) {
+            if (wrappedX + reach < 0 || wrappedX - reach > size || wrappedY + reach < 0 || wrappedY - reach > size) {
                 continue;
             }
 
@@ -1709,14 +1644,12 @@ function rgba(hex: string, alpha: number): string {
 }
 
 function rgbaRgb(color: Rgb, alpha: number): string {
-    return `rgba(${Math.round(color[0] * 255)}, ${Math.round(color[1] * 255)}, ${Math.round(color[2] * 255)}, ${alpha})`;
+    const red = Math.round(color[0] * 255);
+    const green = Math.round(color[1] * 255);
+    const blue = Math.round(color[2] * 255);
+    return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
 }
 
 function mixRgb(from: Rgb, to: Rgb, t: number): Rgb {
-    return [
-        from[0] + (to[0] - from[0]) * t,
-        from[1] + (to[1] - from[1]) * t,
-        from[2] + (to[2] - from[2]) * t,
-    ];
+    return [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t, from[2] + (to[2] - from[2]) * t];
 }
-

@@ -3,19 +3,13 @@ import { describe, expect, it } from 'vitest';
 
 import { Footprints } from './footprints';
 import { FOOT_LENGTH, FOOT_WIDTH, PLAYER_VISUAL_SCALE } from './player-model';
-import type { Terrain } from './terrain';
+import { fakeTerrain } from './test-helpers';
 
-const terrain = { heightAt: () => 4.2 } as unknown as Terrain;
+const terrain = fakeTerrain({ heightAt: () => 4.2 });
 const texture = new DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
 
 function spawnPrint(footprints: Footprints): void {
-    footprints.spawn(
-        new Vector3(1, 4.2, 2),
-        new Vector3(0, 0, 1),
-        0,
-        new Color(0.8, 0.7, 0.5),
-        terrain,
-    );
+    footprints.spawn(new Vector3(1, 4.2, 2), new Vector3(0, 0, 1), 0, new Color(0.8, 0.7, 0.5), terrain);
 }
 
 describe('footprints', () => {

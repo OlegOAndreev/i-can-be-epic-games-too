@@ -8,8 +8,12 @@ const LASER_SAMPLE_STEP = 0.2;
 const RAMP_EDGE_MARGIN = 0.05;
 const NO_BOXES: readonly StructureBox[] = [];
 
+export function rampRun(ramp: Ramp): number {
+    return ramp.axis === 'x' ? ramp.maxX - ramp.minX : ramp.maxZ - ramp.minZ;
+}
+
 export function rampSurfaceAt(ramp: Ramp, x: number, z: number): number {
-    const run = ramp.axis === 'x' ? ramp.maxX - ramp.minX : ramp.maxZ - ramp.minZ;
+    const run = rampRun(ramp);
     const along = ramp.axis === 'x' ? x - ramp.minX : z - ramp.minZ;
     return ramp.minY + ((ramp.maxY - ramp.minY) * along) / Math.max(run, 0.001);
 }
@@ -79,12 +83,7 @@ function segmentBoxEntry(
     let tMin = 0;
     let tMax = 1;
 
-    const axis = (
-        origin: number,
-        direction: number,
-        minimum: number,
-        maximum: number,
-    ): boolean => {
+    const axis = (origin: number, direction: number, minimum: number, maximum: number): boolean => {
         if (Math.abs(direction) < 1e-9) {
             return origin >= minimum && origin <= maximum;
         }
@@ -134,15 +133,7 @@ export function findStructureBlockingPoint(
 
     let earliest = Infinity;
     for (const box of boxes) {
-        const hit = segmentBoxEntry(
-            start.x,
-            start.y,
-            start.z,
-            deltaX,
-            deltaY,
-            deltaZ,
-            box,
-        );
+        const hit = segmentBoxEntry(start.x, start.y, start.z, deltaX, deltaY, deltaZ, box);
         if (hit !== null && hit < earliest) {
             earliest = hit;
         }
@@ -179,11 +170,7 @@ export function findStructureBlockingPoint(
     if (!Number.isFinite(earliest)) {
         return null;
     }
-    return new Vector3(
-        start.x + deltaX * earliest,
-        start.y + deltaY * earliest,
-        start.z + deltaZ * earliest,
-    );
+    return new Vector3(start.x + deltaX * earliest, start.y + deltaY * earliest, start.z + deltaZ * earliest);
 }
 
 // First point along the laser where it enters a ramp's solid deck, or null when the shot is clear.

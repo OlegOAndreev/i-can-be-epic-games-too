@@ -1,5 +1,4 @@
 import {
-    AdditiveBlending,
     CylinderGeometry,
     DynamicDrawUsage,
     InstancedMesh,
@@ -9,6 +8,8 @@ import {
     Scene,
     Vector3,
 } from 'three';
+
+import { glowMaterial } from './glow';
 
 // Two arcs trail the charged wrench: a short eighth-turn (45°) and a longer arc of 3π/8 (67.5°).
 export const WRENCH_TRAIL_SHORT_ARC = Math.PI / 4;
@@ -54,14 +55,8 @@ export class WrenchTrail {
         this.scene = scene;
         this.arc = arc;
         const geometry = new CylinderGeometry(1, 1, 1, 4);
-        this.material = new MeshBasicMaterial({
+        this.material = glowMaterial({
             color: 0xffffff,
-            transparent: true,
-            opacity: 0,
-            blending: AdditiveBlending,
-            depthWrite: false,
-            fog: false,
-            toneMapped: false,
         });
         this.mesh = new InstancedMesh(geometry, this.material, MAX_SEGMENTS);
         this.mesh.name = 'wrench-trail';
@@ -109,8 +104,7 @@ export class WrenchTrail {
             this.clear();
             return;
         }
-        this.material.opacity =
-            (this.fadeRemaining / AFTER_SWING_FADE) * (0.8 + Math.random() * 0.2);
+        this.material.opacity = (this.fadeRemaining / AFTER_SWING_FADE) * (0.8 + Math.random() * 0.2);
     }
 
     private sample(headPosition: Vector3, swingAngle: number): void {
@@ -128,18 +122,12 @@ export class WrenchTrail {
 
             if (this.segments.length < MAX_SEGMENTS && Math.random() < 0.22) {
                 // A short fork branching off the arc makes the streak read as electricity.
-                this.randomDirection.set(
-                    Math.random() - 0.5,
-                    Math.random() - 0.5,
-                    Math.random() - 0.5,
-                );
+                this.randomDirection.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5);
                 if (this.randomDirection.lengthSq() < 1e-4) {
                     this.randomDirection.set(1, 0, 0);
                 }
                 this.randomDirection.normalize();
-                this.forkPoint
-                    .copy(this.midpoint)
-                    .addScaledVector(this.randomDirection, 0.06 + Math.random() * 0.12);
+                this.forkPoint.copy(this.midpoint).addScaledVector(this.randomDirection, 0.06 + Math.random() * 0.12);
                 this.spawnSegment(this.midpoint, this.forkPoint, swingAngle);
             }
 

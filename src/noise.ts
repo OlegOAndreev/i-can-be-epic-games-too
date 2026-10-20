@@ -76,7 +76,6 @@ function fade(t: number): number {
     return t * t * t * (t * (t * 6 - 15) + 10);
 }
 
-
 function grad(hash: number, x: number, y: number): number {
     switch (hash & 7) {
         case 0:

@@ -85,18 +85,8 @@ const up = new Vector3();
 const center = new Vector3();
 const projectionScreenMatrix = new Matrix4();
 
-const nearCorners = [
-    new Vector3(),
-    new Vector3(),
-    new Vector3(),
-    new Vector3(),
-];
-const farCorners = [
-    new Vector3(),
-    new Vector3(),
-    new Vector3(),
-    new Vector3(),
-];
+const nearCorners = [new Vector3(), new Vector3(), new Vector3(), new Vector3()];
+const farCorners = [new Vector3(), new Vector3(), new Vector3(), new Vector3()];
 const cascadeCorners = [
     new Vector3(),
     new Vector3(),
@@ -120,10 +110,7 @@ export function configureSunShadowCascades(cascadeCount: number): void {
     if (!CASCADE_DEFINE.test(chunk)) {
         console.warn('Could not patch SUN_LIGHT_CASCADES in shadowmap_pars_fragment.');
     }
-    ShaderChunk.shadowmap_pars_fragment = chunk.replace(
-        CASCADE_DEFINE,
-        `#define SUN_LIGHT_CASCADES ${cascadeCount}`,
-    );
+    ShaderChunk.shadowmap_pars_fragment = chunk.replace(CASCADE_DEFINE, `#define SUN_LIGHT_CASCADES ${cascadeCount}`);
 }
 
 export class CascadedSunLightShadow extends SunLightShadow {
@@ -144,9 +131,7 @@ export class CascadedSunLightShadow extends SunLightShadow {
             throw new Error(`Invalid sun shadow cascade count: ${cascadeCount}`);
         }
         if (fractions.length !== cascadeCount - 1) {
-            throw new Error(
-                `Expected ${cascadeCount - 1} cascade fractions, got ${fractions.length}.`,
-            );
+            throw new Error(`Expected ${cascadeCount - 1} cascade fractions, got ${fractions.length}.`);
         }
 
         this.cascadeCount = cascadeCount;
@@ -197,12 +182,7 @@ export class CascadedSunLightShadow extends SunLightShadow {
         const insetY = Math.min(0.25, (Math.ceil(this.radius) + 1) / this.mapSize.y);
 
         for (let index = 0; index < this.cascadeCount; index++) {
-            this.cascadeViewports[index].set(
-                index + insetX,
-                insetY,
-                1 - 2 * insetX,
-                1 - 2 * insetY,
-            );
+            this.cascadeViewports[index].set(index + insetX, insetY, 1 - 2 * insetX, 1 - 2 * insetY);
         }
 
         const resolutionX = this.mapSize.x * (1 - 2 * insetX);
@@ -221,8 +201,7 @@ export class CascadedSunLightShadow extends SunLightShadow {
         const splits = this.cascadeSplits;
         splits[0] = cameraNear;
         for (let index = 1; index < this.cascadeCount; index++) {
-            splits[index] =
-                cameraNear + (cameraFar - cameraNear) * this.cascadeFractions[index - 1];
+            splits[index] = cameraNear + (cameraFar - cameraNear) * this.cascadeFractions[index - 1];
         }
         splits[this.cascadeCount] = cameraFar;
 
@@ -238,12 +217,7 @@ export class CascadedSunLightShadow extends SunLightShadow {
 
         // View-frustum corners in light space. The rotation preserves distances, so the cascades
         // can be fitted and snapped directly in this space.
-        const zNear =
-            viewCamera.reversedDepth
-                ? 1
-                : viewCamera.coordinateSystem === WebGPUCoordinateSystem
-                  ? 0
-                  : -1;
+        const zNear = viewCamera.reversedDepth ? 1 : viewCamera.coordinateSystem === WebGPUCoordinateSystem ? 0 : -1;
         const inverseProjectionMatrix = viewCamera.projectionMatrixInverse;
 
         let globalMaxZ = -Infinity;
@@ -252,9 +226,7 @@ export class CascadedSunLightShadow extends SunLightShadow {
             const x = index === 0 || index === 1 ? 1 : -1;
             const y = index === 0 || index === 3 ? 1 : -1;
 
-            const nearCorner = nearCorners[index]
-                .set(x, y, zNear)
-                .applyMatrix4(inverseProjectionMatrix);
+            const nearCorner = nearCorners[index].set(x, y, zNear).applyMatrix4(inverseProjectionMatrix);
             const farCorner = farCorners[index];
 
             if (view.isPerspectiveCamera === true) {
@@ -290,19 +262,9 @@ export class CascadedSunLightShadow extends SunLightShadow {
             center.set(0, 0, 0);
 
             for (let corner = 0; corner < 4; corner++) {
-                cascadeCorners[corner * 2].lerpVectors(
-                    nearCorners[corner],
-                    farCorners[corner],
-                    nearAlpha,
-                );
-                cascadeCorners[corner * 2 + 1].lerpVectors(
-                    nearCorners[corner],
-                    farCorners[corner],
-                    farAlpha,
-                );
-                center
-                    .add(cascadeCorners[corner * 2])
-                    .add(cascadeCorners[corner * 2 + 1]);
+                cascadeCorners[corner * 2].lerpVectors(nearCorners[corner], farCorners[corner], nearAlpha);
+                cascadeCorners[corner * 2 + 1].lerpVectors(nearCorners[corner], farCorners[corner], farAlpha);
+                center.add(cascadeCorners[corner * 2]).add(cascadeCorners[corner * 2 + 1]);
             }
 
             center.multiplyScalar(1 / 8);
@@ -339,8 +301,7 @@ export class CascadedSunLightShadow extends SunLightShadow {
             cascadeCamera.near = shadowNear;
             cascadeCamera.far = globalMaxZ - minZ + 2 * shadowNear;
             cascadeCamera.coordinateSystem = camera.coordinateSystem;
-            (cascadeCamera as unknown as { _reversedDepth: boolean })._reversedDepth =
-                camera.reversedDepth;
+            (cascadeCamera as unknown as { _reversedDepth: boolean })._reversedDepth = camera.reversedDepth;
             cascadeCamera.updateProjectionMatrix();
             cascadeCamera.updateMatrixWorld();
 
@@ -359,10 +320,7 @@ export class CascadedSunLightShadow extends SunLightShadow {
         frustum: Frustum,
         viewport: Vector4,
     ): void {
-        projectionScreenMatrix.multiplyMatrices(
-            cascadeCamera.projectionMatrix,
-            cascadeCamera.matrixWorldInverse,
-        );
+        projectionScreenMatrix.multiplyMatrices(cascadeCamera.projectionMatrix, cascadeCamera.matrixWorldInverse);
         frustum.setFromProjectionMatrix(
             projectionScreenMatrix,
             cascadeCamera.coordinateSystem,
@@ -375,10 +333,7 @@ export class CascadedSunLightShadow extends SunLightShadow {
         const offsetX = viewport.x / frameExtents.x;
         const offsetY = viewport.y / frameExtents.y;
 
-        if (
-            cascadeCamera.coordinateSystem === WebGPUCoordinateSystem ||
-            cascadeCamera.reversedDepth
-        ) {
+        if (cascadeCamera.coordinateSystem === WebGPUCoordinateSystem || cascadeCamera.reversedDepth) {
             shadowMatrix.set(
                 0.5 * scaleX,
                 0,

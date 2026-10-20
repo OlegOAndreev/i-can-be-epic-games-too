@@ -2,7 +2,7 @@ import { Group, Mesh, MeshStandardMaterial, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
 import { ANIMAL_EYE_COLOR, RobotAnimals } from './robot-animals';
-import { Terrain } from './terrain';
+import { testTerrain } from './test-helpers';
 
 function animalGroups(animals: RobotAnimals): Group[] {
     return animals.group.children.filter((child): child is Group => child instanceof Group);
@@ -19,16 +19,14 @@ function normalizeAngle(angle: number): number {
 
 describe('robot animals', () => {
     it('spawns deer and wolves with green eyes on dry land', () => {
-        const terrain = new Terrain(20260419, { meshes: false });
+        const terrain = testTerrain(20260419, { meshes: false });
         const animals = new RobotAnimals(terrain);
         const groups = animalGroups(animals);
 
         expect(groups.length).toBe(4);
         expect(animals.getColliders()).toHaveLength(groups.length);
         expect(animals.getColliders().every((collider) => collider.kind === 'animal')).toBe(true);
-        expect(new Set(groups.map((group) => group.userData.kind))).toEqual(
-            new Set(['deer', 'wolf']),
-        );
+        expect(new Set(groups.map((group) => group.userData.kind))).toEqual(new Set(['deer', 'wolf']));
 
         const packs = new Map<string, { kind: string; members: Group[] }>();
         for (const group of groups) {
@@ -74,7 +72,7 @@ describe('robot animals', () => {
     });
 
     it('roams, recycles, and wolves stop to face the player', () => {
-        const terrain = new Terrain(20260419, { meshes: false });
+        const terrain = testTerrain(20260419, { meshes: false });
         const animals = new RobotAnimals(terrain);
         const groups = animalGroups(animals);
         const starts = groups.map((group) => group.position.clone());
@@ -88,14 +86,11 @@ describe('robot animals', () => {
 
         // Animals left behind are recycled around the player, so travel always brings new wildlife.
         const nearby = groups.filter(
-            (group) =>
-                Math.hypot(group.position.x - farAway.x, group.position.z - farAway.z) < 200,
+            (group) => Math.hypot(group.position.x - farAway.x, group.position.z - farAway.z) < 200,
         );
         expect(nearby.length).toBeGreaterThanOrEqual(2);
 
-        const moved = groups.some(
-            (group, index) => group.position.distanceTo(starts[index]) > 0.5,
-        );
+        const moved = groups.some((group, index) => group.position.distanceTo(starts[index]) > 0.5);
         expect(moved).toBe(true);
 
         const wolf = groups.find((group) => group.userData.kind === 'wolf')!;
@@ -116,7 +111,7 @@ describe('robot animals', () => {
     });
 
     it('makes deer packs run away from the player', () => {
-        const terrain = new Terrain(20260419, { meshes: false });
+        const terrain = testTerrain(20260419, { meshes: false });
         const animals = new RobotAnimals(terrain);
         const groups = animalGroups(animals);
         const deer = groups.filter((group) => group.userData.kind === 'deer');
@@ -141,13 +136,8 @@ describe('robot animals', () => {
 
         for (let step = 0; step < 60; step++) {
             animals.update(0.05, player);
-            const tailAngles = pack.map(
-                (group) => group.getObjectByName('tail')?.rotation.y ?? 0,
-            );
-            maxTailSpread = Math.max(
-                maxTailSpread,
-                Math.max(...tailAngles) - Math.min(...tailAngles),
-            );
+            const tailAngles = pack.map((group) => group.getObjectByName('tail')?.rotation.y ?? 0);
+            maxTailSpread = Math.max(maxTailSpread, Math.max(...tailAngles) - Math.min(...tailAngles));
         }
 
         const end = centre();
@@ -163,7 +153,7 @@ describe('robot animals', () => {
     });
 
     it('wags wolf tails while the pack watches the player', () => {
-        const terrain = new Terrain(20260419, { meshes: false });
+        const terrain = testTerrain(20260419, { meshes: false });
         const animals = new RobotAnimals(terrain);
         const groups = animalGroups(animals);
         const wolf = groups.find((group) => group.userData.kind === 'wolf')!;

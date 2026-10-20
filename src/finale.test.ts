@@ -1,7 +1,20 @@
 import { Quaternion, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
-import { crossedRing, findFlightCollision, findHullCollision, flightSpeedCap, hyperdriveEnginePitch, hyperdriveEngineThrottle, hyperdriveEngineVolume, hyperdriveSpeedMultiplier, mountainCeiling, planRingCourse, planSkyArc, sampleSkyArc } from './finale';
+import {
+    crossedRing,
+    findFlightCollision,
+    findHullCollision,
+    flightSpeedCap,
+    hyperdriveEnginePitch,
+    hyperdriveEngineThrottle,
+    hyperdriveEngineVolume,
+    hyperdriveSpeedMultiplier,
+    mountainCeiling,
+    planRingCourse,
+    planSkyArc,
+    sampleSkyArc,
+} from './finale';
 import { SECOND_SUN_DIRECTION, SUN_BISECTOR_DIRECTION, SUN_DIRECTION } from './sky-directions';
 import { WORLD_HALF_SIZE } from './terrain';
 
@@ -231,39 +244,15 @@ describe('ring crossing', () => {
     const normal = new Vector3(0, 0, 1);
 
     it('accepts a crossing through the hole', () => {
-        expect(
-            crossedRing(
-                new Vector3(2, 10, -2),
-                new Vector3(2, 10, 2),
-                center,
-                normal,
-                5,
-            ),
-        ).toBe(true);
+        expect(crossedRing(new Vector3(2, 10, -2), new Vector3(2, 10, 2), center, normal, 5)).toBe(true);
     });
 
     it('rejects a crossing outside the hole', () => {
-        expect(
-            crossedRing(
-                new Vector3(9, 10, -2),
-                new Vector3(9, 10, 2),
-                center,
-                normal,
-                5,
-            ),
-        ).toBe(false);
+        expect(crossedRing(new Vector3(9, 10, -2), new Vector3(9, 10, 2), center, normal, 5)).toBe(false);
     });
 
     it('rejects movement that never reaches the ring plane', () => {
-        expect(
-            crossedRing(
-                new Vector3(0, 10, 2),
-                new Vector3(0, 10, 4),
-                center,
-                normal,
-                5,
-            ),
-        ).toBe(false);
+        expect(crossedRing(new Vector3(0, 10, 2), new Vector3(0, 10, 4), center, normal, 5)).toBe(false);
     });
 });
 
@@ -296,11 +285,7 @@ describe('sky arc', () => {
     });
 
     it('turns a dead reversal through a finite arc', () => {
-        const arc = planSkyArc(
-            new Vector3(),
-            new Vector3(0, 0, 1),
-            new Vector3(0, 0, -1),
-        );
+        const arc = planSkyArc(new Vector3(), new Vector3(0, 0, 1), new Vector3(0, 0, -1));
         const position = new Vector3();
         const tangent = new Vector3();
 

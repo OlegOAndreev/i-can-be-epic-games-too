@@ -266,14 +266,16 @@ export class Profiler {
         const yaw = normalizeDegrees((this.camera.rotation.y * 180) / Math.PI);
         const pitch = Math.round((-this.camera.rotation.x * 180) / Math.PI);
 
-        const gpuLine = gpu !== null
-            ? `gpu ${gpu.toFixed(1).padStart(5)} ms`
-            : this.gpuTimingAvailable
-              ? 'gpu   ... ms  (waiting for query)'
-              : 'gpu   n/a     (timer query unavailable)';
+        const gpuLine =
+            gpu !== null
+                ? `gpu ${gpu.toFixed(1).padStart(5)} ms`
+                : this.gpuTimingAvailable
+                  ? 'gpu   ... ms  (waiting for query)'
+                  : 'gpu   n/a     (timer query unavailable)';
 
         this.textNode.nodeValue = [
-            `${fps.toFixed(0).padStart(3)} fps  ${interval.toFixed(1).padStart(5)} ms avg  ${current.toFixed(1).padStart(5)} ms now`,
+            `${fps.toFixed(0).padStart(3)} fps  ${interval.toFixed(1).padStart(5)} ms avg  ` +
+                `${current.toFixed(1).padStart(5)} ms now`,
             `cpu ${frame.toFixed(1).padStart(5)} ms  (update ${update.toFixed(1)}, render ${render.toFixed(1)})`,
             `${gpuLine}  draws ${String(info.render.calls).padStart(3)}  tris ${formatCount(info.render.triangles)}`,
             `yaw ${String(yaw).padStart(3)}°  pitch ${String(pitch).padStart(3)}°  buffer ${width}×${height}`,
@@ -323,9 +325,7 @@ export class Profiler {
                 continue;
             }
             const y = plotBottom - (limit / graphMax) * plotHeight;
-            context.strokeStyle = limit === 16.7
-                ? 'rgba(255, 255, 255, 0.22)'
-                : 'rgba(255, 255, 255, 0.12)';
+            context.strokeStyle = limit === 16.7 ? 'rgba(255, 255, 255, 0.22)' : 'rgba(255, 255, 255, 0.12)';
             context.setLineDash(limit === 16.7 ? [3, 2] : [2, 2]);
             context.beginPath();
             context.moveTo(0, y);
@@ -393,7 +393,7 @@ function drawSeries(
             continue;
         }
         const x = startX + (index + 0.5) * slotWidth;
-        const y = plotBottom - (Math.min(1, Math.max(0, value / graphMax)) * plotHeight);
+        const y = plotBottom - Math.min(1, Math.max(0, value / graphMax)) * plotHeight;
         if (started) {
             context.lineTo(x, y);
         } else {
@@ -413,7 +413,7 @@ function drawSeries(
             continue;
         }
         const x = startX + (index + 0.5) * slotWidth;
-        const y = plotBottom - (Math.min(1, Math.max(0, value / graphMax)) * plotHeight);
+        const y = plotBottom - Math.min(1, Math.max(0, value / graphMax)) * plotHeight;
         context.fillRect(x - 0.5, y - 0.5, 1, 1);
     }
 }

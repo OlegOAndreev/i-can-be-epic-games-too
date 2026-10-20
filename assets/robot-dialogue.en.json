@@ -1,83 +1,83 @@
 {
-    "intro": [
-        {
-            "speaker": "matron",
-            "text": "Your vessel fell out of the dark and broke itself on our shore. We watched the fire, and we waited for you to wake."
-        },
-        {
-            "speaker": "walle",
-            "text": "This world belonged to the Makers. When their star began to fail, they raised the megastructures, seeded us to tend them, and left for another sky."
-        },
-        {
-            "speaker": "probe",
-            "text": "We were thousands once. Centuries of dust, cold, and silence wore most of us down to scrap. Only a few still remember our purpose."
-        },
-        {
-            "speaker": "matron",
-            "text": "Some did not decay. Something in the deep cores infected them, and now the feral ones nest inside the halls. They kill anything that enters.",
-            "tags": ["enemies"]
-        },
-        {
-            "speaker": "walle",
-            "text": "The megastructures still hold the planet's heat. Clear the feral machines from each one, and its old generators will answer again.",
-            "tags": ["enemies"]
-        },
-        {
-            "speaker": "walle",
-            "text": "The megastructures still hold the planet's heat. Its old generators will answer again.",
-            "tags": ["!enemies"]
-        },
-        {
-            "speaker": "walle",
-            "text": "Take my wrench. The generator housings have seized after centuries of dust; a firm turn may wake them.",
-            "givesWrench": true
-        },
-        {
-            "speaker": "probe",
-            "text": "Climb the central spire. The Makers left an ignition lattice at its crown, waiting for a hand that can reach it."
-        },
-        {
-            "speaker": "matron",
-            "text": "When your vessel broke on the shore, five pieces tore away and fell across the island. We watched where they came down, but we could not leave the wreck."
-        },
-        {
-            "speaker": "walle",
-            "text": "I marked the rough landing zones on your map. Open it with Tab."
-        },
-        {
-            "speaker": "probe",
-            "text": "Your ship's detector still answers for every lost piece. The closer you get, the faster it beeps, and the piece will glow when you are almost on top of it."
-        },
-        {
-            "speaker": "probe",
-            "text": "The fuel cells are dry too. The ship needs six pieces of mineral for the fuel. Look for boulders with an emerald sheen and break them open with the wrench."
-        },
-        {
-            "speaker": "matron",
-            "text": "Wake the spire and it will draw power from the world's heart. That power can charge your ship, or open a road off this rock."
-        },
-        {
-            "speaker": "walle",
-            "text": "Expect no mercy. The violent ones are blind, ancient, and afraid of the light. They hear every footstep on the metal.",
-            "tags": ["enemies"]
-        },
-        {
-            "speaker": "probe",
-            "text": "Go, traveler. We will guard the wreck. Return with the spire burning behind you."
-        }
-    ],
-    "outro": [
-        {
-            "speaker": "matron",
-            "text": "You did it! Oh, I am so happy for you."
-        },
-        {
-            "speaker": "walle",
-            "text": "She flies again. Go on, the sky is waiting."
-        },
-        {
-            "speaker": "probe",
-            "text": "Our friend is going home. I am happy for you."
-        }
-    ]
+  "intro": [
+    {
+      "speaker": "matron",
+      "text": "Your vessel fell out of the dark and broke itself on our shore. We watched the fire, and we waited for you to wake."
+    },
+    {
+      "speaker": "walle",
+      "text": "This world belonged to the Makers. When their star began to fail, they raised the megastructures, seeded us to tend them, and left for another sky."
+    },
+    {
+      "speaker": "probe",
+      "text": "We were thousands once. Centuries of dust, cold, and silence wore most of us down to scrap. Only a few still remember our purpose."
+    },
+    {
+      "speaker": "matron",
+      "text": "Some did not decay. Something in the deep cores infected them, and now the feral ones nest inside the halls. They kill anything that enters.",
+      "tags": ["enemies"]
+    },
+    {
+      "speaker": "walle",
+      "text": "The megastructures still hold the planet's heat. Clear the feral machines from each one, and its old generators will answer again.",
+      "tags": ["enemies"]
+    },
+    {
+      "speaker": "walle",
+      "text": "The megastructures still hold the planet's heat. Its old generators will answer again.",
+      "tags": ["!enemies"]
+    },
+    {
+      "speaker": "walle",
+      "text": "Take my wrench. The generator housings have seized after centuries of dust; a firm turn may wake them.",
+      "givesWrench": true
+    },
+    {
+      "speaker": "probe",
+      "text": "Climb the central spire. The Makers left an ignition lattice at its crown, waiting for a hand that can reach it."
+    },
+    {
+      "speaker": "matron",
+      "text": "When your vessel broke on the shore, five pieces tore away and fell across the island. We watched where they came down, but we could not leave the wreck."
+    },
+    {
+      "speaker": "walle",
+      "text": "I marked the rough landing zones on your map. Open it with Tab."
+    },
+    {
+      "speaker": "probe",
+      "text": "Your ship's detector still answers for every lost piece. The closer you get, the faster it beeps, and the piece will glow when you are almost on top of it."
+    },
+    {
+      "speaker": "probe",
+      "text": "The fuel cells are dry too. The ship needs six pieces of mineral for the fuel. Look for boulders with an emerald sheen and break them open with the wrench."
+    },
+    {
+      "speaker": "matron",
+      "text": "Wake the spire and it will draw power from the world's heart. That power can charge your ship, or open a road off this rock."
+    },
+    {
+      "speaker": "walle",
+      "text": "Expect no mercy. The violent ones are blind, ancient, and afraid of the light. They hear every footstep on the metal.",
+      "tags": ["enemies"]
+    },
+    {
+      "speaker": "probe",
+      "text": "Go, traveler. We will guard the wreck. Return with the spire burning behind you."
+    }
+  ],
+  "outro": [
+    {
+      "speaker": "matron",
+      "text": "You did it! Oh, I am so happy for you."
+    },
+    {
+      "speaker": "walle",
+      "text": "She flies again. Go on, the sky is waiting."
+    },
+    {
+      "speaker": "probe",
+      "text": "Our friend is going home. I am happy for you."
+    }
+  ]
 }

@@ -145,10 +145,7 @@ export class ShipFlightEffects {
         }
 
         this.direction.subVectors(tip, last).divideScalar(distance);
-        const steps = Math.min(
-            PARTICLE_POOL,
-            Math.floor(distance / WING_TRAIL_EMIT_STEP),
-        );
+        const steps = Math.min(PARTICLE_POOL, Math.floor(distance / WING_TRAIL_EMIT_STEP));
         for (let step = 1; step <= steps; step++) {
             this.step.copy(last).addScaledVector(this.direction, WING_TRAIL_EMIT_STEP * step);
             this.spawn(side, this.step.x, this.step.y, this.step.z);

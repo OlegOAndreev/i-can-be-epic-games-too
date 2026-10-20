@@ -2,22 +2,18 @@ import { FrontSide, Mesh, MeshBasicMaterial, Scene } from 'three';
 import { describe, expect, it } from 'vitest';
 
 import { ShoreFoam, foamAmountForSurfaceArea } from './shore-foam';
-import { Terrain } from './terrain';
-
-const FAST_TERRAIN = { meshes: false, decorations: false } as const;
+import { testTerrain } from './test-helpers';
 
 describe('shore foam', () => {
     it('gives small pools only a trace of foam and large water the full surf', () => {
         expect(foamAmountForSurfaceArea(60)).toBeLessThan(0.25);
-        expect(foamAmountForSurfaceArea(5_000)).toBeGreaterThan(
-            foamAmountForSurfaceArea(500),
-        );
+        expect(foamAmountForSurfaceArea(5_000)).toBeGreaterThan(foamAmountForSurfaceArea(500));
         expect(foamAmountForSurfaceArea(5_000)).toBeLessThan(1);
         expect(foamAmountForSurfaceArea(40_000)).toBe(1);
     });
 
     it('always builds two continuous, finite foam layers', () => {
-        const terrain = new Terrain(20261018, FAST_TERRAIN);
+        const terrain = testTerrain(20261018);
         const scene = new Scene();
         const foam = new ShoreFoam(scene, terrain);
 
@@ -61,11 +57,10 @@ describe('shore foam', () => {
 
         foam.dispose();
         expect(scene.children.length).toBe(0);
-        terrain.dispose();
     });
 
     it('faces every foam triangle up so the band is hidden from underwater', () => {
-        const terrain = new Terrain(20261018, FAST_TERRAIN);
+        const terrain = testTerrain(20261018);
         const scene = new Scene();
         const foam = new ShoreFoam(scene, terrain);
 
@@ -86,11 +81,10 @@ describe('shore foam', () => {
         }
 
         foam.dispose();
-        terrain.dispose();
     });
 
     it('cycles layer opacity so foam drifts and respawns', () => {
-        const terrain = new Terrain(20261018, FAST_TERRAIN);
+        const terrain = testTerrain(20261018);
         const scene = new Scene();
         const foam = new ShoreFoam(scene, terrain);
         const meshes = scene.children as Mesh[];
@@ -103,6 +97,5 @@ describe('shore foam', () => {
         expect(after.some((opacity) => opacity > 0)).toBe(true);
 
         foam.dispose();
-        terrain.dispose();
     });
 });

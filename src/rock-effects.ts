@@ -1,11 +1,4 @@
-import {
-    Group,
-    Mesh,
-    MeshBasicMaterial,
-    MeshStandardMaterial,
-    TetrahedronGeometry,
-    Vector3,
-} from 'three';
+import { Group, Mesh, MeshBasicMaterial, MeshStandardMaterial, TetrahedronGeometry, Vector3 } from 'three';
 import type { BufferGeometry } from 'three';
 
 import { createRockGeometry } from './rock-shapes';
@@ -64,9 +57,8 @@ export class RockEffects {
 
     private readonly terrain: Terrain;
     private readonly sparkGeometry = new TetrahedronGeometry(0.07, 0);
-    private readonly fragmentGeometries: BufferGeometry[] = Array.from(
-        { length: CHUNK_VARIANTS },
-        (_, variant) => createRockGeometry(variant),
+    private readonly fragmentGeometries: BufferGeometry[] = Array.from({ length: CHUNK_VARIANTS }, (_, variant) =>
+        createRockGeometry(variant),
     );
     private readonly fragmentMaterials: MeshStandardMaterial[];
     private readonly sparks: Spark[] = [];
@@ -154,11 +146,7 @@ export class RockEffects {
                 y + (Math.random() - 0.5) * 0.22,
                 z + (Math.random() - 0.5) * 0.22,
             );
-            spark.mesh.rotation.set(
-                Math.random() * Math.PI,
-                Math.random() * Math.PI,
-                Math.random() * Math.PI,
-            );
+            spark.mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
             spark.mesh.scale.setScalar(size);
             spark.mesh.visible = true;
             spark.velocity.set(
@@ -166,20 +154,13 @@ export class RockEffects {
                 Math.abs(cosPhi) * speed + 0.6,
                 Math.sin(theta) * sinPhi * speed,
             );
-            spark.spin.set(
-                (Math.random() - 0.5) * 13,
-                (Math.random() - 0.5) * 13,
-                (Math.random() - 0.5) * 13,
-            );
+            spark.spin.set((Math.random() - 0.5) * 13, (Math.random() - 0.5) * 13, (Math.random() - 0.5) * 13);
             spark.baseSize = size;
             spark.age = 0;
-            spark.lifetime =
-                SPARK_LIFETIME_MIN + Math.random() * (SPARK_LIFETIME_MAX - SPARK_LIFETIME_MIN);
+            spark.lifetime = SPARK_LIFETIME_MIN + Math.random() * (SPARK_LIFETIME_MAX - SPARK_LIFETIME_MIN);
             spark.floorY = groundY + 0.04;
             spark.active = true;
-            spark.material.color.setHex(
-                SPARK_COLORS[Math.floor(Math.random() * SPARK_COLORS.length)],
-            );
+            spark.material.color.setHex(SPARK_COLORS[Math.floor(Math.random() * SPARK_COLORS.length)]);
             spark.material.opacity = 0.95;
         }
     }
@@ -205,14 +186,8 @@ export class RockEffects {
                 z + Math.sin(theta) * spread,
             );
             fragment.mesh.geometry =
-                this.fragmentGeometries[
-                    Math.floor(Math.random() * this.fragmentGeometries.length)
-                ];
-            fragment.mesh.rotation.set(
-                Math.random() * TAU,
-                Math.random() * TAU,
-                Math.random() * TAU,
-            );
+                this.fragmentGeometries[Math.floor(Math.random() * this.fragmentGeometries.length)];
+            fragment.mesh.rotation.set(Math.random() * TAU, Math.random() * TAU, Math.random() * TAU);
             fragment.baseScale.set(
                 size * (0.7 + Math.random() * 0.55),
                 size * (0.55 + Math.random() * 0.55),
@@ -225,16 +200,8 @@ export class RockEffects {
                 1.4 + Math.random() * 2.6,
                 Math.sin(theta) * (1.4 + Math.random() * 2.8),
             );
-            fragment.spin.set(
-                (Math.random() - 0.5) * 11,
-                (Math.random() - 0.5) * 11,
-                (Math.random() - 0.5) * 11,
-            );
-            fragment.halfHeight = Math.max(
-                fragment.baseScale.x,
-                fragment.baseScale.y,
-                fragment.baseScale.z,
-            );
+            fragment.spin.set((Math.random() - 0.5) * 11, (Math.random() - 0.5) * 11, (Math.random() - 0.5) * 11);
+            fragment.halfHeight = Math.max(fragment.baseScale.x, fragment.baseScale.y, fragment.baseScale.z);
             fragment.age = 0;
             fragment.lifetime = CHUNK_LIFETIME;
             fragment.bounces = 0;
@@ -300,10 +267,7 @@ export class RockEffects {
                     fragment.mesh.position.z,
                     previousY - fragment.halfHeight + 0.05,
                 );
-                if (
-                    fragment.velocity.y < 0 &&
-                    fragment.mesh.position.y - fragment.halfHeight <= surface
-                ) {
+                if (fragment.velocity.y < 0 && fragment.mesh.position.y - fragment.halfHeight <= surface) {
                     fragment.mesh.position.y = surface + fragment.halfHeight;
                     const impactSpeed = -fragment.velocity.y;
                     if (fragment.bounces < MAX_BOUNCES && impactSpeed > 1.5) {

@@ -1,7 +1,5 @@
 import {
-    AdditiveBlending,
     BoxGeometry,
-    CanvasTexture,
     CircleGeometry,
     ConeGeometry,
     CylinderGeometry,
@@ -16,22 +14,13 @@ import {
 import type { Object3D } from 'three';
 
 import type { GameAudio, RobotBeepHandle } from './audio';
-import { getRadialGlowTexture } from './glow';
+import { getRadialGlowTexture, glowSpriteMaterial } from './glow';
 import { t } from './i18n';
 import { clamp } from './math-utils';
-import { disposeGeometry } from './mesh-optimize';
-import type {
-    CrownCatwalk,
-    MegastructureStorey,
-    MegastructureTower,
-    Ramp,
-} from './megastructures';
+import { disposeSceneGraph } from './mesh-optimize';
+import type { CrownCatwalk, MegastructureStorey, MegastructureTower, Ramp } from './megastructures';
 import { mulberry32 } from './noise';
-import {
-    SpeechLabel,
-    createCaretakerModel,
-    dimRobotModel,
-} from './npc-robots';
+import { SpeechLabel, createCaretakerModel, dimRobotModel } from './npc-robots';
 import type { RobotKind, RobotModel } from './npc-robots';
 import { WATER_LEVEL } from './terrain';
 import type { CylinderCollider, Terrain } from './terrain';
@@ -240,21 +229,7 @@ export class RobotRemains {
     }
 
     dispose(): void {
-        this.group.removeFromParent();
-        this.group.traverse((child) => {
-            if (child instanceof Mesh) {
-                disposeGeometry(child.geometry);
-            }
-            if (child instanceof Mesh || child instanceof Sprite) {
-                const materials = Array.isArray(child.material) ? child.material : [child.material];
-                for (const material of materials) {
-                    if (material instanceof SpriteMaterial && material.map instanceof CanvasTexture) {
-                        material.map.dispose();
-                    }
-                    material.dispose();
-                }
-            }
-        });
+        disposeSceneGraph(this.group);
         for (const speech of this.speeches) {
             speech.beeps?.stop();
         }
@@ -277,16 +252,7 @@ export class RobotRemains {
         group.position.set(shore.x, shore.y, shore.z);
         group.rotation.y = Math.atan2(origin.x - shore.x, origin.z - shore.z);
 
-        const model = this.addBody(
-            group,
-            'matron',
-            0,
-            0,
-            0,
-            0,
-            'half-buried',
-            { weather: true, dim: 1 },
-        );
+        const model = this.addBody(group, 'matron', 0, 0, 0, 0, 'half-buried', { weather: true, dim: 1 });
         this.addSandMound(group, shore.x, shore.z, 1.0);
 
         this.tidewalkerGlow = collectGlow(model.visual);
@@ -313,16 +279,7 @@ export class RobotRemains {
         this.sweeperBase.copy(group.position);
         this.sweeperAxis.set(anchor.tangentX, 0, anchor.tangentZ);
 
-        const model = this.addBody(
-            group,
-            'walle',
-            0,
-            0,
-            0,
-            0,
-            'upright',
-            { weather: true, headless: true },
-        );
+        const model = this.addBody(group, 'walle', 0, 0, 0, 0, 'upright', { weather: true, headless: true });
         this.sweeperToolArm = model.visual.getObjectByName('tool-arm') ?? null;
 
         // A clean ellipse in the dust records where the brush has been running for centuries. It
@@ -387,28 +344,16 @@ export class RobotRemains {
         group.position.set(site.x, site.y, site.z);
         group.rotation.y = Math.atan2(this.terrain.spawn.x - site.x, this.terrain.spawn.z - site.z);
 
-        const model = this.addBody(
-            group,
-            'probe',
-            0,
-            0.6,
-            0,
-            0,
-            'lie-side',
-            { weather: true, dim: 1 },
-        );
+        const model = this.addBody(group, 'probe', 0, 0.6, 0, 0, 'lie-side', { weather: true, dim: 1 });
         recolorEmissive(model.visual, 0x6fe3d4);
         this.drownedGlow = collectGlow(model.visual);
         setGlow(this.drownedGlow, 0.35);
 
-        const lightMaterial = new SpriteMaterial({
+        const lightMaterial = glowSpriteMaterial({
             map: getRadialGlowTexture(),
             color: 0x6fe3d4,
-            transparent: true,
             opacity: 0.34,
-            blending: AdditiveBlending,
-            depthWrite: false,
-            toneMapped: false,
+            fog: true,
         });
         const light = new Sprite(lightMaterial);
         light.position.y = 1.35;
@@ -548,11 +493,7 @@ export class RobotRemains {
                 new BoxGeometry(0.28 + this.rng() * 0.45, 0.08, 0.4 + this.rng() * 0.6),
                 scrapMaterial,
             );
-            scrap.position.set(
-                (this.rng() - 0.5) * 3.2,
-                0.04 + this.rng() * 0.16,
-                (this.rng() - 0.5) * 3.2,
-            );
+            scrap.position.set((this.rng() - 0.5) * 3.2, 0.04 + this.rng() * 0.16, (this.rng() - 0.5) * 3.2);
             scrap.rotation.set(this.rng() * 0.4, this.rng() * Math.PI, this.rng() * 0.4);
             // Floor scrap is too small to read in a shadow map, and each piece would be drawn once
             // per cascade.
@@ -573,14 +514,11 @@ export class RobotRemains {
         const core = new Mesh(new CylinderGeometry(0.13, 0.13, 0.38, 10), cacheMaterial);
         cacheGroup.add(core);
         const cacheGlow = new Sprite(
-            new SpriteMaterial({
+            glowSpriteMaterial({
                 map: getRadialGlowTexture(),
                 color: 0x51d6c9,
-                transparent: true,
                 opacity: 0.32,
-                blending: AdditiveBlending,
-                depthWrite: false,
-                toneMapped: false,
+                fog: true,
             }),
         );
         cacheGlow.scale.setScalar(1.8);
@@ -661,14 +599,11 @@ export class RobotRemains {
         battery.rotation.z = Math.PI / 2;
         batteryGroup.add(battery);
         const batteryGlow = new Sprite(
-            new SpriteMaterial({
+            glowSpriteMaterial({
                 map: getRadialGlowTexture(),
                 color: 0x63d9c4,
-                transparent: true,
                 opacity: 0.2,
-                blending: AdditiveBlending,
-                depthWrite: false,
-                toneMapped: false,
+                fog: true,
             }),
         );
         batteryGlow.scale.setScalar(1.2);
@@ -722,13 +657,7 @@ export class RobotRemains {
         this.sweeperServoTimer -= dt;
         if (this.sweeperServoTimer <= 0) {
             this.sweeperServoTimer = 1.7 + (this.elapsed % 0.7);
-            this.audio.playRobotBeeps(
-                54,
-                [0, 0.07, 0.15],
-                0.055,
-                0x51ed270b,
-                this.sweeper.position,
-            );
+            this.audio.playRobotBeeps(54, [0, 0.07, 0.15], 0.055, 0x51ed270b, this.sweeper.position);
         }
     }
 
@@ -753,18 +682,10 @@ export class RobotRemains {
         }
 
         if (!this.claimed.has('tidewalker')) {
-            const distance = Math.hypot(
-                playerPosition.x - speech.position.x,
-                playerPosition.z - speech.position.z,
-            );
+            const distance = Math.hypot(playerPosition.x - speech.position.x, playerPosition.z - speech.position.z);
             if (distance < MAX_TRIGGER_DISTANCE && Math.abs(playerPosition.y - speech.position.y) < 5) {
                 this.claimed.add('tidewalker');
-                this.speak(
-                    speech,
-                    t('remains.tidewalker', '…thousand and one… still counting…'),
-                    88,
-                    true,
-                );
+                this.speak(speech, t('remains.tidewalker', '…thousand and one… still counting…'), 88, true);
             }
         }
 
@@ -782,10 +703,7 @@ export class RobotRemains {
         }
 
         if (!this.claimed.has('drowned')) {
-            const distance = Math.hypot(
-                playerPosition.x - speech.position.x,
-                playerPosition.z - speech.position.z,
-            );
+            const distance = Math.hypot(playerPosition.x - speech.position.x, playerPosition.z - speech.position.z);
             if (
                 playerPosition.y < WATER_LEVEL - 0.2 &&
                 distance < 7.5 &&
@@ -794,10 +712,7 @@ export class RobotRemains {
                 this.claimed.add('drowned');
                 this.speak(
                     speech,
-                    t(
-                        'remains.drowned',
-                        'We opened the deep core because it sang. It was not a song. It was a count.',
-                    ),
+                    t('remains.drowned', 'We opened the deep core because it sang. It was not a song. It was a count.'),
                     152,
                     true,
                 );
@@ -818,18 +733,10 @@ export class RobotRemains {
         }
 
         if (!this.claimed.has('sleeper')) {
-            const distance = Math.hypot(
-                playerPosition.x - speech.position.x,
-                playerPosition.z - speech.position.z,
-            );
+            const distance = Math.hypot(playerPosition.x - speech.position.x, playerPosition.z - speech.position.z);
             if (distance < MAX_TRIGGER_DISTANCE && Math.abs(playerPosition.y - speech.position.y) < 4) {
                 this.claimed.add('sleeper');
-                this.speak(
-                    speech,
-                    t('remains.sleeper', 'MIRA // BATTERY REMOVED BY OWNER'),
-                    0,
-                    false,
-                );
+                this.speak(speech, t('remains.sleeper', 'MIRA // BATTERY REMOVED BY OWNER'), 0, false);
             }
         }
     }
@@ -936,13 +843,7 @@ export class RobotRemains {
             for (let index = 1; index <= count; index++) {
                 times.push((index / count) * speech.remaining * 0.9);
             }
-            speech.beeps = this.audio.playRobotBeeps(
-                pitch,
-                times,
-                0.22,
-                words * 977 + pitch,
-                speech.position,
-            );
+            speech.beeps = this.audio.playRobotBeeps(pitch, times, 0.22, words * 977 + pitch, speech.position);
         }
     }
 
@@ -1020,11 +921,7 @@ export class RobotRemains {
             const radius = 0.55 + this.rng() * 0.75;
             const height = 0.24 + this.rng() * 0.38;
             const blade = new Mesh(new ConeGeometry(0.035, height, 4), grassMaterial);
-            blade.position.set(
-                Math.cos(angle) * radius,
-                height / 2,
-                Math.sin(angle) * radius,
-            );
+            blade.position.set(Math.cos(angle) * radius, height / 2, Math.sin(angle) * radius);
             blade.rotation.z = (this.rng() - 0.5) * 0.2;
             blade.castShadow = false;
             group.add(blade);
@@ -1041,10 +938,7 @@ export class RobotRemains {
             .map((tower, index) => ({
                 tower,
                 index,
-                distance: Math.hypot(
-                    (tower.minX + tower.maxX) / 2 - spawn.x,
-                    (tower.minZ + tower.maxZ) / 2 - spawn.z,
-                ),
+                distance: Math.hypot((tower.minX + tower.maxX) / 2 - spawn.x, (tower.minZ + tower.maxZ) / 2 - spawn.z),
             }))
             .sort((a, b) => a.distance - b.distance);
     }
@@ -1070,12 +964,7 @@ export class RobotRemains {
             .filter((ramp) => {
                 const x = (ramp.minX + ramp.maxX) / 2;
                 const z = (ramp.minZ + ramp.maxZ) / 2;
-                return (
-                    x > tower.minX &&
-                    x < tower.maxX &&
-                    z > tower.minZ &&
-                    z < tower.maxZ
-                );
+                return x > tower.minX && x < tower.maxX && z > tower.minZ && z < tower.maxZ;
             })
             .sort((a, b) => a.minY + a.maxY - (b.minY + b.maxY));
     }
@@ -1221,7 +1110,10 @@ function rampPoint(ramp: Ramp, t: number): { x: number; y: number; z: number; ya
     return { x, y, z, yaw: ramp.maxY >= ramp.minY ? 0 : Math.PI, slope };
 }
 
-function findShorePoint(terrain: Terrain, origin: { x: number; z: number }): { x: number; z: number; y: number } | null {
+function findShorePoint(
+    terrain: Terrain,
+    origin: { x: number; z: number },
+): { x: number; z: number; y: number } | null {
     const bands: Array<[number, number]> = [
         [-0.25, 0.4],
         [-0.8, 1.2],
@@ -1325,9 +1217,7 @@ function findForestPoint(
                     continue;
                 }
                 if (
-                    terrain.megastructures.sites.some(
-                        (site) => Math.hypot(x - site.x, z - site.z) < site.radius + 18,
-                    )
+                    terrain.megastructures.sites.some((site) => Math.hypot(x - site.x, z - site.z) < site.radius + 18)
                 ) {
                     continue;
                 }
@@ -1346,5 +1236,3 @@ function findForestPoint(
     }
     return null;
 }
-
-

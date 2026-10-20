@@ -1,11 +1,7 @@
 import { ShaderChunk } from 'three';
 import { describe, expect, it, vi } from 'vitest';
 
-import {
-    CascadedSunLightShadow,
-    SHADOW_PRESETS,
-    configureSunShadowCascades,
-} from './sun-light-shadow';
+import { CascadedSunLightShadow, SHADOW_PRESETS, configureSunShadowCascades } from './sun-light-shadow';
 
 describe('shadow presets', () => {
     it('define one fraction for every non-final cascade', () => {
@@ -49,9 +45,7 @@ describe('shadow presets', () => {
         const original = ShaderChunk.shadowmap_pars_fragment;
         try {
             configureSunShadowCascades(4);
-            expect(ShaderChunk.shadowmap_pars_fragment).toContain(
-                '#define SUN_LIGHT_CASCADES 4',
-            );
+            expect(ShaderChunk.shadowmap_pars_fragment).toContain('#define SUN_LIGHT_CASCADES 4');
         } finally {
             ShaderChunk.shadowmap_pars_fragment = original;
         }
@@ -63,9 +57,7 @@ describe('shadow presets', () => {
         try {
             configureSunShadowCascades(2);
             expect(warning).not.toHaveBeenCalled();
-            expect(ShaderChunk.shadowmap_pars_fragment).toContain(
-                '#define SUN_LIGHT_CASCADES 2',
-            );
+            expect(ShaderChunk.shadowmap_pars_fragment).toContain('#define SUN_LIGHT_CASCADES 2');
         } finally {
             ShaderChunk.shadowmap_pars_fragment = original;
             warning.mockRestore();

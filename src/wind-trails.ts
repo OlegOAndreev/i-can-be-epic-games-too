@@ -53,13 +53,7 @@ function createGustVariant(spec: GustSpec): GustVariant {
     }
 
     const curve = new CatmullRomCurve3(points);
-    const geometry = new TubeGeometry(
-        curve,
-        GUST_SEGMENTS,
-        GUST_RADIUS,
-        GUST_RADIAL_SEGMENTS,
-        false,
-    );
+    const geometry = new TubeGeometry(curve, GUST_SEGMENTS, GUST_RADIUS, GUST_RADIAL_SEGMENTS, false);
 
     // Shrink the tube toward both tips so each gust thins out like a fading trail of air.
     const position = geometry.getAttribute('position');
@@ -143,11 +137,7 @@ export class WindTrails {
         // verticalSpeed is negative while falling; a fast drop trails just like a fast sprint.
         const fallIntensity = Math.min(
             1,
-            Math.max(
-                0,
-                (-verticalSpeed - FALL_TRAIL_START_SPEED) /
-                    (FALL_TRAIL_FULL_SPEED - FALL_TRAIL_START_SPEED),
-            ),
+            Math.max(0, (-verticalSpeed - FALL_TRAIL_START_SPEED) / (FALL_TRAIL_FULL_SPEED - FALL_TRAIL_START_SPEED)),
         );
         const intensity = Math.max(horizontalIntensity, fallIntensity);
         this.emissionTimer -= dt;
@@ -223,11 +213,7 @@ export class WindTrails {
 
         // Aim each wisp at the camera so it gains depth instead of sitting flat above the ground.
         // The small random deflection keeps the bundle from converging on one exact point.
-        trailAxis.set(
-            cameraPosition.x - spawnX,
-            cameraPosition.y - spawnY,
-            cameraPosition.z - spawnZ,
-        );
+        trailAxis.set(cameraPosition.x - spawnX, cameraPosition.y - spawnY, cameraPosition.z - spawnZ);
         if (trailAxis.lengthSq() < 0.01) {
             // The camera can end up all but on top of a wisp; fall back to the robot's motion.
             trailAxis.set(direction.x, 0, direction.z);

@@ -98,11 +98,7 @@ export class ThirdPersonCamera {
 
     update(dt: number, playerPosition: Vector3, terrain: Terrain): void {
         if (this.firstPerson) {
-            this.camera.position.set(
-                playerPosition.x,
-                playerPosition.y + FIRST_PERSON_EYE_HEIGHT,
-                playerPosition.z,
-            );
+            this.camera.position.set(playerPosition.x, playerPosition.y + FIRST_PERSON_EYE_HEIGHT, playerPosition.z);
             this.camera.rotation.set(-this.pitch, this.yaw, 0);
             this.effectiveDistance = 0;
             return;
@@ -133,11 +129,7 @@ export class ThirdPersonCamera {
         this.camera.position.copy(this.smoothedTarget).addScaledVector(this.offset, this.currentDistance);
 
         // Follow the player below the water line; the walk surface already includes the seabed.
-        const floor = terrain.walkSurfaceAt(
-            this.camera.position.x,
-            this.camera.position.z,
-            this.camera.position.y,
-        );
+        const floor = terrain.walkSurfaceAt(this.camera.position.x, this.camera.position.z, this.camera.position.y);
         this.camera.position.y = Math.max(this.camera.position.y, floor + 0.35);
         this.effectiveDistance = this.camera.position.distanceTo(this.smoothedTarget);
 
@@ -160,8 +152,7 @@ export class ThirdPersonCamera {
         if (
             this.hasOcclusionCache &&
             Math.abs(fullDistance - this.cachedOcclusionLength) < OCCLUSION_CACHE_LENGTH_EPSILON &&
-            this.cachedOcclusionTarget.distanceToSquared(target) <
-                OCCLUSION_CACHE_MOVE_SQUARED &&
+            this.cachedOcclusionTarget.distanceToSquared(target) < OCCLUSION_CACHE_MOVE_SQUARED &&
             this.cachedOcclusionDirection.dot(offset) > OCCLUSION_CACHE_DIRECTION_DOT
         ) {
             return this.cachedOcclusionDistance;
@@ -172,10 +163,7 @@ export class ThirdPersonCamera {
             const y = target.y + offset.y * distance;
             const z = target.z + offset.z * distance;
             const ground = terrain.heightAt(x, z) + 0.3;
-            return (
-                y < ground ||
-                terrain.intersectsStructure(x, y, z, CAMERA_COLLISION_RADIUS)
-            );
+            return y < ground || terrain.intersectsStructure(x, y, z, CAMERA_COLLISION_RADIUS);
         };
 
         const steps = Math.max(1, Math.ceil(fullDistance / OCCLUSION_STEP));
@@ -196,12 +184,7 @@ export class ThirdPersonCamera {
                         free = middle;
                     }
                 }
-                return this.cacheOcclusion(
-                    target,
-                    offset,
-                    fullDistance,
-                    Math.max(MIN_OCCLUDED_DISTANCE, free - 0.05),
-                );
+                return this.cacheOcclusion(target, offset, fullDistance, Math.max(MIN_OCCLUDED_DISTANCE, free - 0.05));
             }
             lastFreeDistance = distance;
         }
@@ -209,12 +192,7 @@ export class ThirdPersonCamera {
         return this.cacheOcclusion(target, offset, fullDistance, fullDistance);
     }
 
-    private cacheOcclusion(
-        target: Vector3,
-        direction: Vector3,
-        fullDistance: number,
-        allowedDistance: number,
-    ): number {
+    private cacheOcclusion(target: Vector3, direction: Vector3, fullDistance: number, allowedDistance: number): number {
         this.cachedOcclusionTarget.copy(target);
         this.cachedOcclusionDirection.copy(direction);
         this.cachedOcclusionLength = fullDistance;

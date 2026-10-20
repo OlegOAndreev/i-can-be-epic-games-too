@@ -58,7 +58,5 @@ function baseName(name: string): string {
     if (!name) {
         return UNNAMED;
     }
-    return name
-        .replace(/-cell--?\d+--?\d+$/, '')
-        .replace(/--?\d+--?\d+$/, '');
+    return name.replace(/-cell--?\d+--?\d+$/, '').replace(/--?\d+--?\d+$/, '');
 }

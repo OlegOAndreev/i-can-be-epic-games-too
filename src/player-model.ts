@@ -12,7 +12,13 @@ import {
     SpriteMaterial,
 } from 'three';
 
-import { getGlowRingTexture, getRadialGlowTexture, GLOW_RING_TEXTURE_RADIUS } from './glow';
+import {
+    getGlowRingTexture,
+    getRadialGlowTexture,
+    GLOW_RING_TEXTURE_RADIUS,
+    glowMaterial as createGlowMaterial,
+    glowSpriteMaterial,
+} from './glow';
 import { mergeMeshesByMaterial } from './mesh-optimize';
 
 // The rear thruster dots glow softly while idle and flare up while running.
@@ -111,15 +117,10 @@ export function buildPlayerModel(): PlayerModel {
         depthWrite: false,
         fog: false,
     });
-    const thrusterSpriteGlowMaterial = new SpriteMaterial({
+    const thrusterSpriteGlowMaterial = glowSpriteMaterial({
         map: getRadialGlowTexture(),
         color: 0x5fe6da,
-        transparent: true,
         opacity: THRUSTER_BASE_HALO_OPACITY,
-        blending: AdditiveBlending,
-        depthWrite: false,
-        fog: false,
-        toneMapped: false,
     });
 
     const shell = createMaterial(0xd5d7d2, 0.45, 0.2);
@@ -173,15 +174,10 @@ export function buildPlayerModel(): PlayerModel {
     // A fixed plane, not a billboard sprite: a sprite rotates toward the camera and its far edge
     // sinks behind the visor at oblique angles, clipping the glow. The plane stays parallel to the
     // visor face, so it never intersects the head and is still occluded when seen from behind.
-    const visorGlowMaterial = new MeshBasicMaterial({
+    const visorGlowMaterial = createGlowMaterial({
         map: getRadialGlowTexture(),
         color: 0x7ff6ea,
-        transparent: true,
         opacity: 0.85,
-        blending: AdditiveBlending,
-        depthWrite: false,
-        fog: false,
-        toneMapped: false,
     });
     const visorGlow = new Mesh(new PlaneGeometry(0.68, 0.3), visorGlowMaterial);
     visorGlow.position.set(0, 1.11, 0.265);
@@ -207,15 +203,10 @@ export function buildPlayerModel(): PlayerModel {
     // A soft halo glows faintly at all times and flares with each detector beep; a hollow ring
     // answers the beeps. Both are sprites facing the camera, like the megastructure crown's glow,
     // so the pulse reads from any viewing angle.
-    const antennaGlowSpriteMaterial = new SpriteMaterial({
+    const antennaGlowSpriteMaterial = glowSpriteMaterial({
         map: getRadialGlowTexture(),
         color: 0x7ff6ea,
-        transparent: true,
         opacity: ANTENNA_IDLE_HALO_OPACITY,
-        blending: AdditiveBlending,
-        depthWrite: false,
-        fog: false,
-        toneMapped: false,
     });
     const antennaGlowSprite = new Sprite(antennaGlowSpriteMaterial);
     antennaGlowSprite.name = 'antenna-detector-glow';
@@ -223,15 +214,9 @@ export function buildPlayerModel(): PlayerModel {
     antennaGlowSprite.scale.setScalar(ANTENNA_IDLE_HALO_SCALE);
     upperBody.add(antennaGlowSprite);
 
-    const antennaRingMaterial = new SpriteMaterial({
+    const antennaRingMaterial = glowSpriteMaterial({
         map: getGlowRingTexture(),
         color: 0x5fe6da,
-        transparent: true,
-        opacity: 0,
-        blending: AdditiveBlending,
-        depthWrite: false,
-        fog: false,
-        toneMapped: false,
     });
     const antennaRing = new Sprite(antennaRingMaterial);
     antennaRing.name = 'antenna-detector-ring';
@@ -256,10 +241,7 @@ export function buildPlayerModel(): PlayerModel {
         thruster.position.set(side * 0.14, 0.29, -0.4);
         upperBody.add(thruster);
 
-        const nozzle = new Mesh(
-            new CylinderGeometry(0.055, 0.055, 0.025, 10),
-            thrusterGlowMaterial,
-        );
+        const nozzle = new Mesh(new CylinderGeometry(0.055, 0.055, 0.025, 10), thrusterGlowMaterial);
         nozzle.rotation.x = Math.PI / 2;
         nozzle.position.set(side * 0.14, 0.29, -0.52);
         upperBody.add(nozzle);
@@ -329,10 +311,7 @@ export function buildPlayerModel(): PlayerModel {
         foot.position.set(0, -0.8775, 0.06);
         leg.add(foot);
 
-        const footTop = new Mesh(
-            new BoxGeometry(FOOT_WIDTH * 0.96, 0.012, FOOT_LENGTH * 0.96),
-            orange,
-        );
+        const footTop = new Mesh(new BoxGeometry(FOOT_WIDTH * 0.96, 0.012, FOOT_LENGTH * 0.96), orange);
         footTop.position.set(0, -0.8285, 0.06);
         leg.add(footTop);
 

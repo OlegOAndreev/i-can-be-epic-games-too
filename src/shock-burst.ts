@@ -1,6 +1,8 @@
-import { AdditiveBlending, BufferGeometry, Group, Mesh, MeshBasicMaterial, TetrahedronGeometry, Vector3 } from 'three';
+import { BufferGeometry, Group, Mesh, MeshBasicMaterial, TetrahedronGeometry, Vector3 } from 'three';
 
 import { buildElectricBolts } from './electric-bolts';
+import { glowMaterial } from './glow';
+import { applySpin, bounceParticle, integrateParticle } from './particle-motion';
 
 export const SHOCK_COLOR = 0x4fc3ff;
 export const SHOCK_BURST_SECONDS = 0.75;
@@ -52,14 +54,9 @@ export class ShockBurst {
         this.group.name = 'shock-burst';
         this.group.visible = false;
 
-        this.boltMaterial = new MeshBasicMaterial({
+        this.boltMaterial = glowMaterial({
             color: SHOCK_COLOR,
-            transparent: true,
             opacity: 0.9,
-            blending: AdditiveBlending,
-            depthWrite: false,
-            fog: false,
-            toneMapped: false,
         });
         // Bolts are rebuilt only here; a hit swaps between prebuilt variants so the tube merge
         // and its temporary geometries never run during combat.
@@ -171,20 +168,17 @@ export class ShockBurst {
             }
 
             const velocity = this.particleVelocities[index];
-            velocity.y -= SHOCK_PARTICLE_GRAVITY * dt;
-            particle.position.addScaledVector(velocity, dt);
-            if (particle.position.y < this.floorY) {
-                particle.position.y = this.floorY;
-                velocity.y = Math.abs(velocity.y) * 0.3;
-                velocity.x *= 0.65;
-                velocity.z *= 0.65;
-                this.particleSpins[index].multiplyScalar(0.8);
-            }
-
             const spin = this.particleSpins[index];
-            particle.rotation.x += spin.x * dt;
-            particle.rotation.y += spin.y * dt;
-            particle.rotation.z += spin.z * dt;
+            integrateParticle(particle.position, velocity, dt, {
+                gravity: SHOCK_PARTICLE_GRAVITY,
+            });
+            bounceParticle(particle.position, velocity, spin, this.floorY, 0.3, 0.65, {
+                spinDamping: 0.8,
+                requireDownward: false,
+                inclusive: false,
+            });
+
+            applySpin(particle, spin, dt);
 
             const progress = age / lifetime;
             particle.scale.setScalar(this.particleSizes[index] * (1 - progress * 0.75));

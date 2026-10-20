@@ -89,7 +89,11 @@ export class GrassField {
                 .replace(
                     '#include <project_vertex>',
                     `vec3 tuftWorld = (modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-                    vGrassFade = 1.0 - smoothstep(${FADE_START.toFixed(1)}, ${FADE_END.toFixed(1)}, distance(tuftWorld, cameraPosition));
+                    vGrassFade = 1.0 - smoothstep(
+                        ${FADE_START.toFixed(1)},
+                        ${FADE_END.toFixed(1)},
+                        distance(tuftWorld, cameraPosition)
+                    );
                     #include <project_vertex>`,
                 );
             shader.fragmentShader = shader.fragmentShader
@@ -312,7 +316,6 @@ function pushVertex(positions: number[], colors: number[], x: number, y: number,
 function radiusToCells(radius: number): number {
     return Math.max(1, Math.ceil(radius / CELL_SIZE));
 }
-
 
 function cellKey(x: number, z: number): string {
     return `${x},${z}`;

@@ -1,9 +1,4 @@
-import {
-    BufferGeometry,
-    DodecahedronGeometry,
-    IcosahedronGeometry,
-    OctahedronGeometry,
-} from 'three';
+import { BufferGeometry, DodecahedronGeometry, IcosahedronGeometry, OctahedronGeometry } from 'three';
 
 import { mulberry32 } from './noise';
 
@@ -49,23 +44,11 @@ export function createRockGeometry(variant: number): BufferGeometry {
         // Broad overlapping lobes break up the round silhouette, while the position hash chips
         // individual corners. Hashing the position (not the vertex index) keeps duplicated
         // flat-shading vertices welded together.
-        const lobe =
-            Math.sin(x * lobeX + phaseX) *
-            Math.cos(y * lobeY + phaseY) *
-            Math.sin(z * lobeZ + phaseZ);
-        const chip = hashUnit(
-            x * chipScale + chipX,
-            y * chipScale + chipY,
-            z * chipScale + chipZ,
-        );
+        const lobe = Math.sin(x * lobeX + phaseX) * Math.cos(y * lobeY + phaseY) * Math.sin(z * lobeZ + phaseZ);
+        const chip = hashUnit(x * chipScale + chipX, y * chipScale + chipY, z * chipScale + chipZ);
         const radial = 1 + lobe * lobeStrength + (chip - 0.5) * chipStrength;
 
-        position.setXYZ(
-            index,
-            x * radial * axisX + shearX * y,
-            y * radial * axisY,
-            z * radial * axisZ + shearZ * y,
-        );
+        position.setXYZ(index, x * radial * axisX + shearX * y, y * radial * axisY, z * radial * axisZ + shearZ * y);
     }
 
     position.needsUpdate = true;

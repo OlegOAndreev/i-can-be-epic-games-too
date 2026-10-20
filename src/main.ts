@@ -3,7 +3,6 @@ import type GUI from 'lil-gui';
 import type Stats from 'three/addons/libs/stats.module.js';
 import {
     ACESFilmicToneMapping,
-    AdditiveBlending,
     AmbientLight,
     BackSide,
     CanvasTexture,
@@ -20,7 +19,6 @@ import {
     ShaderMaterial,
     SphereGeometry,
     Sprite,
-    SpriteMaterial,
     SRGBColorSpace,
     Vector3,
     WebGLRenderer,
@@ -30,16 +28,9 @@ import { SunLight } from 'three/addons/lights/SunLight.js';
 import robotDialogueEn from '../assets/robot-dialogue.en.json';
 import robotDialogueRu from '../assets/robot-dialogue.ru.json';
 
-import {
-    CascadedSunLightShadow,
-    SHADOW_PRESETS,
-    configureSunShadowCascades,
-} from './sun-light-shadow';
+import { CascadedSunLightShadow, SHADOW_PRESETS, configureSunShadowCascades } from './sun-light-shadow';
 import type { ShadowQuality } from './sun-light-shadow';
-import {
-    StaticSunShadow,
-    installStaticSunShadowShaderChunks,
-} from './static-sun-shadow';
+import { StaticSunShadow, installStaticSunShadowShaderChunks } from './static-sun-shadow';
 
 import { GameAudio, preloadAudioEffects } from './audio';
 import { getById, reportError, setupWindowOnError } from './common-utils';
@@ -50,6 +41,7 @@ import { EnemyRobots } from './enemies';
 import { Finale } from './finale';
 import type { FinaleUi } from './finale';
 import { Footprints } from './footprints';
+import { glowSpriteMaterial } from './glow';
 import type { Difficulty } from './enemies';
 import { DEFAULT_GRASS_RADIUS, GrassField } from './grass';
 import { GroundDents } from './ground-dent';
@@ -57,7 +49,7 @@ import { initI18n, locale, t } from './i18n';
 import type { Locale } from './i18n';
 import { IdleManager } from './idle-manager';
 import { Input } from './input';
-import { clamp } from './math-utils';
+import { angleDelta, clamp, damp } from './math-utils';
 import { MEGASTRUCTURE_LAYER } from './megastructures';
 import type { MegastructureTower } from './megastructures';
 import { NightSky } from './night-sky';
@@ -81,12 +73,7 @@ import { applyRobotWorldOnlyShadows, createRobotShadowSun, sunShadowIndex } from
 import { ScreenOverlay } from './screen-overlay';
 import { readSharedPlayerState, readSharedSeed, writeSharedPlayerState } from './share-state';
 import { ShoreFoam } from './shore-foam';
-import {
-    SKY_COLOR,
-    SKY_HORIZON_COLOR,
-    SKY_PURPLE_COLOR,
-    SKY_ZENITH_COLOR,
-} from './sky-color';
+import { SKY_COLOR, SKY_HORIZON_COLOR, SKY_PURPLE_COLOR, SKY_ZENITH_COLOR } from './sky-color';
 import { SECOND_SUN_DIRECTION, SUN_BISECTOR_DIRECTION, SUN_DIRECTION } from './sky-directions';
 import { SpaceshipParts } from './spaceship-parts';
 import { Terrain, WATER_LEVEL, WORLD_HALF_SIZE, MINERAL_GOAL } from './terrain';
@@ -96,11 +83,7 @@ import { ThirdPersonCamera, THIRD_PERSON_DISTANCE } from './third-person-camera'
 import { UnderwaterEffect } from './underwater';
 import { WaterSplash } from './water-splash';
 import { WindTrails } from './wind-trails';
-import {
-    WRENCH_TRAIL_LONG_ARC,
-    WRENCH_TRAIL_SHORT_ARC,
-    WrenchTrail,
-} from './wrench-trail';
+import { WRENCH_TRAIL_LONG_ARC, WRENCH_TRAIL_SHORT_ARC, WrenchTrail } from './wrench-trail';
 import { WRENCH_WIND_TRAIL_ARC, WrenchWindTrail } from './wrench-wind-trail';
 import { WreckMap } from './wreck-map';
 
@@ -126,7 +109,6 @@ const PLAYER_RESPAWN_DELAY = 1.2;
 // Damage arrives one hit at a time out of only a handful, so lift the raw fraction to keep the red
 // edge obvious after even the first strike.
 const DAMAGE_VIGNETTE_BOOST = 1.6;
-
 
 // Cascaded shadows cover the same range as the fog; anything beyond it is not visible.
 const MAX_SHADOW_DISTANCE = 620;
@@ -240,10 +222,7 @@ function readSavedIds(value: unknown): string[] {
         return [];
     }
     return value
-        .filter(
-            (id): id is string =>
-                typeof id === 'string' && id.length > 0 && id.length <= MAX_SAVED_ID_LENGTH,
-        )
+        .filter((id): id is string => typeof id === 'string' && id.length > 0 && id.length <= MAX_SAVED_ID_LENGTH)
         .slice(0, MAX_SAVED_IDS);
 }
 
@@ -251,9 +230,7 @@ function readSavedTowerIndices(value: unknown): number[] {
     if (!Array.isArray(value)) {
         return [];
     }
-    return value
-        .filter((index): index is number => Number.isInteger(index) && index >= 0)
-        .slice(0, MAX_SAVED_IDS);
+    return value.filter((index): index is number => Number.isInteger(index) && index >= 0).slice(0, MAX_SAVED_IDS);
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -272,20 +249,13 @@ function readStoredPlayerState(): StoredPlayerState | null {
         }
         const state = parsed as Partial<StoredPlayerState>;
         // Without a valid world seed there is nothing meaningful to restore.
-        if (
-            typeof state.seed !== 'number' ||
-            !Number.isInteger(state.seed) ||
-            state.seed < 1 ||
-            state.seed > 999999
-        ) {
+        if (typeof state.seed !== 'number' || !Number.isInteger(state.seed) || state.seed < 1 || state.seed > 999999) {
             return null;
         }
 
         // Version 1 is the original unversioned shape; its field names already match the current
         // format, so it only needs the clamping below. A newer save keeps every field it shares.
-        const version = isFiniteNumber(state.version)
-            ? Math.max(1, Math.floor(state.version))
-            : 1;
+        const version = isFiniteNumber(state.version) ? Math.max(1, Math.floor(state.version)) : 1;
         // Salvage each field independently instead of discarding the whole save when one value
         // is corrupt. Position and camera fields have safe neutral defaults.
         const x = isFiniteNumber(state.x) ? clamp(state.x, -WORLD_HALF_SIZE, WORLD_HALF_SIZE) : 0;
@@ -293,9 +263,7 @@ function readStoredPlayerState(): StoredPlayerState | null {
         const z = isFiniteNumber(state.z) ? clamp(state.z, -WORLD_HALF_SIZE, WORLD_HALF_SIZE) : 0;
         const facing = isFiniteNumber(state.facing) ? state.facing : 0;
         const cameraYaw = isFiniteNumber(state.cameraYaw) ? state.cameraYaw : 0;
-        const cameraPitch = isFiniteNumber(state.cameraPitch)
-            ? clamp(state.cameraPitch, -1.5, 1.5)
-            : 0;
+        const cameraPitch = isFiniteNumber(state.cameraPitch) ? clamp(state.cameraPitch, -1.5, 1.5) : 0;
 
         return {
             version,
@@ -307,19 +275,12 @@ function readStoredPlayerState(): StoredPlayerState | null {
             cameraYaw,
             cameraPitch,
             elapsedSeconds:
-                isFiniteNumber(state.elapsedSeconds) && state.elapsedSeconds >= 0
-                    ? state.elapsedSeconds
-                    : undefined,
+                isFiniteNumber(state.elapsedSeconds) && state.elapsedSeconds >= 0 ? state.elapsedSeconds : undefined,
             musicTrack:
-                typeof state.musicTrack === 'number' &&
-                Number.isInteger(state.musicTrack) &&
-                state.musicTrack >= 0
+                typeof state.musicTrack === 'number' && Number.isInteger(state.musicTrack) && state.musicTrack >= 0
                     ? state.musicTrack
                     : undefined,
-            musicOffset:
-                isFiniteNumber(state.musicOffset) && state.musicOffset >= 0
-                    ? state.musicOffset
-                    : undefined,
+            musicOffset: isFiniteNumber(state.musicOffset) && state.musicOffset >= 0 ? state.musicOffset : undefined,
             defeatedEnemies: readSavedIds(state.defeatedEnemies),
             claimedRemains: readSavedIds(state.claimedRemains),
             claimedParts: readSavedIds(state.claimedParts),
@@ -405,9 +366,7 @@ function storedNumber(
     fallback: number,
 ): number {
     const value = settings[key];
-    return typeof value === 'number' && Number.isFinite(value)
-        ? clamp(value, minimum, maximum)
-        : fallback;
+    return typeof value === 'number' && Number.isFinite(value) ? clamp(value, minimum, maximum) : fallback;
 }
 
 function storedBoolean(settings: StoredSettings, key: string, fallback: boolean): boolean {
@@ -417,16 +376,12 @@ function storedBoolean(settings: StoredSettings, key: string, fallback: boolean)
 
 function storedDifficulty(settings: StoredSettings, fallback: Difficulty): Difficulty {
     const value = settings.difficulty;
-    return value === 'peaceful' || value === 'easy' || value === 'medium' || value === 'hard'
-        ? value
-        : fallback;
+    return value === 'peaceful' || value === 'easy' || value === 'medium' || value === 'hard' ? value : fallback;
 }
 
 function storedShadowQuality(settings: StoredSettings, fallback: ShadowQuality): ShadowQuality {
     const value = settings.shadowQuality;
-    return value === 'low' || value === 'medium' || value === 'high' || value === 'ultra'
-        ? value
-        : fallback;
+    return value === 'low' || value === 'medium' || value === 'high' || value === 'ultra' ? value : fallback;
 }
 
 function storedShadowMode(settings: StoredSettings, fallback: ShadowMode): ShadowMode {
@@ -501,9 +456,7 @@ function parseSeedText(value: string): number | null {
 
 const initialSearchParams = new URLSearchParams(window.location.search);
 const DEBUG_TOOLS_ENABLED =
-    import.meta.env.DEV ||
-    initialSearchParams.has('debug') ||
-    initialSearchParams.has('profile');
+    import.meta.env.DEV || initialSearchParams.has('debug') || initialSearchParams.has('profile');
 const sharedPlayerState = readSharedPlayerState(initialSearchParams);
 const storedSettings = readStoredSettings();
 const shadowQuality = storedShadowQuality(storedSettings, DEFAULT_SETTINGS.shadowQuality);
@@ -523,13 +476,7 @@ const renderSettings = {
     antialias: storedBoolean(storedSettings, 'antialias', DEFAULT_SETTINGS.antialias),
     shadowQuality,
     shadowMode: storedShadowMode(storedSettings, DEFAULT_SETTINGS.shadowMode),
-    shadowDistance: storedNumber(
-        storedSettings,
-        'shadowDistance',
-        100,
-        shadowPreset.distance,
-        shadowPreset.distance,
-    ),
+    shadowDistance: storedNumber(storedSettings, 'shadowDistance', 100, shadowPreset.distance, shadowPreset.distance),
     grassRadius: storedNumber(storedSettings, 'grassRadius', 25, 140, DEFAULT_SETTINGS.grassRadius),
 };
 
@@ -553,13 +500,7 @@ const debugSettings = {
     showGrass: storedBoolean(storedSettings, 'showGrass', DEFAULT_SETTINGS.showGrass),
     showTrees: storedBoolean(storedSettings, 'showTrees', DEFAULT_SETTINGS.showTrees),
     shadows: storedBoolean(storedSettings, 'shadows', DEFAULT_SETTINGS.shadows),
-    resolutionScale: storedNumber(
-        storedSettings,
-        'resolutionScale',
-        0.35,
-        1,
-        DEFAULT_SETTINGS.resolutionScale,
-    ),
+    resolutionScale: storedNumber(storedSettings, 'resolutionScale', 0.35, 1, DEFAULT_SETTINGS.resolutionScale),
 };
 
 const windDirection = new Vector3();
@@ -793,6 +734,54 @@ function loadRobotStory(): RobotDialogue {
         : parseRobotDialogue(ROBOT_STORIES.en);
 }
 
+function wireTerrainCallbacks(terrain: Terrain): void {
+    terrain.onMineralCollected = (collected) => {
+        mineralsCollected = collected;
+        gameAudio.playRingPassed();
+        revealMissionHud();
+        updateMineralsDisplay();
+    };
+    terrain.onBoulderDestroyed = (x, y, z, radius) => {
+        staticSunShadow?.invalidateAround(x, y, z, radius);
+    };
+    view.scene.add(terrain.group);
+}
+
+function createWorldActors(terrain: Terrain): void {
+    npcRobots = new NpcRobots(terrain, gameAudio, robotStory.intro, dialoguePresenter);
+    npcRobots.setDifficulty(gameSettings.difficulty);
+    view.scene.add(npcRobots.group);
+
+    enemyRobots = new EnemyRobots(terrain, playerSettings, gameSettings.difficulty);
+    view.scene.add(enemyRobots.group);
+    enemyRobots.onLaserVolley = (position) => gameAudio.playLaser(position);
+
+    playerDebris = new EnemyDebris(terrain);
+    view.scene.add(playerDebris.group);
+
+    robotAnimals = new RobotAnimals(terrain);
+    view.scene.add(robotAnimals.group);
+
+    robotRemains = new RobotRemains(terrain, gameAudio);
+    robotRemains.onEnergySalvaged = (amount) => {
+        energyRemaining = Math.max(0, energyRemaining - amount);
+        revealMissionHud();
+        updateEnergyDisplay();
+    };
+    view.scene.add(robotRemains.group);
+
+    spaceshipParts = new SpaceshipParts(terrain, gameAudio);
+    spaceshipParts.onPartCollected = (_id, remaining) => {
+        partsRemaining = remaining;
+        updatePartsDisplay();
+    };
+    spaceshipParts.onDetectorBeep = (closeness, interval) => {
+        player.pulseDetectorAntenna(closeness, interval);
+    };
+    view.scene.add(spaceshipParts.group);
+    partsRemaining = spaceshipParts.remaining;
+}
+
 async function init(): Promise<void> {
     setupWindowOnError();
     // Translate before touching the WebGL context; the page stays hidden until this resolves.
@@ -873,11 +862,7 @@ async function init(): Promise<void> {
     // Fall back to the retired "footsteps" key so an existing preference carries over.
     gameAudio.setEnabled(
         'sounds',
-        storedBoolean(
-            storedSettings,
-            'sounds',
-            storedBoolean(storedSettings, 'footsteps', DEFAULT_SETTINGS.sounds),
-        ),
+        storedBoolean(storedSettings, 'sounds', storedBoolean(storedSettings, 'footsteps', DEFAULT_SETTINGS.sounds)),
     );
     clock = new Clock();
     dustPuffs = new DustPuffs(view.scene);
@@ -903,21 +888,9 @@ async function init(): Promise<void> {
     const terrainStart = performance.now();
     terrain = new Terrain(worldSettings.seed);
     const terrainSeconds = (performance.now() - terrainStart) / 1000;
-    terrain.onMineralCollected = (collected) => {
-        mineralsCollected = collected;
-        gameAudio.playRingPassed();
-        revealMissionHud();
-        updateMineralsDisplay();
-    };
-    terrain.onBoulderDestroyed = (x, y, z, radius) => {
-        staticSunShadow?.invalidateAround(x, y, z, radius);
-    };
-    view.scene.add(terrain.group);
+    wireTerrainCallbacks(terrain);
 
-    const terrainReadyMessage = t(
-        'loading.terrainReady',
-        'Island generated. Placing robots and wreckage…',
-    );
+    const terrainReadyMessage = t('loading.terrainReady', 'Island generated. Placing robots and wreckage…');
     setLoadingProgress(0.75, terrainReadyMessage);
     console.info(`[loading] ${terrainReadyMessage} (${terrainSeconds.toFixed(2)} s)`);
     // Terrain generation blocks the main thread, so paint the milestone before building actors.
@@ -945,8 +918,8 @@ async function init(): Promise<void> {
             ? Math.min(MAX_HARD_LANDING_IMPACT_GAIN, impactSpeed * 0.012)
             : Math.min(0.05, impactSpeed * 0.008);
         const boost = insideStructure ? INSIDE_FOOTSTEP_BOOST : 1;
-        const landingGain = (onMetal ? METAL_FOOTSTEP_GAIN : LANDING_FOOTSTEP_GAIN) *
-            (hardLanding ? HARD_LANDING_GAIN : 1);
+        const landingGain =
+            (onMetal ? METAL_FOOTSTEP_GAIN : LANDING_FOOTSTEP_GAIN) * (hardLanding ? HARD_LANDING_GAIN : 1);
         const footstepGain = (landingGain + impactGain) * boost;
 
         if (onMetal) {
@@ -974,44 +947,9 @@ async function init(): Promise<void> {
         }
     };
     view.scene.add(player.group);
-    applyRobotWorldOnlyShadows(
-        player.group,
-        robotShadowSun,
-        sunShadowIndex(view.scene, robotShadowSun),
-    );
+    applyRobotWorldOnlyShadows(player.group, robotShadowSun, sunShadowIndex(view.scene, robotShadowSun));
 
-    npcRobots = new NpcRobots(terrain, gameAudio, robotStory.intro, dialoguePresenter);
-    npcRobots.setDifficulty(gameSettings.difficulty);
-    view.scene.add(npcRobots.group);
-
-    enemyRobots = new EnemyRobots(terrain, playerSettings, gameSettings.difficulty);
-    view.scene.add(enemyRobots.group);
-    enemyRobots.onLaserVolley = (position) => gameAudio.playLaser(position);
-
-    playerDebris = new EnemyDebris(terrain);
-    view.scene.add(playerDebris.group);
-
-    robotAnimals = new RobotAnimals(terrain);
-    view.scene.add(robotAnimals.group);
-
-    robotRemains = new RobotRemains(terrain, gameAudio);
-    robotRemains.onEnergySalvaged = (amount) => {
-        energyRemaining = Math.max(0, energyRemaining - amount);
-        revealMissionHud();
-        updateEnergyDisplay();
-    };
-    view.scene.add(robotRemains.group);
-
-    spaceshipParts = new SpaceshipParts(terrain, gameAudio);
-    spaceshipParts.onPartCollected = (_id, remaining) => {
-        partsRemaining = remaining;
-        updatePartsDisplay();
-    };
-    spaceshipParts.onDetectorBeep = (closeness, interval) => {
-        player.pulseDetectorAntenna(closeness, interval);
-    };
-    view.scene.add(spaceshipParts.group);
-    partsRemaining = spaceshipParts.remaining;
+    createWorldActors(terrain);
 
     grassField = new GrassField(terrain, renderSettings.grassRadius);
     view.scene.add(grassField.group);
@@ -1211,10 +1149,7 @@ async function init(): Promise<void> {
         if (!finale && !finaleTransitionActive && playerDestroyedRemaining === 0) {
             storePlayerState();
         }
-        statusLine.textContent = t(
-            'status.contextLost',
-            'Graphics context lost — waiting to restore…',
-        );
+        statusLine.textContent = t('status.contextLost', 'Graphics context lost — waiting to restore…');
     });
     canvas.addEventListener('webglcontextrestored', () => {
         webglContextLost = false;
@@ -1224,9 +1159,7 @@ async function init(): Promise<void> {
             staticSunShadow.bake(view.renderer, view.scene);
         }
         view.renderer.setAnimationLoop(animate);
-        statusLine.textContent = input.pointerLocked
-            ? t('status.pointerLocked')
-            : t('status.paused');
+        statusLine.textContent = input.pointerLocked ? t('status.pointerLocked') : t('status.paused');
     });
 
     window.addEventListener('pagehide', () => {
@@ -1297,24 +1230,18 @@ const SKY_FRAGMENT_SHADER = /* glsl */ `
 `;
 
 void init().catch((error: unknown) => {
-    const detail = error instanceof Error ? error.stack ?? error.message : String(error);
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
     reportError(`Failed to start the game:\n${detail}`);
     // The error UI is useless if the pre-i18n hidden state is never cleared.
     document.documentElement.classList.remove('i18n-pending');
     const status = document.getElementById('overlay-status');
     if (status) {
-        status.textContent = t(
-            'status.startupFailed',
-            'The world failed to load. See the error below.',
-        );
+        status.textContent = t('status.startupFailed', 'The world failed to load. See the error below.');
     }
     // The loading screen covers the menu, so surface the failure there too.
     const loading = document.getElementById('loading-status');
     if (loading) {
-        loading.textContent = t(
-            'status.startupFailed',
-            'The world failed to load. See the error below.',
-        );
+        loading.textContent = t('status.startupFailed', 'The world failed to load. See the error below.');
     }
     for (const id of ['play-button', 'new-world-button']) {
         const button = document.getElementById(id);
@@ -1370,14 +1297,10 @@ function addSun(
     sky.add(disc);
 
     const glow = new Sprite(
-        new SpriteMaterial({
+        glowSpriteMaterial({
             map: glowTexture,
             color: glowColor,
-            transparent: true,
-            blending: AdditiveBlending,
-            depthWrite: false,
-            fog: false,
-            toneMapped: false,
+            opacity: 1,
         }),
     );
     glow.position.copy(disc.position);
@@ -1553,9 +1476,7 @@ function syncMenuSettings(): void {
     getById<HTMLSelectElement>('shadow-quality-select').value = renderSettings.shadowQuality;
     const volume = getById<HTMLInputElement>('volume-slider');
     volume.value = String(gameAudio.settings.volume);
-    getById<HTMLOutputElement>('volume-value').textContent = formatVolume(
-        gameAudio.settings.volume,
-    );
+    getById<HTMLOutputElement>('volume-value').textContent = formatVolume(gameAudio.settings.volume);
     getById<HTMLInputElement>('music-checkbox').checked = gameAudio.settings.music;
     getById<HTMLInputElement>('sounds-checkbox').checked = gameAudio.settings.sounds;
 }
@@ -1630,8 +1551,7 @@ function resetSettingsToDefaults(): void {
     viewSettings.thirdPersonFov = DEFAULT_SETTINGS.thirdPersonFov;
     setFirstPerson(DEFAULT_SETTINGS.firstPerson);
 
-    const shadowQualityChanged =
-        renderSettings.shadowQuality !== DEFAULT_SETTINGS.shadowQuality;
+    const shadowQualityChanged = renderSettings.shadowQuality !== DEFAULT_SETTINGS.shadowQuality;
     const antialiasChanged = renderSettings.antialias !== DEFAULT_SETTINGS.antialias;
     const shadowModeChanged = renderSettings.shadowMode !== DEFAULT_SETTINGS.shadowMode;
     renderSettings.antialias = DEFAULT_SETTINGS.antialias;
@@ -1686,12 +1606,8 @@ function createGui(GuiConstructor: typeof GUI): GUI {
     worldSeedController = seedController;
 
     const movementFolder = guiInstance.addFolder(t('gui.movement', 'Movement')).close();
-    movementFolder
-        .add(playerSettings, 'moveSpeed', 4, 22, 0.1)
-        .name(t('gui.moveSpeed', 'Move speed'));
-    movementFolder
-        .add(playerSettings, 'jumpSpeed', 4, 16, 0.1)
-        .name(t('gui.jumpStrength', 'Jump strength'));
+    movementFolder.add(playerSettings, 'moveSpeed', 4, 22, 0.1).name(t('gui.moveSpeed', 'Move speed'));
+    movementFolder.add(playerSettings, 'jumpSpeed', 4, 16, 0.1).name(t('gui.jumpStrength', 'Jump strength'));
     movementFolder
         .add(cameraController, 'sensitivity', 0.0005, 0.005, 0.0001)
         .name(t('gui.mouseSensitivity', 'Mouse sensitivity'));
@@ -1724,13 +1640,7 @@ function createGui(GuiConstructor: typeof GUI): GUI {
             window.location.reload();
         });
     graphicsFolder
-        .add(
-            renderSettings,
-            'shadowDistance',
-            100,
-            SHADOW_PRESETS[renderSettings.shadowQuality].distance,
-            10,
-        )
+        .add(renderSettings, 'shadowDistance', 100, SHADOW_PRESETS[renderSettings.shadowQuality].distance, 10)
         .name(t('gui.shadowDistance', 'Shadow distance (m)'))
         .onChange((value: number) => setShadowDistance(value));
     graphicsFolder
@@ -1744,30 +1654,12 @@ function createGui(GuiConstructor: typeof GUI): GUI {
             ? t('gui.isolation.yes', 'yes — high-resolution timer')
             : t('gui.isolation.no', 'no — reduced-resolution timer'),
     };
-    debugFolder
-        .add(isolationStatus, 'status')
-        .name(t('gui.isolation', 'Cross-origin isolated'))
-        .disable();
-    debugFolder
-        .add(debugSettings, 'showWater')
-        .name(t('gui.water', 'Water'))
-        .onChange(applyDebugSettings);
-    debugFolder
-        .add(debugSettings, 'showShoreFoam')
-        .name(t('gui.shoreFoam', 'Shore foam'))
-        .onChange(applyDebugSettings);
-    debugFolder
-        .add(debugSettings, 'showGrass')
-        .name(t('gui.grass', 'Grass'))
-        .onChange(applyDebugSettings);
-    debugFolder
-        .add(debugSettings, 'showTrees')
-        .name(t('gui.trees', 'Trees'))
-        .onChange(applyDebugSettings);
-    debugFolder
-        .add(debugSettings, 'shadows')
-        .name(t('gui.shadows', 'Shadows'))
-        .onChange(applyDebugSettings);
+    debugFolder.add(isolationStatus, 'status').name(t('gui.isolation', 'Cross-origin isolated')).disable();
+    debugFolder.add(debugSettings, 'showWater').name(t('gui.water', 'Water')).onChange(applyDebugSettings);
+    debugFolder.add(debugSettings, 'showShoreFoam').name(t('gui.shoreFoam', 'Shore foam')).onChange(applyDebugSettings);
+    debugFolder.add(debugSettings, 'showGrass').name(t('gui.grass', 'Grass')).onChange(applyDebugSettings);
+    debugFolder.add(debugSettings, 'showTrees').name(t('gui.trees', 'Trees')).onChange(applyDebugSettings);
+    debugFolder.add(debugSettings, 'shadows').name(t('gui.shadows', 'Shadows')).onChange(applyDebugSettings);
     debugFolder
         .add(debugSettings, 'resolutionScale', 0.35, 1, 0.05)
         .name(t('gui.resolutionScale', 'Resolution scale'))
@@ -1973,10 +1865,10 @@ const finaleUi: FinaleUi = {
         farewellMessage.classList.remove('is-hidden');
     },
     showEscapeTime() {
-        escapeTimeMessage.textContent = t(
-            'finale.escapeIn',
-            'You escape the planet in {duration}',
-        ).replace('{duration}', formatElapsedTime(finaleEscapeSeconds));
+        escapeTimeMessage.textContent = t('finale.escapeIn', 'You escape the planet in {duration}').replace(
+            '{duration}',
+            formatElapsedTime(finaleEscapeSeconds),
+        );
         escapeTimeMessage.classList.remove('is-hidden');
     },
 };
@@ -2071,9 +1963,7 @@ function startFinale(): void {
         outro: robotStory.outro,
         audio: gameAudio,
         difficulty: gameSettings.difficulty,
-        baseFov: viewSettings.firstPerson
-            ? viewSettings.firstPersonFov
-            : viewSettings.thirdPersonFov,
+        baseFov: viewSettings.firstPerson ? viewSettings.firstPersonFov : viewSettings.thirdPersonFov,
         ui: finaleUi,
     });
     finale.start();
@@ -2090,8 +1980,7 @@ function updateFinaleFrame(dt: number): void {
     const flight = input.getFlightInput();
     const playerInput = input.getPlayerInput();
     // During the caretaker scene, either an attack press or Space skips straight to the ship.
-    const skipRequested =
-        input.consumeAttackPress() || input.consumeChargedAttackPress() || playerInput.jump;
+    const skipRequested = input.consumeAttackPress() || input.consumeChargedAttackPress() || playerInput.jump;
 
     if (input.pointerLocked) {
         if (skipRequested) {
@@ -2146,9 +2035,8 @@ function updateSwitchLook(dt: number): void {
     const horizontal = Math.hypot(dx, dz);
     const blend = 1 - Math.exp(-5 * dt);
 
-    player.group.rotation.y +=
-        shortestAngleDelta(player.group.rotation.y, Math.atan2(dx, dz)) * blend;
-    cameraController.yaw += shortestAngleDelta(cameraController.yaw, Math.atan2(-dx, -dz)) * blend;
+    player.group.rotation.y += angleDelta(player.group.rotation.y, Math.atan2(dx, dz)) * blend;
+    cameraController.yaw += angleDelta(cameraController.yaw, Math.atan2(-dx, -dz)) * blend;
     cameraController.setPitch(
         cameraController.pitch + (-Math.atan2(dy, Math.max(horizontal, 0.001)) - cameraController.pitch) * blend,
     );
@@ -2187,23 +2075,13 @@ function updateCinematicCamera(dt: number): void {
     // Camera distance for the charge shot.
     const distance = 20;
 
-    cinematicCameraPosition.set(
-        position.x - awayX * distance,
-        position.y - 5,
-        position.z - awayZ * distance,
-    );
+    cinematicCameraPosition.set(position.x - awayX * distance, position.y - 5, position.z - awayZ * distance);
 
     // Frame the robot at the bottom and the spire at the top by aiming at the angular midpoint
     // between the robot's chest and the crown. The low camera keeps margin above the spire and
     // below the robot's feet.
-    const crownAngle = Math.atan2(
-        switchLookTarget.y - cinematicCameraPosition.y,
-        distance + horizontal,
-    );
-    const robotAngle = Math.atan2(
-        position.y + 1 - cinematicCameraPosition.y,
-        distance,
-    );
+    const crownAngle = Math.atan2(switchLookTarget.y - cinematicCameraPosition.y, distance + horizontal);
+    const robotAngle = Math.atan2(position.y + 1 - cinematicCameraPosition.y, distance);
     const aimAngle = (crownAngle + robotAngle) / 2;
 
     cinematicCameraEngaged = true;
@@ -2217,14 +2095,9 @@ function updateCinematicCamera(dt: number): void {
     // A pair of detuned sine waves makes the tremor feel electrical rather than mechanical. Adding
     // the offset after lookAt keeps the framing fixed while the camera body vibrates.
     cinematicShakePhase += dt * CINEMATIC_SHAKE_FREQUENCY;
-    const shakeX =
-        (Math.sin(cinematicShakePhase * 31.7) +
-            0.5 * Math.sin(cinematicShakePhase * 53.3 + 1.3)) /
-        1.5;
+    const shakeX = (Math.sin(cinematicShakePhase * 31.7) + 0.5 * Math.sin(cinematicShakePhase * 53.3 + 1.3)) / 1.5;
     const shakeY =
-        (Math.sin(cinematicShakePhase * 37.1 + 0.7) +
-            0.5 * Math.sin(cinematicShakePhase * 61.9 + 2.1)) /
-        1.5;
+        (Math.sin(cinematicShakePhase * 37.1 + 0.7) + 0.5 * Math.sin(cinematicShakePhase * 61.9 + 2.1)) / 1.5;
     cinematicShakeRight.set(1, 0, 0).applyQuaternion(view.camera.quaternion);
     cinematicShakeUp.set(0, 1, 0).applyQuaternion(view.camera.quaternion);
     view.camera.position.addScaledVector(cinematicShakeRight, shakeX * CINEMATIC_SHAKE_AMPLITUDE);
@@ -2252,15 +2125,6 @@ function updateWhiteout(dt: number): void {
             }
         }
     }
-}
-
-function shortestAngleDelta(from: number, to: number): number {
-    const twoPi = Math.PI * 2;
-    let delta = (to - from + Math.PI) % twoPi;
-    if (delta < 0) {
-        delta += twoPi;
-    }
-    return delta - Math.PI;
 }
 
 function rebuildWorld(seed: number): void {
@@ -2323,49 +2187,13 @@ function rebuildWorld(seed: number): void {
     terrain.dispose();
 
     terrain = new Terrain(seed);
-    terrain.onMineralCollected = (collected) => {
-        mineralsCollected = collected;
-        gameAudio.playRingPassed();
-        revealMissionHud();
-        updateMineralsDisplay();
-    };
-    terrain.onBoulderDestroyed = (x, y, z, radius) => {
-        staticSunShadow?.invalidateAround(x, y, z, radius);
-    };
-    view.scene.add(terrain.group);
+    wireTerrainCallbacks(terrain);
     wireMegastructureSwitches();
 
     shoreFoam = new ShoreFoam(view.scene, terrain);
 
     player.respawn(terrain);
-    npcRobots = new NpcRobots(terrain, gameAudio, robotStory.intro, dialoguePresenter);
-    npcRobots.setDifficulty(gameSettings.difficulty);
-    view.scene.add(npcRobots.group);
-    enemyRobots = new EnemyRobots(terrain, playerSettings, gameSettings.difficulty);
-    view.scene.add(enemyRobots.group);
-    enemyRobots.onLaserVolley = (position) => gameAudio.playLaser(position);
-    playerDebris = new EnemyDebris(terrain);
-    view.scene.add(playerDebris.group);
-    robotAnimals = new RobotAnimals(terrain);
-    view.scene.add(robotAnimals.group);
-    robotRemains = new RobotRemains(terrain, gameAudio);
-    robotRemains.onEnergySalvaged = (amount) => {
-        energyRemaining = Math.max(0, energyRemaining - amount);
-        revealMissionHud();
-        updateEnergyDisplay();
-    };
-    view.scene.add(robotRemains.group);
-
-    spaceshipParts = new SpaceshipParts(terrain, gameAudio);
-    spaceshipParts.onPartCollected = (_id, remaining) => {
-        partsRemaining = remaining;
-        updatePartsDisplay();
-    };
-    spaceshipParts.onDetectorBeep = (closeness, interval) => {
-        player.pulseDetectorAntenna(closeness, interval);
-    };
-    view.scene.add(spaceshipParts.group);
-    partsRemaining = spaceshipParts.remaining;
+    createWorldActors(terrain);
     updatePartsDisplay();
     wreckMap.setWorld(terrain, spaceshipParts);
 
@@ -2485,9 +2313,7 @@ function applyDebugSettings(): void {
 }
 
 function applyCameraFov(): void {
-    const baseFov = viewSettings.firstPerson
-        ? viewSettings.firstPersonFov
-        : viewSettings.thirdPersonFov;
+    const baseFov = viewSettings.firstPerson ? viewSettings.firstPersonFov : viewSettings.thirdPersonFov;
     const fov = baseFov + speedFovBoost;
     // Widen the lens and dolly in by the matching amount, keeping the robot the same size on
     // screen while the background gains the extra parallax that sells the speed.
@@ -2502,12 +2328,9 @@ function applyCameraFov(): void {
 }
 
 function updateSpeedFov(dt: number, speed: number): void {
-    const intensity = Math.min(
-        1,
-        Math.max(0, (speed - SPEED_FOV_START) / (SPEED_FOV_FULL - SPEED_FOV_START)),
-    );
+    const intensity = clamp((speed - SPEED_FOV_START) / (SPEED_FOV_FULL - SPEED_FOV_START), 0, 1);
     const target = intensity * MAX_SPEED_FOV_BOOST;
-    speedFovBoost += (target - speedFovBoost) * (1 - Math.exp(-SPEED_FOV_RAMP_RATE * dt));
+    speedFovBoost = damp(speedFovBoost, target, SPEED_FOV_RAMP_RATE, dt);
     if (Math.abs(target - speedFovBoost) < 0.001) {
         speedFovBoost = target;
     }
@@ -2533,11 +2356,7 @@ function updatePlayerAppearance(): void {
         : cameraController.cameraDistance;
     const fade = Math.min(
         1,
-        Math.max(
-            0,
-            (distance - PLAYER_FADE_END_DISTANCE) /
-                (PLAYER_FADE_START_DISTANCE - PLAYER_FADE_END_DISTANCE),
-        ),
+        Math.max(0, (distance - PLAYER_FADE_END_DISTANCE) / (PLAYER_FADE_START_DISTANCE - PLAYER_FADE_END_DISTANCE)),
     );
     player.setOpacity(PLAYER_MIN_OPACITY + (1 - PLAYER_MIN_OPACITY) * fade);
 }
@@ -2718,9 +2537,7 @@ function resolveLineHeight(style: CSSStyleDeclaration): number {
 }
 
 function applyBoxShadow(context: CanvasRenderingContext2D, boxShadow: string): void {
-    const match = /(rgba?\([^)]*\)|#[0-9a-f]{3,8})\s+(-?[\d.]+)px\s+(-?[\d.]+)px\s+(-?[\d.]+)px/i.exec(
-        boxShadow,
-    );
+    const match = /(rgba?\([^)]*\)|#[0-9a-f]{3,8})\s+(-?[\d.]+)px\s+(-?[\d.]+)px\s+(-?[\d.]+)px/i.exec(boxShadow);
     if (!match) {
         return;
     }
@@ -2812,7 +2629,16 @@ function strikeWithWrench(charged: boolean): void {
         wrenchHitTrail.start();
     }
     strikeEnemiesWithWrench(charged);
-    terrain.wrenchStrike(player.group.position, damage);
+    const rockHits = terrain.wrenchStrike(player.group.position, damage);
+    if (rockHits.length > 0) {
+        const impact = rockHits.reduce((nearest, hit) =>
+            hit.position.distanceToSquared(player.group.position) <
+            nearest.position.distanceToSquared(player.group.position)
+                ? hit
+                : nearest,
+        );
+        gameAudio.playWrenchClang(impact.position, charged);
+    }
     const switchPosition = terrain.megastructures.wrenchHit(player.group.position);
     if (switchPosition) {
         gameAudio.playSwitchClick(switchPosition);
@@ -2834,11 +2660,7 @@ function strikeEnemiesWithWrench(charged = false): void {
     const damage = charged ? WRENCH_CHARGED_DAMAGE : 1;
     const enemyHits = enemyRobots.wrenchStrike(player.group.position, damage);
     if (enemyHits.length > 0) {
-        gameAudio.playEnemyHit(
-            enemyHits[0].position,
-            enemyHits[0].health,
-            charged ? 2 : 1,
-        );
+        gameAudio.playEnemyHit(enemyHits[0].position, enemyHits[0].health, charged ? 2 : 1);
     }
 }
 
@@ -2876,9 +2698,7 @@ function updateFloorHealth(dt: number, laserHits: number): void {
 }
 
 function showPlayerDamage(): void {
-    damageVignette.setLevel(
-        Math.min(1, playerHealth.damageFraction * DAMAGE_VIGNETTE_BOOST),
-    );
+    damageVignette.setLevel(Math.min(1, playerHealth.damageFraction * DAMAGE_VIGNETTE_BOOST));
 }
 
 function beginPlayerDestruction(): void {
@@ -3051,9 +2871,7 @@ function animate(): void {
     for (let index = 0; index < wrenchTrails.length; index++) {
         wrenchTrails[index].update(
             dt,
-            chargedSwing
-                ? player.getWrenchTipWorldPosition(index, wrenchTrailPoints[index])
-                : null,
+            chargedSwing ? player.getWrenchTipWorldPosition(index, wrenchTrailPoints[index]) : null,
             swingAngle,
         );
     }
@@ -3129,15 +2947,10 @@ function animate(): void {
     const speed = player.horizontalSpeed;
     const playerPosition = player.group.position;
     const inWater = playerPosition.y < WATER_LEVEL - 0.02;
-    const insideStructure = terrain.megastructures.isInside(
-        playerPosition.x,
-        playerPosition.y,
-        playerPosition.z,
-    );
+    const insideStructure = terrain.megastructures.isInside(playerPosition.x, playerPosition.y, playerPosition.z);
     gameAudio.setStructureReverb(insideStructure);
     const interiorFillTarget = insideStructure ? INTERIOR_FILL_INTENSITY : 0;
-    interiorFillLight.intensity += (interiorFillTarget - interiorFillLight.intensity) *
-        (1 - Math.exp(-INTERIOR_FILL_FADE_SPEED * dt));
+    interiorFillLight.intensity = damp(interiorFillLight.intensity, interiorFillTarget, INTERIOR_FILL_FADE_SPEED, dt);
 
     if (player.isGrounded && inWater && speed > 1.2 && !isFullySubmerged(playerPosition)) {
         wakeFoamTimer -= dt;
@@ -3158,14 +2971,10 @@ function animate(): void {
             nextFootstepPhase = player.walkAnimationPhase + Math.PI;
         }
         if (player.walkAnimationPhase >= nextFootstepPhase) {
-            const onMetal =
-                !inWater &&
-                terrain.isOnStructure(playerPosition.x, playerPosition.z, playerPosition.y);
+            const onMetal = !inWater && terrain.isOnStructure(playerPosition.x, playerPosition.z, playerPosition.y);
             // Tie footprints to the same dust condition as the footfall puffs, and keep both off
             // metal decks where there is no loose ground to disturb.
-            const dusty =
-                !onMetal &&
-                terrain.groundDustinessAt(playerPosition.x, playerPosition.z) > 0.18;
+            const dusty = !onMetal && terrain.groundDustinessAt(playerPosition.x, playerPosition.z) > 0.18;
 
             if (onMetal) {
                 gameAudio.playMetalFootstep(
@@ -3196,18 +3005,9 @@ function animate(): void {
                     }
                 } else {
                     footstepPosition.y = terrain.heightAt(footstepPosition.x, footstepPosition.z);
-                    const groundColor = terrain.groundColorAt(
-                        playerPosition.x,
-                        playerPosition.z,
-                    );
+                    const groundColor = terrain.groundColorAt(playerPosition.x, playerPosition.z);
                     dustPuffs.spawnFootstep(footstepPosition, groundColor);
-                    footprints.spawn(
-                        footstepPosition,
-                        windDirection,
-                        footstepSide,
-                        groundColor,
-                        terrain,
-                    );
+                    footprints.spawn(footstepPosition, windDirection, footstepSide, groundColor, terrain);
                 }
             }
 

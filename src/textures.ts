@@ -43,13 +43,9 @@ const metalUrl = firstUrl(
 const waterUrl = firstUrl(
     import.meta.glob<string>('../assets/textures/water.ktx2', { eager: true, import: 'default' }),
 );
-const macroUrl = firstUrl(
-    import.meta.glob<string>('../assets/textures/macro.png', { eager: true, import: 'default' }),
-);
+const macroUrl = firstUrl(import.meta.glob<string>('../assets/textures/macro.png', { eager: true, import: 'default' }));
 
-const dentUrl = firstUrl(
-    import.meta.glob<string>('../assets/textures/dent.png', { eager: true, import: 'default' }),
-);
+const dentUrl = firstUrl(import.meta.glob<string>('../assets/textures/dent.png', { eager: true, import: 'default' }));
 const footprintUrl = firstUrl(
     import.meta.glob<string>('../assets/textures/footprint.png', { eager: true, import: 'default' }),
 );
@@ -324,7 +320,8 @@ vec2 waterWarp = (macroSample.gb - 0.5) * 22.0;
 vec2 waterPosition = vWaterWorld + waterWarp;
 float waterField = macroSample.r * 2.4 + macroSample.b * 1.7;
 vec2 waterUvA = waterPosition / ${WATER_TILE_SIZE.toFixed(1)} + vec2(uWaterTime * 0.0032, uWaterTime * 0.0014);
-vec2 waterUvB = mat2(0.8, -0.6, 0.6, 0.8) * waterPosition / 61.0 + vec2(uWaterTime * -0.0011, uWaterTime * 0.0023) + vec2(0.37, 0.61);
+vec2 waterUvB = mat2(0.8, -0.6, 0.6, 0.8) * waterPosition / 61.0 +
+    vec2(uWaterTime * -0.0011, uWaterTime * 0.0023) + vec2(0.37, 0.61);
 vec3 waterA = sampleSurfaceVariant(uWaterMaps, waterUvA, uWaterLayers, waterField);
 vec3 waterB = sampleSurfaceVariant(uWaterMaps, waterUvB, uWaterLayers, waterField + 1.31);
 vec3 waterColor = mix(waterA, waterB, 0.3);
@@ -494,12 +491,7 @@ function createFallbackTextures(): SurfaceTextures {
     dent.needsUpdate = true;
     const footprint = new DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1);
     footprint.needsUpdate = true;
-    const signs = new DataArrayTexture(
-        new Uint8Array(4 * SIGN_LAYERS).fill(255),
-        1,
-        1,
-        SIGN_LAYERS,
-    );
+    const signs = new DataArrayTexture(new Uint8Array(4 * SIGN_LAYERS).fill(255), 1, 1, SIGN_LAYERS);
     signs.needsUpdate = true;
 
     return {

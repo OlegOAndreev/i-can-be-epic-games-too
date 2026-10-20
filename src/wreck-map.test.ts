@@ -1,43 +1,21 @@
 import { createCanvas } from '@napi-rs/canvas';
 import { describe, expect, it } from 'vitest';
 
-import type { GameAudio } from './audio';
 import { SpaceshipParts } from './spaceship-parts';
-import { Terrain } from './terrain';
-
-const FAST_TERRAIN = { meshes: false, decorations: false } as const;
-import { getSurfaceTextures } from './textures';
+import { installCanvasDocument, stubAudio, testTerrain } from './test-helpers';
 import { WreckMap, WRECK_MAP_HALF_SIZE } from './wreck-map';
 
-// Prime the texture canvases before replacing the document with the native test canvas.
-getSurfaceTextures();
-Object.defineProperty(globalThis, 'document', {
-    configurable: true,
-    value: { createElement: () => createCanvas(192, 192) },
-});
-
-function stubAudio(): GameAudio {
-    return {
-        started: false,
-        playDetectorBeep: () => undefined,
-        playPartRecovered: () => undefined,
-    } as unknown as GameAudio;
-}
+installCanvasDocument(192, 192);
 
 describe('wreck map', () => {
     it('bakes the world and draws the player arrow over it', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const parts = new SpaceshipParts(terrain, stubAudio());
+        const terrain = testTerrain();
+        const parts = new SpaceshipParts(terrain, stubAudio({ started: false }));
         const panel = {
             classList: { toggle: () => undefined },
         } as unknown as HTMLElement;
         const canvas = createCanvas(512, 512);
-        const map = new WreckMap(
-            panel,
-            canvas as unknown as HTMLCanvasElement,
-            terrain,
-            parts,
-        );
+        const map = new WreckMap(panel, canvas as unknown as HTMLCanvasElement, terrain, parts);
 
         expect(map.visible).toBe(false);
         map.setVisible(true);
@@ -64,12 +42,8 @@ describe('wreck map', () => {
         expect(water).toBeGreaterThan(0);
 
         // The bright arrow is drawn around the clamped canvas position for the spawn point.
-        const arrowX = Math.round(
-            ((terrain.spawn.x + WRECK_MAP_HALF_SIZE) / (WRECK_MAP_HALF_SIZE * 2)) * 512,
-        );
-        const arrowY = Math.round(
-            ((terrain.spawn.z + WRECK_MAP_HALF_SIZE) / (WRECK_MAP_HALF_SIZE * 2)) * 512,
-        );
+        const arrowX = Math.round(((terrain.spawn.x + WRECK_MAP_HALF_SIZE) / (WRECK_MAP_HALF_SIZE * 2)) * 512);
+        const arrowY = Math.round(((terrain.spawn.z + WRECK_MAP_HALF_SIZE) / (WRECK_MAP_HALF_SIZE * 2)) * 512);
         const arrowArea = context.getImageData(arrowX - 12, arrowY - 12, 24, 24).data;
         let brightPixels = 0;
         for (let index = 0; index < arrowArea.length; index += 4) {
@@ -82,19 +56,10 @@ describe('wreck map', () => {
         // Turning the player must rotate the arrow while the map stays open, not just move its
         // centre. The dark arrow outline is the only place the exact stroke colour appears.
         map.update(terrain.spawn.x, terrain.spawn.z, 0);
-        const northHeading = readArrowHeading(
-            context.getImageData(0, 0, 512, 512).data,
-            512,
-        );
+        const northHeading = readArrowHeading(context.getImageData(0, 0, 512, 512).data, 512);
         map.update(terrain.spawn.x, terrain.spawn.z, Math.PI / 2);
-        const eastHeading = readArrowHeading(
-            context.getImageData(0, 0, 512, 512).data,
-            512,
-        );
-        const turn = Math.atan2(
-            Math.sin(eastHeading - northHeading),
-            Math.cos(eastHeading - northHeading),
-        );
+        const eastHeading = readArrowHeading(context.getImageData(0, 0, 512, 512).data, 512);
+        const turn = Math.atan2(Math.sin(eastHeading - northHeading), Math.cos(eastHeading - northHeading));
         // The tip is read from rasterized pixels, so allow a few degrees of quantization.
         expect(Math.abs(turn - Math.PI / 2)).toBeLessThan(0.1);
 
@@ -102,37 +67,23 @@ describe('wreck map', () => {
         expect(map.visible).toBe(false);
 
         parts.dispose();
-        terrain.dispose();
     });
 
     it('draws a drained megastructure white', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const parts = new SpaceshipParts(terrain, stubAudio());
+        const terrain = testTerrain();
+        const parts = new SpaceshipParts(terrain, stubAudio({ started: false }));
         const panel = {
             classList: { toggle: () => undefined },
         } as unknown as HTMLElement;
         const canvas = createCanvas(512, 512);
-        const map = new WreckMap(
-            panel,
-            canvas as unknown as HTMLCanvasElement,
-            terrain,
-            parts,
-        );
+        const map = new WreckMap(panel, canvas as unknown as HTMLCanvasElement, terrain, parts);
         map.setVisible(true);
         // Search rings can overlap the megastructure marker; keep the sample on the tower only.
         parts.collectAll();
 
         const tower = terrain.megastructures.towers[0];
-        const x = Math.round(
-            (((tower.minX + tower.maxX) / 2 + WRECK_MAP_HALF_SIZE) /
-                (WRECK_MAP_HALF_SIZE * 2)) *
-                512,
-        );
-        const y = Math.round(
-            (((tower.minZ + tower.maxZ) / 2 + WRECK_MAP_HALF_SIZE) /
-                (WRECK_MAP_HALF_SIZE * 2)) *
-                512,
-        );
+        const x = Math.round((((tower.minX + tower.maxX) / 2 + WRECK_MAP_HALF_SIZE) / (WRECK_MAP_HALF_SIZE * 2)) * 512);
+        const y = Math.round((((tower.minZ + tower.maxZ) / 2 + WRECK_MAP_HALF_SIZE) / (WRECK_MAP_HALF_SIZE * 2)) * 512);
         const context = canvas.getContext('2d');
 
         map.update(terrain.spawn.x, terrain.spawn.z, 0);
@@ -147,7 +98,6 @@ describe('wreck map', () => {
         expect(after[2]).toBeGreaterThan(240);
 
         parts.dispose();
-        terrain.dispose();
     });
 });
 

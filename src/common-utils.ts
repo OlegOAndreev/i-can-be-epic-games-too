@@ -165,31 +165,19 @@ export function reportError(message: string): void {
 
 // Setup a few common error handlers (onerror must still be setup in each worker/worklet).
 export function setupWindowOnError(): void {
-    window.onerror = (
-        event: Event | string,
-        source?: string,
-        lineno?: number,
-        colno?: number,
-        error?: Error,
-    ) => {
+    window.onerror = (event: Event | string, source?: string, lineno?: number, colno?: number, error?: Error) => {
         const location = source ? ` at ${source}:${lineno ?? 0}:${colno ?? 0}` : '';
-        reportError(
-            `Uncaught error: ${String(event)}${location}${error ? `\n${error.stack ?? error.message}` : ''}`,
-        );
+        reportError(`Uncaught error: ${String(event)}${location}${error ? `\n${error.stack ?? error.message}` : ''}`);
     };
 
     window.onunhandledrejection = (event: PromiseRejectionEvent) => {
         const reason =
-            event.reason instanceof Error
-                ? event.reason.stack ?? event.reason.message
-                : String(event.reason);
+            event.reason instanceof Error ? (event.reason.stack ?? event.reason.message) : String(event.reason);
         reportError(`Unhandled rejection: ${reason}`);
     };
 }
 
 // Log error, suitable for global error catching
 export function logError(context: string, event: ErrorEvent): void {
-    reportError(
-        `Error from ${context}: ${event.message}, ${event.filename}:${event.lineno}, ${event.error}`,
-    );
+    reportError(`Error from ${context}: ${event.message}, ${event.filename}:${event.lineno}, ${event.error}`);
 }

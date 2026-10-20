@@ -9,14 +9,7 @@ describe('wind trails', () => {
         const trails = new WindTrails(scene);
         const cameraPosition = new Vector3(0, 4, -8);
 
-        trails.update(
-            0.016,
-            new Vector3(0, 0, 0),
-            new Vector3(0, 0, 1),
-            20,
-            0,
-            cameraPosition,
-        );
+        trails.update(0.016, new Vector3(0, 0, 0), new Vector3(0, 0, 1), 20, 0, cameraPosition);
 
         const visible = scene.children.filter((child) => child.visible) as Mesh[];
         expect(visible.length).toBeGreaterThan(0);
@@ -36,14 +29,7 @@ describe('wind trails', () => {
         const scene = new Scene();
         const trails = new WindTrails(scene);
 
-        trails.update(
-            0.016,
-            new Vector3(0, 0, 0),
-            new Vector3(0, 0, 1),
-            20,
-            0,
-            new Vector3(0, 4, -8),
-        );
+        trails.update(0.016, new Vector3(0, 0, 0), new Vector3(0, 0, 1), 20, 0, new Vector3(0, 4, -8));
 
         const visible = scene.children.filter((child) => child.visible) as Mesh[];
         expect(visible.length).toBeGreaterThan(0);
@@ -52,10 +38,7 @@ describe('wind trails', () => {
         for (const wisp of visible) {
             const positions = wisp.geometry.getAttribute('position');
             for (let i = 0; i < positions.count; i++) {
-                maxLateral = Math.max(
-                    maxLateral,
-                    Math.hypot(positions.getX(i), positions.getZ(i)),
-                );
+                maxLateral = Math.max(maxLateral, Math.hypot(positions.getX(i), positions.getZ(i)));
             }
         }
 
@@ -66,14 +49,7 @@ describe('wind trails', () => {
         const scene = new Scene();
         const trails = new WindTrails(scene);
 
-        trails.update(
-            0.016,
-            new Vector3(0, 20, 0),
-            new Vector3(0, 0, 1),
-            0,
-            -30,
-            new Vector3(0, 24, -8),
-        );
+        trails.update(0.016, new Vector3(0, 20, 0), new Vector3(0, 0, 1), 0, -30, new Vector3(0, 24, -8));
 
         const visible = scene.children.filter((child) => child.visible) as Mesh[];
         expect(visible.length).toBeGreaterThan(0);
@@ -83,14 +59,7 @@ describe('wind trails', () => {
         const scene = new Scene();
         const trails = new WindTrails(scene);
 
-        trails.update(
-            0.016,
-            new Vector3(0, 3, 0),
-            new Vector3(0, 0, 1),
-            0,
-            -12,
-            new Vector3(0, 6, -8),
-        );
+        trails.update(0.016, new Vector3(0, 3, 0), new Vector3(0, 0, 1), 0, -12, new Vector3(0, 6, -8));
 
         const visible = scene.children.filter((child) => child.visible) as Mesh[];
         expect(visible.length).toBe(0);

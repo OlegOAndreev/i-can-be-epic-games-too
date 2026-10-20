@@ -39,9 +39,7 @@ export class PlayerHealth {
         const wasDestroyed = this.destroyed;
         const damageTaken = this.maximum - this.health;
         this.maximum = DIFFICULTY_SETTINGS[difficulty].playerHitsToDestroy;
-        this.health = wasDestroyed
-            ? this.maximum
-            : Math.max(1, Math.min(this.maximum, this.maximum - damageTaken));
+        this.health = wasDestroyed ? this.maximum : Math.max(1, Math.min(this.maximum, this.maximum - damageTaken));
     }
 
     // Returns true when this strike destroyed the robot.

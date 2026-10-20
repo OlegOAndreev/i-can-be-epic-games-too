@@ -2,7 +2,7 @@ import { Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
 import type { Ramp, StructureBox } from './megastructures';
-import { findRampBlockingPoint, findStructureBlockingPoint, rampsBlockBody } from './ramp-collision';
+import { findRampBlockingPoint, findStructureBlockingPoint, rampsBlockBody, rampRun } from './ramp-collision';
 
 const ramp: Ramp = {
     minX: 0,
@@ -15,6 +15,11 @@ const ramp: Ramp = {
 };
 
 describe('ramp collision', () => {
+    it('measures the ramp run along its slope axis', () => {
+        expect(rampRun(ramp)).toBe(10);
+        expect(rampRun({ ...ramp, axis: 'z' })).toBe(4);
+    });
+
     it('blocks robot bodies that overlap the ramp deck', () => {
         expect(rampsBlockBody([ramp], 5, 0, 4, 2, 0)).toBe(true);
         expect(rampsBlockBody([ramp], 5, 0, 2, 1.5, 0)).toBe(false);
@@ -36,24 +41,12 @@ describe('ramp collision', () => {
             baseY: 0,
             topY: 3,
         };
-        const hit = findStructureBlockingPoint(
-            new Vector3(-5, 1.5, 0),
-            new Vector3(5, 1.5, 0),
-            [box],
-            [],
-        );
+        const hit = findStructureBlockingPoint(new Vector3(-5, 1.5, 0), new Vector3(5, 1.5, 0), [box], []);
         expect(hit).not.toBeNull();
         expect(hit!.x).toBeLessThanOrEqual(-1);
         expect(hit!.x).toBeGreaterThan(-1.5);
 
-        expect(
-            findStructureBlockingPoint(
-                new Vector3(-5, 4, 0),
-                new Vector3(5, 4, 0),
-                [box],
-                [],
-            ),
-        ).toBeNull();
+        expect(findStructureBlockingPoint(new Vector3(-5, 4, 0), new Vector3(5, 4, 0), [box], [])).toBeNull();
     });
 
     it('blocks a sight line through a thin glass pane', () => {
@@ -65,12 +58,7 @@ describe('ramp collision', () => {
             baseY: 0,
             topY: 3,
         };
-        const hit = findStructureBlockingPoint(
-            new Vector3(-5, 1.5, 0),
-            new Vector3(5, 1.5, 0),
-            [glass],
-            [],
-        );
+        const hit = findStructureBlockingPoint(new Vector3(-5, 1.5, 0), new Vector3(5, 1.5, 0), [glass], []);
 
         // The old 0.2 m march sampled x = 0 and x = 0.2, stepping over this pane.
         expect(hit).not.toBeNull();
@@ -78,11 +66,7 @@ describe('ramp collision', () => {
     });
 
     it('finds where a laser enters the ramp deck', () => {
-        const hit = findRampBlockingPoint(
-            new Vector3(5, 4.8, -6),
-            new Vector3(5, 4.8, 6),
-            [ramp],
-        );
+        const hit = findRampBlockingPoint(new Vector3(5, 4.8, -6), new Vector3(5, 4.8, 6), [ramp]);
         expect(hit).not.toBeNull();
         expect(hit!.x).toBeCloseTo(5);
         expect(hit!.y).toBeCloseTo(4.8);
@@ -91,14 +75,8 @@ describe('ramp collision', () => {
     });
 
     it('lets lasers pass above, below, and beside the ramp', () => {
-        expect(
-            findRampBlockingPoint(new Vector3(5, 6, -6), new Vector3(5, 6, 6), [ramp]),
-        ).toBeNull();
-        expect(
-            findRampBlockingPoint(new Vector3(5, 4, -6), new Vector3(5, 4, 6), [ramp]),
-        ).toBeNull();
-        expect(
-            findRampBlockingPoint(new Vector3(11, 4.8, -6), new Vector3(11, 4.8, 6), [ramp]),
-        ).toBeNull();
+        expect(findRampBlockingPoint(new Vector3(5, 6, -6), new Vector3(5, 6, 6), [ramp])).toBeNull();
+        expect(findRampBlockingPoint(new Vector3(5, 4, -6), new Vector3(5, 4, 6), [ramp])).toBeNull();
+        expect(findRampBlockingPoint(new Vector3(11, 4.8, -6), new Vector3(11, 4.8, 6), [ramp])).toBeNull();
     });
 });

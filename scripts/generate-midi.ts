@@ -52,11 +52,46 @@ type ChordName = keyof typeof CHORDS;
 // Forty bars: a sixteen-bar theme, a contrasting sixteen-bar middle, and an eight-bar coda that
 // settles back onto D minor so the end of the loop flows into the beginning.
 const PROGRESSION: readonly ChordName[] = [
-    'Dm', 'Dm', 'Bb', 'Bb', 'F', 'F', 'Gm', 'A',
-    'Dm', 'Dm', 'Bb', 'Bb', 'Gm', 'A', 'Dm', 'Dm',
-    'F', 'C', 'Dm', 'Bb', 'F', 'C', 'Gm', 'A',
-    'F', 'C', 'Dm', 'Bb', 'Gm', 'A', 'Dm', 'Dm',
-    'Dm', 'Bb', 'Gm', 'A', 'Dm', 'Bb', 'Gm', 'Dm',
+    'Dm',
+    'Dm',
+    'Bb',
+    'Bb',
+    'F',
+    'F',
+    'Gm',
+    'A',
+    'Dm',
+    'Dm',
+    'Bb',
+    'Bb',
+    'Gm',
+    'A',
+    'Dm',
+    'Dm',
+    'F',
+    'C',
+    'Dm',
+    'Bb',
+    'F',
+    'C',
+    'Gm',
+    'A',
+    'F',
+    'C',
+    'Dm',
+    'Bb',
+    'Gm',
+    'A',
+    'Dm',
+    'Dm',
+    'Dm',
+    'Bb',
+    'Gm',
+    'A',
+    'Dm',
+    'Bb',
+    'Gm',
+    'Dm',
 ];
 
 interface MelodyNote {
@@ -69,27 +104,69 @@ interface MelodyNote {
 // The cello enters after the eight-bar introduction. Sparse half and whole notes leave the
 // harmony exposed instead of turning the piece into a tune.
 const MELODY: Record<number, readonly MelodyNote[]> = {
-    8: [{ midi: 62, beat: 0, length: 2 }, { midi: 65, beat: 2, length: 2 }],
-    9: [{ midi: 64, beat: 0, length: 3 }, { midi: 62, beat: 3, length: 1 }],
-    10: [{ midi: 60, beat: 0, length: 2 }, { midi: 62, beat: 2, length: 2 }],
+    8: [
+        { midi: 62, beat: 0, length: 2 },
+        { midi: 65, beat: 2, length: 2 },
+    ],
+    9: [
+        { midi: 64, beat: 0, length: 3 },
+        { midi: 62, beat: 3, length: 1 },
+    ],
+    10: [
+        { midi: 60, beat: 0, length: 2 },
+        { midi: 62, beat: 2, length: 2 },
+    ],
     11: [{ midi: 65, beat: 0, length: 4 }],
-    12: [{ midi: 67, beat: 0, length: 2 }, { midi: 65, beat: 2, length: 2 }],
-    13: [{ midi: 64, beat: 0, length: 2 }, { midi: 61, beat: 2, length: 2 }],
+    12: [
+        { midi: 67, beat: 0, length: 2 },
+        { midi: 65, beat: 2, length: 2 },
+    ],
+    13: [
+        { midi: 64, beat: 0, length: 2 },
+        { midi: 61, beat: 2, length: 2 },
+    ],
     14: [{ midi: 62, beat: 0, length: 4 }],
-    16: [{ midi: 69, beat: 0, length: 2 }, { midi: 67, beat: 2, length: 2 }],
+    16: [
+        { midi: 69, beat: 0, length: 2 },
+        { midi: 67, beat: 2, length: 2 },
+    ],
     17: [{ midi: 64, beat: 0, length: 4 }],
-    18: [{ midi: 65, beat: 0, length: 2 }, { midi: 64, beat: 2, length: 2 }],
+    18: [
+        { midi: 65, beat: 0, length: 2 },
+        { midi: 64, beat: 2, length: 2 },
+    ],
     19: [{ midi: 62, beat: 0, length: 4 }],
-    20: [{ midi: 72, beat: 0, length: 2 }, { midi: 69, beat: 2, length: 2 }],
+    20: [
+        { midi: 72, beat: 0, length: 2 },
+        { midi: 69, beat: 2, length: 2 },
+    ],
     21: [{ midi: 67, beat: 0, length: 4 }],
-    22: [{ midi: 65, beat: 0, length: 2 }, { midi: 62, beat: 2, length: 2 }],
+    22: [
+        { midi: 65, beat: 0, length: 2 },
+        { midi: 62, beat: 2, length: 2 },
+    ],
     23: [{ midi: 64, beat: 0, length: 4 }],
-    24: [{ midi: 69, beat: 0, length: 2 }, { midi: 72, beat: 2, length: 2 }],
-    25: [{ midi: 70, beat: 0, length: 2 }, { midi: 67, beat: 2, length: 2 }],
-    26: [{ midi: 69, beat: 0, length: 2 }, { midi: 65, beat: 2, length: 2 }],
+    24: [
+        { midi: 69, beat: 0, length: 2 },
+        { midi: 72, beat: 2, length: 2 },
+    ],
+    25: [
+        { midi: 70, beat: 0, length: 2 },
+        { midi: 67, beat: 2, length: 2 },
+    ],
+    26: [
+        { midi: 69, beat: 0, length: 2 },
+        { midi: 65, beat: 2, length: 2 },
+    ],
     27: [{ midi: 62, beat: 0, length: 4 }],
-    28: [{ midi: 58, beat: 0, length: 2 }, { midi: 62, beat: 2, length: 2 }],
-    29: [{ midi: 64, beat: 0, length: 2 }, { midi: 61, beat: 2, length: 2 }],
+    28: [
+        { midi: 58, beat: 0, length: 2 },
+        { midi: 62, beat: 2, length: 2 },
+    ],
+    29: [
+        { midi: 64, beat: 0, length: 2 },
+        { midi: 61, beat: 2, length: 2 },
+    ],
     30: [{ midi: 62, beat: 0, length: 4 }],
     32: [{ midi: 62, beat: 0, length: 4 }],
     33: [{ midi: 65, beat: 0, length: 4 }],
@@ -102,11 +179,46 @@ type PianoPattern = 'single' | 'roll' | 'answer' | 'bells' | 'rest';
 // Per-bar piano textures. Repeating a pattern for two bars gives each phrase a little momentum
 // without making the accompaniment sound mechanical.
 const PIANO_PATTERNS: readonly PianoPattern[] = [
-    'single', 'rest', 'roll', 'rest', 'single', 'rest', 'answer', 'rest',
-    'roll', 'answer', 'roll', 'answer', 'bells', 'roll', 'single', 'rest',
-    'answer', 'roll', 'bells', 'answer', 'roll', 'bells', 'answer', 'single',
-    'bells', 'roll', 'answer', 'single', 'roll', 'bells', 'single', 'rest',
-    'single', 'rest', 'single', 'rest', 'single', 'rest', 'rest', 'single',
+    'single',
+    'rest',
+    'roll',
+    'rest',
+    'single',
+    'rest',
+    'answer',
+    'rest',
+    'roll',
+    'answer',
+    'roll',
+    'answer',
+    'bells',
+    'roll',
+    'single',
+    'rest',
+    'answer',
+    'roll',
+    'bells',
+    'answer',
+    'roll',
+    'bells',
+    'answer',
+    'single',
+    'bells',
+    'roll',
+    'answer',
+    'single',
+    'roll',
+    'bells',
+    'single',
+    'rest',
+    'single',
+    'rest',
+    'single',
+    'rest',
+    'single',
+    'rest',
+    'rest',
+    'single',
 ];
 
 // Downbeats of the large sections. The timpani is felt more than heard.
@@ -187,54 +299,206 @@ type EndingChordName = keyof typeof ENDING_CHORDS;
 // eight-bar climax, and an eight-bar coda that resolves onto B flat and holds. renderEnding() cuts
 // the introduction so the fanfare opens the finale directly.
 const ENDING_PROGRESSION: readonly EndingChordName[] = [
-    'Bb', 'Bb', 'F', 'F',
-    'Bb', 'Eb', 'Bb', 'F', 'Gm', 'Eb', 'F', 'Bb',
-    'Bb', 'Eb', 'F', 'Gm', 'Eb', 'F', 'Bb', 'Bb',
-    'Gm', 'Eb', 'Cm', 'F', 'Bb', 'Eb', 'F', 'F',
-    'Bb', 'Eb', 'Bb', 'F', 'Gm', 'Eb', 'F', 'Bb',
-    'Eb', 'Bb', 'F', 'Bb', 'Eb', 'Bb', 'Bb', 'Bb',
+    'Bb',
+    'Bb',
+    'F',
+    'F',
+    'Bb',
+    'Eb',
+    'Bb',
+    'F',
+    'Gm',
+    'Eb',
+    'F',
+    'Bb',
+    'Bb',
+    'Eb',
+    'F',
+    'Gm',
+    'Eb',
+    'F',
+    'Bb',
+    'Bb',
+    'Gm',
+    'Eb',
+    'Cm',
+    'F',
+    'Bb',
+    'Eb',
+    'F',
+    'F',
+    'Bb',
+    'Eb',
+    'Bb',
+    'F',
+    'Gm',
+    'Eb',
+    'F',
+    'Bb',
+    'Eb',
+    'Bb',
+    'F',
+    'Bb',
+    'Eb',
+    'Bb',
+    'Bb',
+    'Bb',
 ];
 
 // The main theme: a rising triad, a dotted answer, and a stepwise descent. The climax repeats it
 // an octave higher while the strings double the original register underneath.
 const ENDING_TRUMPET: Record<number, readonly MelodyNote[]> = {
-    4: [{ midi: 70, beat: 0, length: 1.5 }, { midi: 77, beat: 1.5, length: 0.5 }, { midi: 74, beat: 2, length: 1 }, { midi: 75, beat: 3, length: 1 }],
-    5: [{ midi: 74, beat: 0, length: 2 }, { midi: 72, beat: 2, length: 1 }, { midi: 70, beat: 3, length: 1 }],
-    6: [{ midi: 65, beat: 0, length: 1.5 }, { midi: 70, beat: 1.5, length: 0.5 }, { midi: 74, beat: 2, length: 1 }, { midi: 77, beat: 3, length: 1 }],
-    7: [{ midi: 75, beat: 0, length: 2 }, { midi: 74, beat: 2, length: 1 }, { midi: 72, beat: 3, length: 1 }],
-    8: [{ midi: 74, beat: 0, length: 1.5 }, { midi: 79, beat: 1.5, length: 0.5 }, { midi: 77, beat: 2, length: 1 }, { midi: 74, beat: 3, length: 1 }],
-    9: [{ midi: 75, beat: 0, length: 2 }, { midi: 77, beat: 2, length: 1 }, { midi: 79, beat: 3, length: 1 }],
-    10: [{ midi: 77, beat: 0, length: 2 }, { midi: 75, beat: 2, length: 1 }, { midi: 74, beat: 3, length: 1 }],
+    4: [
+        { midi: 70, beat: 0, length: 1.5 },
+        { midi: 77, beat: 1.5, length: 0.5 },
+        { midi: 74, beat: 2, length: 1 },
+        { midi: 75, beat: 3, length: 1 },
+    ],
+    5: [
+        { midi: 74, beat: 0, length: 2 },
+        { midi: 72, beat: 2, length: 1 },
+        { midi: 70, beat: 3, length: 1 },
+    ],
+    6: [
+        { midi: 65, beat: 0, length: 1.5 },
+        { midi: 70, beat: 1.5, length: 0.5 },
+        { midi: 74, beat: 2, length: 1 },
+        { midi: 77, beat: 3, length: 1 },
+    ],
+    7: [
+        { midi: 75, beat: 0, length: 2 },
+        { midi: 74, beat: 2, length: 1 },
+        { midi: 72, beat: 3, length: 1 },
+    ],
+    8: [
+        { midi: 74, beat: 0, length: 1.5 },
+        { midi: 79, beat: 1.5, length: 0.5 },
+        { midi: 77, beat: 2, length: 1 },
+        { midi: 74, beat: 3, length: 1 },
+    ],
+    9: [
+        { midi: 75, beat: 0, length: 2 },
+        { midi: 77, beat: 2, length: 1 },
+        { midi: 79, beat: 3, length: 1 },
+    ],
+    10: [
+        { midi: 77, beat: 0, length: 2 },
+        { midi: 75, beat: 2, length: 1 },
+        { midi: 74, beat: 3, length: 1 },
+    ],
     11: [{ midi: 70, beat: 0, length: 4 }],
-    12: [{ midi: 70, beat: 0, length: 1.5 }, { midi: 77, beat: 1.5, length: 0.5 }, { midi: 74, beat: 2, length: 1 }, { midi: 75, beat: 3, length: 1 }],
-    13: [{ midi: 79, beat: 0, length: 2 }, { midi: 77, beat: 2, length: 1 }, { midi: 75, beat: 3, length: 1 }],
-    14: [{ midi: 77, beat: 0, length: 1.5 }, { midi: 72, beat: 1.5, length: 0.5 }, { midi: 69, beat: 2, length: 1 }, { midi: 72, beat: 3, length: 1 }],
-    15: [{ midi: 74, beat: 0, length: 2 }, { midi: 79, beat: 2, length: 1 }, { midi: 82, beat: 3, length: 1 }],
-    16: [{ midi: 79, beat: 0, length: 2 }, { midi: 77, beat: 2, length: 1 }, { midi: 75, beat: 3, length: 1 }],
-    17: [{ midi: 77, beat: 0, length: 2 }, { midi: 76, beat: 2, length: 1 }, { midi: 77, beat: 3, length: 1 }],
-    18: [{ midi: 74, beat: 0, length: 2 }, { midi: 72, beat: 2, length: 1 }, { midi: 70, beat: 3, length: 1 }],
+    12: [
+        { midi: 70, beat: 0, length: 1.5 },
+        { midi: 77, beat: 1.5, length: 0.5 },
+        { midi: 74, beat: 2, length: 1 },
+        { midi: 75, beat: 3, length: 1 },
+    ],
+    13: [
+        { midi: 79, beat: 0, length: 2 },
+        { midi: 77, beat: 2, length: 1 },
+        { midi: 75, beat: 3, length: 1 },
+    ],
+    14: [
+        { midi: 77, beat: 0, length: 1.5 },
+        { midi: 72, beat: 1.5, length: 0.5 },
+        { midi: 69, beat: 2, length: 1 },
+        { midi: 72, beat: 3, length: 1 },
+    ],
+    15: [
+        { midi: 74, beat: 0, length: 2 },
+        { midi: 79, beat: 2, length: 1 },
+        { midi: 82, beat: 3, length: 1 },
+    ],
+    16: [
+        { midi: 79, beat: 0, length: 2 },
+        { midi: 77, beat: 2, length: 1 },
+        { midi: 75, beat: 3, length: 1 },
+    ],
+    17: [
+        { midi: 77, beat: 0, length: 2 },
+        { midi: 76, beat: 2, length: 1 },
+        { midi: 77, beat: 3, length: 1 },
+    ],
+    18: [
+        { midi: 74, beat: 0, length: 2 },
+        { midi: 72, beat: 2, length: 1 },
+        { midi: 70, beat: 3, length: 1 },
+    ],
     19: [{ midi: 65, beat: 0, length: 4 }],
-    28: [{ midi: 82, beat: 0, length: 1.5 }, { midi: 89, beat: 1.5, length: 0.5 }, { midi: 86, beat: 2, length: 1 }, { midi: 87, beat: 3, length: 1 }],
-    29: [{ midi: 86, beat: 0, length: 2 }, { midi: 84, beat: 2, length: 1 }, { midi: 82, beat: 3, length: 1 }],
-    30: [{ midi: 77, beat: 0, length: 1.5 }, { midi: 82, beat: 1.5, length: 0.5 }, { midi: 86, beat: 2, length: 1 }, { midi: 89, beat: 3, length: 1 }],
-    31: [{ midi: 87, beat: 0, length: 2 }, { midi: 86, beat: 2, length: 1 }, { midi: 84, beat: 3, length: 1 }],
-    32: [{ midi: 86, beat: 0, length: 1.5 }, { midi: 91, beat: 1.5, length: 0.5 }, { midi: 89, beat: 2, length: 1 }, { midi: 86, beat: 3, length: 1 }],
-    33: [{ midi: 87, beat: 0, length: 2 }, { midi: 89, beat: 2, length: 1 }, { midi: 91, beat: 3, length: 1 }],
-    34: [{ midi: 89, beat: 0, length: 2 }, { midi: 87, beat: 2, length: 1 }, { midi: 86, beat: 3, length: 1 }],
+    28: [
+        { midi: 82, beat: 0, length: 1.5 },
+        { midi: 89, beat: 1.5, length: 0.5 },
+        { midi: 86, beat: 2, length: 1 },
+        { midi: 87, beat: 3, length: 1 },
+    ],
+    29: [
+        { midi: 86, beat: 0, length: 2 },
+        { midi: 84, beat: 2, length: 1 },
+        { midi: 82, beat: 3, length: 1 },
+    ],
+    30: [
+        { midi: 77, beat: 0, length: 1.5 },
+        { midi: 82, beat: 1.5, length: 0.5 },
+        { midi: 86, beat: 2, length: 1 },
+        { midi: 89, beat: 3, length: 1 },
+    ],
+    31: [
+        { midi: 87, beat: 0, length: 2 },
+        { midi: 86, beat: 2, length: 1 },
+        { midi: 84, beat: 3, length: 1 },
+    ],
+    32: [
+        { midi: 86, beat: 0, length: 1.5 },
+        { midi: 91, beat: 1.5, length: 0.5 },
+        { midi: 89, beat: 2, length: 1 },
+        { midi: 86, beat: 3, length: 1 },
+    ],
+    33: [
+        { midi: 87, beat: 0, length: 2 },
+        { midi: 89, beat: 2, length: 1 },
+        { midi: 91, beat: 3, length: 1 },
+    ],
+    34: [
+        { midi: 89, beat: 0, length: 2 },
+        { midi: 87, beat: 2, length: 1 },
+        { midi: 86, beat: 3, length: 1 },
+    ],
     35: [{ midi: 82, beat: 0, length: 4 }],
-    36: [{ midi: 79, beat: 0, length: 2 }, { midi: 77, beat: 2, length: 1 }, { midi: 75, beat: 3, length: 1 }],
-    37: [{ midi: 74, beat: 0, length: 2 }, { midi: 77, beat: 2, length: 1 }, { midi: 82, beat: 3, length: 1 }],
-    38: [{ midi: 72, beat: 0, length: 2 }, { midi: 74, beat: 2, length: 1 }, { midi: 76, beat: 3, length: 1 }],
-    39: [{ midi: 77, beat: 0, length: 2 }, { midi: 74, beat: 2, length: 1 }, { midi: 70, beat: 3, length: 1 }],
+    36: [
+        { midi: 79, beat: 0, length: 2 },
+        { midi: 77, beat: 2, length: 1 },
+        { midi: 75, beat: 3, length: 1 },
+    ],
+    37: [
+        { midi: 74, beat: 0, length: 2 },
+        { midi: 77, beat: 2, length: 1 },
+        { midi: 82, beat: 3, length: 1 },
+    ],
+    38: [
+        { midi: 72, beat: 0, length: 2 },
+        { midi: 74, beat: 2, length: 1 },
+        { midi: 76, beat: 3, length: 1 },
+    ],
+    39: [
+        { midi: 77, beat: 0, length: 2 },
+        { midi: 74, beat: 2, length: 1 },
+        { midi: 70, beat: 3, length: 1 },
+    ],
     40: [{ midi: 79, beat: 0, length: 4 }],
-    41: [{ midi: 77, beat: 0, length: 2 }, { midi: 74, beat: 2, length: 2 }],
+    41: [
+        { midi: 77, beat: 0, length: 2 },
+        { midi: 74, beat: 2, length: 2 },
+    ],
     42: [{ midi: 82, beat: 0, length: 8 }],
 };
 
 // The horns open the piece with a lone dominant call, carry the quiet middle section, then settle
 // into sustained chord tones beneath the restatement and the coda.
 const ENDING_HORN: Record<number, readonly MelodyNote[]> = {
-    2: [{ midi: 69, beat: 0, length: 2, velocity: 0.5 }, { midi: 72, beat: 2, length: 2, velocity: 0.46 }],
+    2: [
+        { midi: 69, beat: 0, length: 2, velocity: 0.5 },
+        { midi: 72, beat: 2, length: 2, velocity: 0.46 },
+    ],
     3: [{ midi: 65, beat: 0, length: 4, velocity: 0.44 }],
     4: [{ midi: 62, beat: 0, length: 3.8 }],
     5: [{ midi: 63, beat: 0, length: 3.8 }],
@@ -253,12 +517,32 @@ const ENDING_HORN: Record<number, readonly MelodyNote[]> = {
     18: [{ midi: 62, beat: 0, length: 3.8 }],
     19: [{ midi: 65, beat: 0, length: 3.8 }],
     20: [{ midi: 74, beat: 0, length: 4, velocity: 0.38 }],
-    21: [{ midi: 75, beat: 0, length: 2, velocity: 0.38 }, { midi: 79, beat: 2, length: 2, velocity: 0.42 }],
-    22: [{ midi: 79, beat: 0, length: 2, velocity: 0.4 }, { midi: 75, beat: 2, length: 2, velocity: 0.36 }],
-    23: [{ midi: 69, beat: 0, length: 2, velocity: 0.36 }, { midi: 72, beat: 2, length: 2, velocity: 0.38 }],
-    24: [{ midi: 74, beat: 0, length: 2, velocity: 0.4 }, { midi: 77, beat: 2, length: 2, velocity: 0.44 }],
-    25: [{ midi: 79, beat: 0, length: 2, velocity: 0.42 }, { midi: 77, beat: 2, length: 1, velocity: 0.38 }, { midi: 75, beat: 3, length: 1, velocity: 0.36 }],
-    26: [{ midi: 77, beat: 0, length: 2, velocity: 0.42 }, { midi: 74, beat: 2, length: 1, velocity: 0.38 }, { midi: 72, beat: 3, length: 1, velocity: 0.36 }],
+    21: [
+        { midi: 75, beat: 0, length: 2, velocity: 0.38 },
+        { midi: 79, beat: 2, length: 2, velocity: 0.42 },
+    ],
+    22: [
+        { midi: 79, beat: 0, length: 2, velocity: 0.4 },
+        { midi: 75, beat: 2, length: 2, velocity: 0.36 },
+    ],
+    23: [
+        { midi: 69, beat: 0, length: 2, velocity: 0.36 },
+        { midi: 72, beat: 2, length: 2, velocity: 0.38 },
+    ],
+    24: [
+        { midi: 74, beat: 0, length: 2, velocity: 0.4 },
+        { midi: 77, beat: 2, length: 2, velocity: 0.44 },
+    ],
+    25: [
+        { midi: 79, beat: 0, length: 2, velocity: 0.42 },
+        { midi: 77, beat: 2, length: 1, velocity: 0.38 },
+        { midi: 75, beat: 3, length: 1, velocity: 0.36 },
+    ],
+    26: [
+        { midi: 77, beat: 0, length: 2, velocity: 0.42 },
+        { midi: 74, beat: 2, length: 1, velocity: 0.38 },
+        { midi: 72, beat: 3, length: 1, velocity: 0.36 },
+    ],
     27: [{ midi: 72, beat: 0, length: 4, velocity: 0.4 }],
     28: [{ midi: 74, beat: 0, length: 3.8 }],
     29: [{ midi: 70, beat: 0, length: 3.8 }],
@@ -318,10 +602,7 @@ function renderVariation(variation: Variation, index: number): void {
     const cello = addTrack('Cello', PROGRAM.cello);
     const timpani = variation.timpani ? addTrack('Timpani', PROGRAM.timpani) : null;
 
-    const pianoPatterns: Record<
-        PianoPattern,
-        readonly { tone: number; beat: number; length: number }[]
-    > = {
+    const pianoPatterns: Record<PianoPattern, readonly { tone: number; beat: number; length: number }[]> = {
         single: [{ tone: 0, beat: 0, length: 3.5 }],
         roll: [
             { tone: 0, beat: 0, length: 2 },
@@ -375,14 +656,7 @@ function renderVariation(variation: Variation, index: number): void {
     for (const [barIndex, notes] of Object.entries(MELODY)) {
         for (const note of notes) {
             const melody = transpose(note.midi) + variation.melodyOctave;
-            addNote(
-                cello,
-                melody,
-                Number(barIndex),
-                note.beat + jitter(0.008),
-                note.length,
-                0.5,
-            );
+            addNote(cello, melody, Number(barIndex), note.beat + jitter(0.008), note.length, 0.5);
             if (variation.melodyChoir) {
                 addNote(choir, melody, Number(barIndex), note.beat, note.length, 0.18);
             }
@@ -403,7 +677,8 @@ function renderVariation(variation: Variation, index: number): void {
     const minutes = Math.floor(seconds / 60);
     const remainder = Math.round(seconds % 60);
     console.log(
-        `Generated ${filePath} (${minutes}:${String(remainder).padStart(2, '0')}, ${Math.round(bytes.length / 1024)} KB)`,
+        `Generated ${filePath} (${minutes}:${String(remainder).padStart(2, '0')}, ` +
+            `${Math.round(bytes.length / 1024)} KB)`,
     );
 }
 
@@ -449,12 +724,7 @@ function renderEnding(): void {
         });
     };
 
-    const addMelody = (
-        track: Track,
-        bars: Record<number, readonly MelodyNote[]>,
-        level: number,
-        octave = 0,
-    ): void => {
+    const addMelody = (track: Track, bars: Record<number, readonly MelodyNote[]>, level: number, octave = 0): void => {
         for (const [barIndex, notes] of Object.entries(bars)) {
             for (const note of notes) {
                 addNote(
@@ -531,14 +801,7 @@ function renderEnding(): void {
         const chord = ENDING_CHORDS[ENDING_PROGRESSION[barIndex]];
         const tones = chord.pad.map((note) => note + 12);
         arpeggio.forEach((tone, index) => {
-            addNote(
-                piano,
-                tones[tone],
-                barIndex,
-                index * 0.5 + (rng() * 2 - 1) * 0.006,
-                0.45,
-                0.12 + rng() * 0.04,
-            );
+            addNote(piano, tones[tone], barIndex, index * 0.5 + (rng() * 2 - 1) * 0.006, 0.45, 0.12 + rng() * 0.04);
         });
     }
 
@@ -548,14 +811,7 @@ function renderEnding(): void {
         const chord = ENDING_CHORDS[ENDING_PROGRESSION[barIndex]];
         const tones = chord.pad.map((note) => note + 12);
         for (const [index, tone] of [0, 2, 1, 2].entries()) {
-            addNote(
-                piano,
-                tones[tone],
-                barIndex,
-                index + (rng() * 2 - 1) * 0.006,
-                0.9,
-                0.14 + rng() * 0.03,
-            );
+            addNote(piano, tones[tone], barIndex, index + (rng() * 2 - 1) * 0.006, 0.9, 0.14 + rng() * 0.03);
         }
     }
     addNote(piano, 82, 42, 0, 8, 0.18);
@@ -618,7 +874,8 @@ function renderEnding(): void {
     const minutes = Math.floor(seconds / 60);
     const remainder = Math.round(seconds % 60);
     console.log(
-        `Generated ${filePath} (${minutes}:${String(remainder).padStart(2, '0')}, ${Math.round(bytes.length / 1024)} KB)`,
+        `Generated ${filePath} (${minutes}:${String(remainder).padStart(2, '0')}, ` +
+            `${Math.round(bytes.length / 1024)} KB)`,
     );
 }
 

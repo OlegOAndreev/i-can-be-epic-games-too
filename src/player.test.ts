@@ -5,13 +5,11 @@ import { GLOW_RING_TEXTURE_INNER_RADIUS } from './glow';
 import {
     chargedWrenchArmAngle,
     chargedWrenchSpinAngle,
-    Player,
     isFullySubmerged,
     PLAYER_HEIGHT,
     thrusterGlowStrength,
     wrenchCircleAngle,
 } from './player';
-import type { PlayerSettings } from './player';
 import {
     ANTENNA_IDLE_HALO_OPACITY,
     ANTENNA_RING_RENDER_ORDER,
@@ -19,15 +17,9 @@ import {
     buildPlayerModel,
     PLAYER_BODY_RENDER_ORDER,
 } from './player-model';
-import { Terrain, WATER_LEVEL } from './terrain';
+import { WATER_LEVEL } from './terrain';
 
-const FAST_TERRAIN = { meshes: false, decorations: false } as const;
-
-const SETTINGS: PlayerSettings = {
-    moveSpeed: 10.5,
-    jumpSpeed: 12,
-    gravity: 26,
-};
+import { NO_INPUT, stepPlayer, testPlayer, testTerrain, visibleMeshes } from './test-helpers';
 
 describe('thrusterGlowStrength', () => {
     it('stays dark at or below 11 m/s', () => {
@@ -57,17 +49,16 @@ describe('isFullySubmerged', () => {
 
 describe('wrench attack', () => {
     it('charges for one second and only reports a charged release afterwards', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const noInput = { forward: 0, right: 0, jump: false };
+        const terrain = testTerrain();
 
-        const quick = new Player(terrain, SETTINGS);
+        const quick = testPlayer(terrain);
         quick.setWrenchEquipped(true);
         expect(quick.beginWrenchCharge()).toBe(true);
         expect(quick.updateWrenchCharge(0.5)).toBe(false);
         expect(quick.isWrenchCharged).toBe(false);
         expect(quick.releaseWrench()).toBe(false);
 
-        const full = new Player(terrain, SETTINGS);
+        const full = testPlayer(terrain);
         full.setWrenchEquipped(true);
         expect(full.beginWrenchCharge()).toBe(true);
         full.updateWrenchCharge(0.6);
@@ -77,17 +68,16 @@ describe('wrench attack', () => {
 
         // The swing itself still needs to finish before another charge can start.
         expect(full.beginWrenchCharge()).toBe(false);
-        full.update(0.7, noInput, 0, terrain);
+        full.update(0.7, NO_INPUT, 0, terrain);
         expect(full.beginWrenchCharge()).toBe(true);
 
         quick.group.removeFromParent();
         full.group.removeFromParent();
-        terrain.dispose();
     });
 
     it('keeps charging without the input being held', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
         player.setWrenchEquipped(true);
 
         expect(player.beginWrenchCharge()).toBe(true);
@@ -98,14 +88,11 @@ describe('wrench attack', () => {
         expect(player.updateWrenchCharge(0.5)).toBe(false);
         expect(player.isWrenchCharged).toBe(true);
         expect(player.releaseWrench()).toBe(true);
-
-        terrain.dispose();
     });
 
     it('keeps white electric bolts arcing around a charged wrench', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
-        const noInput = { forward: 0, right: 0, jump: false };
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
         player.setWrenchEquipped(true);
         const boltGroup = player.group.getObjectByName('wrench-bolts');
         expect(boltGroup).toBeInstanceOf(Group);
@@ -119,7 +106,7 @@ describe('wrench attack', () => {
 
         player.beginWrenchCharge();
         player.updateWrenchCharge(0.1);
-        player.update(1 / 60, noInput, 0, terrain);
+        player.update(1 / 60, NO_INPUT, 0, terrain);
         expect(boltMesh?.visible).toBe(true);
         // The effect starts small and grows with the charge.
         const earlyScale = boltMesh?.scale.x ?? 0;
@@ -128,9 +115,7 @@ describe('wrench attack', () => {
 
         // The bolts grow to full size and keep flickering after the charge fills.
         player.updateWrenchCharge(0.95);
-        for (let frame = 0; frame < 20; frame++) {
-            player.update(1 / 60, noInput, 0, terrain);
-        }
+        stepPlayer(player, terrain, 20);
         expect(player.isWrenchCharged).toBe(true);
         expect(boltMesh?.visible).toBe(true);
         expect(boltMesh?.scale.x ?? 0).toBeGreaterThan(earlyScale * 3);
@@ -138,81 +123,69 @@ describe('wrench attack', () => {
 
         // They stay through the charged swing and disappear when it finishes.
         expect(player.releaseWrench()).toBe(true);
-        player.update(0.1, noInput, 0, terrain);
+        player.update(0.1, NO_INPUT, 0, terrain);
         expect(boltMesh?.visible).toBe(true);
-        player.update(0.6, noInput, 0, terrain);
+        player.update(0.6, NO_INPUT, 0, terrain);
         expect(player.isWrenchCharged).toBe(false);
         expect(boltMesh?.visible).toBe(false);
-
-        terrain.dispose();
     });
 
     it('exposes two separate wrench tips for the swing trails', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
 
         const left = player.getWrenchTipWorldPosition(0, new Vector3());
         const right = player.getWrenchTipWorldPosition(1, new Vector3());
         expect(left.distanceTo(right)).toBeGreaterThan(0.1);
-
-        terrain.dispose();
     });
 
     it('anchors the regular hit trail between the wrench jaw ends', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
 
         const left = player.getWrenchTipWorldPosition(0, new Vector3());
         const right = player.getWrenchTipWorldPosition(1, new Vector3());
         const center = player.getWrenchJawCenterWorldPosition(new Vector3());
         const midpoint = left.add(right).multiplyScalar(0.5);
         expect(center.distanceTo(midpoint)).toBeLessThan(1e-6);
-
-        terrain.dispose();
     });
 
     it('only starts a swing when the wrench is equipped', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
 
         expect(player.swingWrench()).toBe(false);
         player.setWrenchEquipped(true);
         expect(player.swingWrench()).toBe(true);
         expect(player.swingWrench()).toBe(false);
-
-        terrain.dispose();
     });
 
     it('reports when a swing plays to completion, not when it is interrupted', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
         player.setWrenchEquipped(true);
-        const noInput = { forward: 0, right: 0, jump: false };
         let completions = 0;
         player.onWrenchSwingEnd = () => {
             completions++;
         };
 
         player.swingWrench();
-        player.update(0.2, noInput, 0, terrain);
+        player.update(0.2, NO_INPUT, 0, terrain);
         expect(completions).toBe(0);
-        player.update(0.2, noInput, 0, terrain);
+        player.update(0.2, NO_INPUT, 0, terrain);
         expect(completions).toBe(1);
 
         // Unequipping mid-swing cancels it without a completion callback.
         player.swingWrench();
-        player.update(0.1, noInput, 0, terrain);
+        player.update(0.1, NO_INPUT, 0, terrain);
         player.setWrenchEquipped(false);
-        player.update(0.5, noInput, 0, terrain);
+        player.update(0.5, NO_INPUT, 0, terrain);
         expect(completions).toBe(1);
-
-        terrain.dispose();
     });
 
     it('keeps the charged swing running past the regular swing duration', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
-        const noInput = { forward: 0, right: 0, jump: false };
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
         player.setWrenchEquipped(true);
 
         let completions = 0;
@@ -225,15 +198,13 @@ describe('wrench attack', () => {
         expect(player.releaseWrench()).toBe(true);
 
         // Still spinning where the regular swing would already have finished.
-        player.update(0.34, noInput, 0, terrain);
+        player.update(0.34, NO_INPUT, 0, terrain);
         expect(completions).toBe(0);
         expect(player.isWrenchSwingCharged).toBe(true);
 
-        player.update(0.21, noInput, 0, terrain);
+        player.update(0.21, NO_INPUT, 0, terrain);
         expect(completions).toBe(1);
         expect(player.isWrenchSwingCharged).toBe(false);
-
-        terrain.dispose();
     });
 });
 
@@ -245,16 +216,14 @@ describe('wrench circle', () => {
     });
 
     it('circles the wrench arm while the body stays still', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
         const wrench = player.group.getObjectByName('wrench');
         expect(wrench).toBeDefined();
         const arm = wrench?.parent;
         const upperBody = arm?.parent;
         const visual = upperBody?.parent;
-        const otherArm = upperBody?.children.find(
-            (child): child is Group => child instanceof Group && child !== arm,
-        );
+        const otherArm = upperBody?.children.find((child): child is Group => child instanceof Group && child !== arm);
         expect(arm).toBeDefined();
         expect(visual).toBeDefined();
         expect(otherArm).toBeDefined();
@@ -280,13 +249,11 @@ describe('wrench circle', () => {
         expect(maxOtherX - minOtherX).toBeGreaterThan(0.4);
         expect(Math.abs(arm!.rotation.x)).toBeLessThan(0.05);
         expect(Math.abs(otherArm!.rotation.x)).toBeLessThan(0.05);
-        terrain.dispose();
     });
 
     it('spins the whole robot with the wrench pointed forward when the strike is charged', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
-        const noInput = { forward: 0, right: 0, jump: false };
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
         const wrench = player.group.getObjectByName('wrench');
         const arm = wrench?.parent;
         expect(arm).toBeDefined();
@@ -301,7 +268,7 @@ describe('wrench circle', () => {
         let maxYawDelta = 0;
         let midSpinArmX = 0;
         for (let elapsed = 0; elapsed < 0.5; elapsed += 0.01) {
-            player.update(0.01, noInput, 0, terrain);
+            player.update(0.01, NO_INPUT, 0, terrain);
             maxYawDelta = Math.max(maxYawDelta, player.group.rotation.y - startYaw);
             if (midSpinArmX === 0 && player.wrenchSwingAngle > Math.PI) {
                 midSpinArmX = arm!.rotation.x;
@@ -313,10 +280,9 @@ describe('wrench circle', () => {
         expect(midSpinArmX).toBeCloseTo(-Math.PI / 2, 5);
 
         // The turn ends on the exact starting facing with the wrench back at rest.
-        player.update(0.1, noInput, 0, terrain);
+        player.update(0.1, NO_INPUT, 0, terrain);
         expect(player.group.rotation.y).toBeCloseTo(startYaw, 5);
         expect(arm!.rotation.x).toBeCloseTo(0, 5);
-        terrain.dispose();
     });
 });
 
@@ -351,9 +317,7 @@ describe('charged wrench arc', () => {
 describe('Player model merging', () => {
     it('keeps arm and wrench geometry under its animated pivots', () => {
         const model = buildPlayerModel();
-        const armMeshes = model.rightArm.children.filter(
-            (child): child is Mesh => child instanceof Mesh,
-        );
+        const armMeshes = model.rightArm.children.filter((child): child is Mesh => child instanceof Mesh);
         expect(armMeshes.length).toBeGreaterThan(0);
 
         const armMesh = armMeshes[0];
@@ -365,17 +329,15 @@ describe('Player model merging', () => {
         model.visual.updateMatrixWorld(true);
         expect(armMesh.matrixWorld.equals(beforeMatrix)).toBe(false);
 
-        const wrenchMeshes = model.wrench.children.filter(
-            (child): child is Mesh => child instanceof Mesh,
-        );
+        const wrenchMeshes = model.wrench.children.filter((child): child is Mesh => child instanceof Mesh);
         expect(wrenchMeshes.length).toBeGreaterThan(0);
     });
 });
 
 describe('Player opacity', () => {
     it('fades between full and 10% opacity', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
         const materials = new Set<MeshStandardMaterial>();
 
         player.group.traverse((child) => {
@@ -410,13 +372,11 @@ describe('Player opacity', () => {
         for (const material of materials) {
             expect(material.opacity).toBeCloseTo(1);
         }
-
-        terrain.dispose();
     });
 
     it('moves the body out of the transparent pass while it is fully opaque', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
         const materials = new Set<MeshStandardMaterial>();
 
         player.group.traverse((child) => {
@@ -447,15 +407,13 @@ describe('Player opacity', () => {
             expect(material.transparent).toBe(false);
             expect(material.opacity).toBe(1);
         }
-
-        terrain.dispose();
     });
 });
 
 describe('Player underwater rendering', () => {
     it('draws the body before the transparent water so the sea tints it when submerged', () => {
-        const terrain = new Terrain(1234);
-        const player = new Player(terrain, SETTINGS);
+        const terrain = testTerrain(1234, {});
+        const player = testPlayer(terrain);
         const water = terrain.group.getObjectByName('water');
         let bodyMeshes = 0;
 
@@ -474,15 +432,13 @@ describe('Player underwater rendering', () => {
         });
 
         expect(bodyMeshes).toBeGreaterThan(0);
-
-        terrain.dispose();
     });
 });
 
 describe('Player lightning flash', () => {
     it('turns the robot white and restores its materials afterwards', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
         const materials: MeshStandardMaterial[] = [];
 
         player.group.traverse((child) => {
@@ -505,21 +461,17 @@ describe('Player lightning flash', () => {
             expect(material.emissiveIntensity).toBeGreaterThan(1);
         }
 
-        for (let frame = 0; frame < 40; frame++) {
-            player.update(1 / 60, { forward: 0, right: 0, jump: false }, 0, terrain);
-        }
+        stepPlayer(player, terrain, 40);
 
         for (let index = 0; index < materials.length; index++) {
             expect(materials[index].emissive.getHex()).toBe(originalEmissive[index]);
         }
-
-        terrain.dispose();
     });
 });
 describe('Player hard landings', () => {
     it('falls on its face after a high fall and ignores input until it gets up', () => {
-        const terrain = new Terrain(424242, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
+        const terrain = testTerrain(424242);
+        const player = testPlayer(terrain);
         const { x, z } = terrain.spawn;
         const ground = terrain.heightAt(x, z);
         let landings = 0;
@@ -545,22 +497,16 @@ describe('Player hard landings', () => {
         expect(player.isKnockedDown).toBe(true);
 
         const knockedPosition = player.group.position.clone();
-        for (let frame = 0; frame < 20; frame++) {
-            player.update(1 / 60, { forward: 1, right: 0, jump: true }, 0, terrain);
-        }
+        stepPlayer(player, terrain, 20, { forward: 1, right: 0, jump: true });
         expect(player.group.position.distanceTo(knockedPosition)).toBeLessThan(0.01);
 
-        for (let frame = 0; frame < 120; frame++) {
-            player.update(1 / 60, { forward: 0, right: 0, jump: false }, 0, terrain);
-        }
+        stepPlayer(player, terrain, 120);
         expect(player.isKnockedDown).toBe(false);
-
-        terrain.dispose();
     });
 
     it('does not knock the robot down after a fall from a small hill', () => {
-        const terrain = new Terrain(424242, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
+        const terrain = testTerrain(424242);
+        const player = testPlayer(terrain);
         const { x, z } = terrain.spawn;
         const ground = terrain.heightAt(x, z);
         let landings = 0;
@@ -584,18 +530,14 @@ describe('Player hard landings', () => {
 
         expect(landings).toBe(1);
         expect(player.isKnockedDown).toBe(false);
-
-        terrain.dispose();
     });
 });
 
 describe('Player detector antenna', () => {
-    const noInput = { forward: 0, right: 0, jump: false };
-
     it('runs one antenna pulse per beep and scales it to the beep interval', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const slow = new Player(terrain, SETTINGS);
-        const fast = new Player(terrain, SETTINGS);
+        const terrain = testTerrain();
+        const slow = testPlayer(terrain);
+        const fast = testPlayer(terrain);
         const slowRing = slow.group.getObjectByName('antenna-detector-ring') as Sprite;
         const fastRing = fast.group.getObjectByName('antenna-detector-ring') as Sprite;
         expect(slowRing).toBeInstanceOf(Sprite);
@@ -603,8 +545,8 @@ describe('Player detector antenna', () => {
 
         slow.pulseDetectorAntenna(1, 2);
         fast.pulseDetectorAntenna(1, 0.5);
-        slow.update(1 / 60, noInput, 0, terrain);
-        fast.update(1 / 60, noInput, 0, terrain);
+        slow.update(1 / 60, NO_INPUT, 0, terrain);
+        fast.update(1 / 60, NO_INPUT, 0, terrain);
 
         // The ring's inner edge starts on the antenna tip's surface and expands from there.
         const startScale = ANTENNA_TIP_RADIUS / GLOW_RING_TEXTURE_INNER_RADIUS;
@@ -613,8 +555,8 @@ describe('Player detector antenna', () => {
         expect(slowRing.scale.x).toBeLessThan(startScale * 1.4);
 
         for (let frame = 1; frame < 90; frame++) {
-            slow.update(1 / 60, noInput, 0, terrain);
-            fast.update(1 / 60, noInput, 0, terrain);
+            slow.update(1 / 60, NO_INPUT, 0, terrain);
+            fast.update(1 / 60, NO_INPUT, 0, terrain);
         }
 
         // 1.5 s into a 2 s cycle the slow ring is still expanding, while the fast pulse for a
@@ -622,66 +564,54 @@ describe('Player detector antenna', () => {
         expect(slowRing.visible).toBe(true);
         expect(fastRing.visible).toBe(false);
         expect(fastRing.material.opacity).toBe(0);
-
-        terrain.dispose();
     });
 
     it('keeps a faint glow when the detector is quiet', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
         const glow = player.group.getObjectByName('antenna-detector-glow') as Sprite;
         expect(glow).toBeInstanceOf(Sprite);
         expect(glow.material.opacity).toBeCloseTo(ANTENNA_IDLE_HALO_OPACITY);
 
-        player.update(1 / 60, noInput, 0, terrain);
+        player.update(1 / 60, NO_INPUT, 0, terrain);
         expect(glow.material.opacity).toBeCloseTo(ANTENNA_IDLE_HALO_OPACITY);
 
         player.pulseDetectorAntenna(1, 0.2);
-        player.update(1 / 60, noInput, 0, terrain);
+        player.update(1 / 60, NO_INPUT, 0, terrain);
         expect(glow.material.opacity).toBeGreaterThan(ANTENNA_IDLE_HALO_OPACITY);
 
-        for (let frame = 0; frame < 60; frame++) {
-            player.update(1 / 60, noInput, 0, terrain);
-        }
+        stepPlayer(player, terrain, 60);
         expect(glow.material.opacity).toBeCloseTo(ANTENNA_IDLE_HALO_OPACITY);
-
-        terrain.dispose();
     });
 
     it('fades the antenna back down when the beeps stop', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
         const ring = player.group.getObjectByName('antenna-detector-ring') as Sprite;
 
         player.pulseDetectorAntenna(1, 0.2);
-        player.update(1 / 60, noInput, 0, terrain);
+        player.update(1 / 60, NO_INPUT, 0, terrain);
         expect(ring.visible).toBe(true);
 
-        for (let frame = 0; frame < 60; frame++) {
-            player.update(1 / 60, noInput, 0, terrain);
-        }
+        stepPlayer(player, terrain, 60);
         expect(ring.visible).toBe(false);
         expect(ring.material.opacity).toBe(0);
-
-        terrain.dispose();
     });
 
     it('draws the detector pulse above alpha-blended grass', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
         const ring = player.group.getObjectByName('antenna-detector-ring') as Sprite;
 
         expect(ring.renderOrder).toBe(ANTENNA_RING_RENDER_ORDER);
         expect(ring.renderOrder).toBeGreaterThan(0);
         expect(ring.material.depthWrite).toBe(false);
-
-        terrain.dispose();
     });
 
     it('brightens the ring as the tracked piece gets closer', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const near = new Player(terrain, SETTINGS);
-        const far = new Player(terrain, SETTINGS);
+        const terrain = testTerrain();
+        const near = testPlayer(terrain);
+        const far = testPlayer(terrain);
         const nearRing = near.group.getObjectByName('antenna-detector-ring') as Sprite;
         const farRing = far.group.getObjectByName('antenna-detector-ring') as Sprite;
 
@@ -689,8 +619,8 @@ describe('Player detector antenna', () => {
         far.pulseDetectorAntenna(0.2, 1);
         // Run to the brightest point of the pulse, just as the ring leaves the antenna.
         for (let frame = 0; frame < 7; frame++) {
-            near.update(1 / 60, noInput, 0, terrain);
-            far.update(1 / 60, noInput, 0, terrain);
+            near.update(1 / 60, NO_INPUT, 0, terrain);
+            far.update(1 / 60, NO_INPUT, 0, terrain);
         }
 
         expect(nearRing.visible).toBe(true);
@@ -698,16 +628,13 @@ describe('Player detector antenna', () => {
         expect(nearRing.material.opacity).toBeGreaterThan(0.8);
         expect(farRing.material.opacity).toBeGreaterThan(0);
         expect(farRing.material.opacity).toBeLessThan(nearRing.material.opacity);
-
-        terrain.dispose();
     });
 });
 
 describe('crown shock', () => {
     it('throws the robot back inside the same electric burst as a hit caretaker', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
-        const noInput = { forward: 0, right: 0, jump: false };
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
         const burst = player.group.getObjectByName('player-shock-effect') as Group;
         expect(burst).toBeInstanceOf(Group);
         expect(burst.visible).toBe(false);
@@ -715,28 +642,22 @@ describe('crown shock', () => {
         const start = player.group.position.clone();
         player.shock(1, 0);
         expect(burst.visible).toBe(true);
-        expect(burst.children.filter((child) => child instanceof Mesh && child.visible).length).toBeGreaterThan(1);
+        expect(visibleMeshes(burst).length).toBeGreaterThan(1);
 
-        for (let frame = 0; frame < 30; frame++) {
-            player.update(1 / 60, noInput, 0, terrain);
-        }
+        stepPlayer(player, terrain, 30);
         expect(player.group.position.x - start.x).toBeGreaterThan(2);
         expect(burst.visible).toBe(true);
 
         // The burst fades on the same clock as the hit effect on a caretaker.
-        for (let frame = 0; frame < 30; frame++) {
-            player.update(1 / 60, noInput, 0, terrain);
-        }
+        stepPlayer(player, terrain, 30);
         expect(burst.visible).toBe(false);
-
-        terrain.dispose();
     });
 });
 
 describe('Player destruction', () => {
     it('topples, extinguishes its lights, and restores them when revived', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
         const visual = player.group.children[0] as Group;
         const materials: MeshStandardMaterial[] = [];
 
@@ -782,13 +703,11 @@ describe('Player destruction', () => {
             expect(materials[index].emissiveIntensity).toBe(intensities[index]);
         }
         expect(glow.material.opacity).toBeCloseTo(glowOpacity, 5);
-
-        terrain.dispose();
     });
 
     it('respawns at the given ramp foot facing its high end', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
 
         player.respawnAt(new Vector3(1, 2, 3), Math.PI / 2);
 
@@ -798,15 +717,13 @@ describe('Player destruction', () => {
         expect(player.group.rotation.y).toBeCloseTo(Math.PI / 2, 5);
         expect(player.isGrounded).toBe(true);
         expect(player.horizontalSpeed).toBe(0);
-
-        terrain.dispose();
     });
 });
 
 describe('Player snapshot', () => {
     it('captures and restores position, view and motion', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
-        const player = new Player(terrain, SETTINGS);
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
 
         player.restoreSnapshot({
             x: 4,
@@ -826,7 +743,5 @@ describe('Player snapshot', () => {
         expect(snapshot.speed).toBeCloseTo(6);
         expect(snapshot.verticalSpeed).toBe(3);
         expect(snapshot.grounded).toBe(false);
-
-        terrain.dispose();
     });
 });

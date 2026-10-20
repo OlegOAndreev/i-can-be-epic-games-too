@@ -1,4 +1,4 @@
-import { Matrix4, Mesh, MeshStandardMaterial } from 'three';
+import { CanvasTexture, Matrix4, Mesh, MeshStandardMaterial, Sprite, SpriteMaterial } from 'three';
 import type { BufferGeometry, Object3D } from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
@@ -17,9 +17,47 @@ export function disposeGeometry(geometry: BufferGeometry): void {
     }
 }
 
+// Tears down a whole scene subtree. Geometries go through disposeGeometry so shared unit meshes
+// survive, while every material (and generated sprite canvases) is released with the object.
+export function disposeSceneGraph(root: Object3D, extra: Iterable<{ dispose(): void }> = []): void {
+    root.removeFromParent();
+    root.traverse((child) => {
+        if (child instanceof Mesh) {
+            disposeGeometry(child.geometry);
+        }
+        if (child instanceof Mesh || child instanceof Sprite) {
+            const materials = Array.isArray(child.material) ? child.material : [child.material];
+            for (const material of materials) {
+                if (material instanceof SpriteMaterial && material.map instanceof CanvasTexture) {
+                    material.map.dispose();
+                }
+                material.dispose();
+            }
+        }
+    });
+    for (const item of extra) {
+        item.dispose();
+    }
+}
+
 interface MergeOptions {
     // Return true to skip an object and its whole subtree.
     skip?: (object: Object3D) => boolean;
+}
+
+// Merges batching pieces into one geometry. On success the inputs are released; on failure they are
+// left alone so the caller can keep using (or dispose) them, and the fallback is used instead.
+export function mergeParts(parts: BufferGeometry[], fallback?: BufferGeometry): BufferGeometry {
+    const merged = mergeGeometries(parts);
+    if (!merged) {
+        return fallback ?? parts[0];
+    }
+
+    for (const part of parts) {
+        part.dispose();
+    }
+    merged.computeBoundingSphere();
+    return merged;
 }
 
 // Collapses static meshes that share a material into one mesh. Transforms are baked into the
@@ -38,13 +76,8 @@ export function mergeMeshesByMaterial(root: Object3D, options: MergeOptions = {}
         if (object !== root && object instanceof Mesh && object.children.length === 0) {
             const material = Array.isArray(object.material) ? null : object.material;
             if (material instanceof MeshStandardMaterial) {
-                const source = object.geometry.index
-                    ? object.geometry.toNonIndexed()
-                    : object.geometry.clone();
-                const relativeMatrix = new Matrix4().multiplyMatrices(
-                    rootInverse,
-                    object.matrixWorld,
-                );
+                const source = object.geometry.index ? object.geometry.toNonIndexed() : object.geometry.clone();
+                const relativeMatrix = new Matrix4().multiplyMatrices(rootInverse, object.matrixWorld);
                 source.applyMatrix4(relativeMatrix);
 
                 const entries = groups.get(material) ?? [];

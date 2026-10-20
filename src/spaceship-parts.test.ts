@@ -2,28 +2,106 @@ import { CylinderGeometry, Group, Mesh, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
 import type { GameAudio } from './audio';
-import { SpaceshipParts } from './spaceship-parts';
-import { Terrain, WATER_LEVEL } from './terrain';
-
-const FAST_TERRAIN = { meshes: false, decorations: false } as const;
+import { SpaceshipParts, bestGridSpot, findRingSpot } from './spaceship-parts';
+import { stubAudio as audioStub, testTerrain } from './test-helpers';
+import { WATER_LEVEL } from './terrain';
 
 function stubAudio(): { audio: GameAudio; calls: { recovered: number; beeps: number } } {
     const calls = { recovered: 0, beeps: 0 };
-    const audio = {
-        started: true,
+    const audio = audioStub({
         playDetectorBeep: () => {
             calls.beeps++;
         },
         playPartRecovered: () => {
             calls.recovered++;
         },
-    } as unknown as GameAudio;
+    });
     return { audio, calls };
 }
 
+describe('space part placement helpers', () => {
+    it('draws the angle before the radius and returns the first accepted ring spot', () => {
+        const values = [0.25, 0, 0.5, 0.5];
+        let draw = 0;
+        const attempts: Array<{ x: number; z: number }> = [];
+
+        const spot = findRingSpot(() => values[draw++], {
+            attempts: 4,
+            minRadius: 10,
+            maxRadius: 20,
+            accept: (x, z) => {
+                attempts.push({ x, z });
+                return attempts.length === 2;
+            },
+        });
+
+        expect(attempts).toHaveLength(2);
+        expect(attempts[0].x).toBeCloseTo(0, 10);
+        expect(attempts[0].z).toBeCloseTo(10, 10);
+        expect(attempts[1].x).toBeCloseTo(-15, 10);
+        expect(attempts[1].z).toBeCloseTo(0, 10);
+        expect(spot).toEqual(attempts[1]);
+        expect(draw).toBe(4);
+    });
+
+    it('stops after the attempt budget without extra random draws', () => {
+        let draw = 0;
+        const spot = findRingSpot(
+            () => {
+                draw++;
+                return 0;
+            },
+            {
+                attempts: 3,
+                minRadius: 10,
+                maxRadius: 20,
+                accept: () => false,
+            },
+        );
+
+        expect(spot).toBeNull();
+        expect(draw).toBe(6);
+    });
+
+    it('scans the grid by rows and keeps the first highest score', () => {
+        const cells: Array<{ x: number; z: number }> = [];
+        const first = bestGridSpot({
+            limit: 1,
+            step: 1,
+            score: (x, z) => {
+                cells.push({ x, z });
+                return null;
+            },
+        });
+
+        expect(first).toBeNull();
+        expect(cells).toEqual([
+            { x: -1, z: -1 },
+            { x: 0, z: -1 },
+            { x: 1, z: -1 },
+            { x: -1, z: 0 },
+            { x: 0, z: 0 },
+            { x: 1, z: 0 },
+            { x: -1, z: 1 },
+            { x: 0, z: 1 },
+            { x: 1, z: 1 },
+        ]);
+
+        const best = bestGridSpot({
+            limit: 1,
+            step: 1,
+            score: (x, z) => (x === 1 && z === 1 ? 4 : 0),
+        });
+        expect(best).toEqual({ x: 1, z: 1 });
+
+        const tied = bestGridSpot({ limit: 1, step: 1, score: () => 0 });
+        expect(tied).toEqual({ x: -1, z: -1 });
+    });
+});
+
 describe('spaceship parts', () => {
     it('scatters five distinct pieces with at least one beneath the water', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain(1234);
         const { audio } = stubAudio();
         const parts = new SpaceshipParts(terrain, audio);
         const sites = parts.getSites();
@@ -49,11 +127,10 @@ describe('spaceship parts', () => {
 
         parts.dispose();
         second.dispose();
-        terrain.dispose();
     });
 
     it('can reveal every remaining piece for the debug shortcut', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain(1234);
         const { audio } = stubAudio();
         const parts = new SpaceshipParts(terrain, audio);
 
@@ -64,22 +141,20 @@ describe('spaceship parts', () => {
         expect(parts.getSites().every((site) => site.collected)).toBe(true);
 
         parts.dispose();
-        terrain.dispose();
     });
 
     it('submerges a piece for every world seed', () => {
         for (const seed of [1, 42, 777]) {
-            const terrain = new Terrain(seed, FAST_TERRAIN);
+            const terrain = testTerrain(seed);
             const { audio } = stubAudio();
             const parts = new SpaceshipParts(terrain, audio);
             expect(parts.getSites().some((site) => site.y < WATER_LEVEL)).toBe(true);
             parts.dispose();
-            terrain.dispose();
         }
     }, 20_000);
 
     it('wraps each piece in a tight glowing cylinder instead of a floor ring', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain(1234);
         const { audio } = stubAudio();
         const parts = new SpaceshipParts(terrain, audio);
         const target = parts.getSites()[0];
@@ -87,8 +162,7 @@ describe('spaceship parts', () => {
         expect(group).toBeInstanceOf(Group);
 
         const cylinder = group?.children.find(
-            (child): child is Mesh =>
-                child instanceof Mesh && child.geometry instanceof CylinderGeometry,
+            (child): child is Mesh => child instanceof Mesh && child.geometry instanceof CylinderGeometry,
         );
         expect(cylinder).toBeDefined();
         const geometry = cylinder!.geometry as CylinderGeometry;
@@ -98,11 +172,10 @@ describe('spaceship parts', () => {
         expect(geometry.parameters.height).toBeGreaterThan(geometry.parameters.radiusTop * 2);
 
         parts.dispose();
-        terrain.dispose();
     });
 
     it('collects a piece by walking over it and plays the recovery sound once', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain(1234);
         const { audio, calls } = stubAudio();
         const parts = new SpaceshipParts(terrain, audio);
         const target = parts.getSites()[0];
@@ -124,11 +197,10 @@ describe('spaceship parts', () => {
         expect(calls.recovered).toBe(1);
 
         parts.dispose();
-        terrain.dispose();
     });
 
     it('announces each detector beep with the interval to the next one', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain(1234);
         const { audio } = stubAudio();
         const parts = new SpaceshipParts(terrain, audio);
         const target = parts.getSites()[0];
@@ -154,11 +226,10 @@ describe('spaceship parts', () => {
         expect(Math.abs(elapsed - pulses[0].interval)).toBeLessThan(0.02);
 
         parts.dispose();
-        terrain.dispose();
     });
 
     it('ticks the detector 30% faster while the tracked piece is in view', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain(1234);
         const { audio } = stubAudio();
         const facing = new SpaceshipParts(terrain, audio);
         const away = new SpaceshipParts(terrain, audio);
@@ -184,11 +255,10 @@ describe('spaceship parts', () => {
 
         facing.dispose();
         away.dispose();
-        terrain.dispose();
     });
 
     it('keeps recovered pieces hidden after a save is restored', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain(1234);
         const { audio, calls } = stubAudio();
         const parts = new SpaceshipParts(terrain, audio);
         const sites = parts.getSites();
@@ -203,6 +273,5 @@ describe('spaceship parts', () => {
         expect(calls.recovered).toBe(0);
 
         parts.dispose();
-        terrain.dispose();
     });
 });

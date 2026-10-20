@@ -1,14 +1,6 @@
-import {
-    BufferAttribute,
-    Color,
-    Mesh,
-    MeshBasicMaterial,
-    PlaneGeometry,
-    Scene,
-    Texture,
-    Vector3,
-} from 'three';
+import { BufferAttribute, Color, Mesh, MeshBasicMaterial, Scene, Texture, Vector3 } from 'three';
 
+import { buildGroundPlane, conformPlaneToTerrain } from './ground-decal';
 import { FOOT_LENGTH, FOOT_WIDTH, PLAYER_VISUAL_SCALE } from './player-model';
 import type { Terrain } from './terrain';
 
@@ -31,8 +23,7 @@ const WHITE = new Color(0xffffff);
 const { x: PRINT_TEMPLATE_X, z: PRINT_TEMPLATE_Z } = buildPrintTemplate();
 
 function buildPrintTemplate(): { x: Float32Array; z: Float32Array } {
-    const template = new PlaneGeometry(PRINT_WIDTH, PRINT_LENGTH, 2, 3);
-    template.rotateX(-Math.PI / 2);
+    const template = buildGroundPlane(PRINT_WIDTH, PRINT_LENGTH, 2, 3);
     const vertices = template.getAttribute('position') as BufferAttribute;
     const x = new Float32Array(vertices.count);
     const z = new Float32Array(vertices.count);
@@ -64,13 +55,7 @@ export class Footprints {
         this.texture = texture;
     }
 
-    spawn(
-        position: Vector3,
-        direction: Vector3,
-        footSide: number,
-        groundColor: Color,
-        terrain: Terrain,
-    ): void {
+    spawn(position: Vector3, direction: Vector3, footSide: number, groundColor: Color, terrain: Terrain): void {
         if (this.prints.length >= MAX_PRINTS) {
             this.remove(0);
         }
@@ -80,23 +65,12 @@ export class Footprints {
 
         // A tiny outward splay keeps the two feet from looking stamped in parallel.
         const angle = Math.atan2(-direction.x, -direction.z) + footSide * 0.07;
-        const cos = Math.cos(angle);
-        const sin = Math.sin(angle);
-        const vertices = geometry.getAttribute('position') as BufferAttribute;
-        for (let i = 0; i < vertices.count; i++) {
-            const localX = PRINT_TEMPLATE_X[i];
-            const localZ = PRINT_TEMPLATE_Z[i];
-            const x = localX * cos + localZ * sin;
-            const z = -localX * sin + localZ * cos;
-            vertices.setXYZ(
-                i,
-                x,
-                terrain.heightAt(position.x + x, position.z + z) + GROUND_OFFSET,
-                z,
-            );
-        }
-        vertices.needsUpdate = true;
-        geometry.computeBoundingSphere();
+        conformPlaneToTerrain(geometry, position, (x, z) => terrain.heightAt(x, z), {
+            yOffset: GROUND_OFFSET,
+            templateX: PRINT_TEMPLATE_X,
+            templateZ: PRINT_TEMPLATE_Z,
+            rotation: angle,
+        });
 
         print.material.color.copy(groundColor).lerp(WHITE, TINT_STRENGTH);
         print.material.opacity = 0;
@@ -107,8 +81,7 @@ export class Footprints {
     }
 
     private createPrint(): Footprint {
-        const geometry = new PlaneGeometry(PRINT_WIDTH, PRINT_LENGTH, 2, 3);
-        geometry.rotateX(-Math.PI / 2);
+        const geometry = buildGroundPlane(PRINT_WIDTH, PRINT_LENGTH, 2, 3);
         const material = new MeshBasicMaterial({
             map: this.texture,
             color: 0xffffff,
@@ -137,9 +110,7 @@ export class Footprints {
             const fadeIn = Math.min(1, print.age / FADE_IN_SECONDS);
             const fadeOutStart = LIFETIME_SECONDS - FADE_OUT_SECONDS;
             const fadeOut =
-                print.age <= fadeOutStart
-                    ? 1
-                    : Math.max(0, (LIFETIME_SECONDS - print.age) / FADE_OUT_SECONDS);
+                print.age <= fadeOutStart ? 1 : Math.max(0, (LIFETIME_SECONDS - print.age) / FADE_OUT_SECONDS);
             print.material.opacity = PRINT_OPACITY * fadeIn * fadeOut;
         }
     }

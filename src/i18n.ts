@@ -29,11 +29,7 @@ export function t(key: string, fallback = key): string {
 
 // Query string beats the stored choice so a shared link opens in the requested language.
 export function resolveLocale(search: string, stored: string | null, browser: string): Locale {
-    const requested = (
-        new URLSearchParams(search).get('lang') ??
-        stored ??
-        browser.split('-')[0]
-    ).toLowerCase();
+    const requested = (new URLSearchParams(search).get('lang') ?? stored ?? browser.split('-')[0]).toLowerCase();
 
     return SUPPORTED_LOCALES.find((candidate) => candidate === requested) ?? FALLBACK;
 }
@@ -70,10 +66,7 @@ function applyTranslations(): void {
     }
 
     for (const element of document.querySelectorAll<HTMLElement>('[data-i18n-aria-label]')) {
-        element.setAttribute(
-            'aria-label',
-            t(element.dataset.i18nAriaLabel!, element.getAttribute('aria-label') ?? ''),
-        );
+        element.setAttribute('aria-label', t(element.dataset.i18nAriaLabel!, element.getAttribute('aria-label') ?? ''));
     }
 }
 

@@ -66,8 +66,7 @@ export function buildElectricBolts(options: ElectricBoltOptions): BufferGeometry
         const layerT = boltLayers > 1 ? layer / (boltLayers - 1) : 0.5;
         const baseY = (layerT - 0.5) * height;
         for (let index = 0; index < boltsPerLayer; index++) {
-            const angle =
-                ((index + Math.random() * 0.4) / boltsPerLayer) * Math.PI * 2 + layerT * 0.4;
+            const angle = ((index + Math.random() * 0.4) / boltsPerLayer) * Math.PI * 2 + layerT * 0.4;
             const startRadius = radius * (0.88 + Math.random() * 0.08);
             const endRadius = radius * (1.25 + Math.random() * 0.35);
             const points: Vector3[] = [];
@@ -85,13 +84,7 @@ export function buildElectricBolts(options: ElectricBoltOptions): BufferGeometry
             }
 
             pieces.push(
-                new TubeGeometry(
-                    new CatmullRomCurve3(points),
-                    boltSegments * 4,
-                    thickness,
-                    radialSegments,
-                    false,
-                ),
+                new TubeGeometry(new CatmullRomCurve3(points), boltSegments * 4, thickness, radialSegments, false),
             );
         }
     }

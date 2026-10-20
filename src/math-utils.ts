@@ -20,15 +20,31 @@ export function smoothstep(edge0: number, edge1: number, value: number): number 
     return t * t * (3 - 2 * t);
 }
 
+export function wrapAngle(angle: number): number {
+    const twoPi = Math.PI * 2;
+    let wrapped = (angle + Math.PI) % twoPi;
+    if (wrapped < 0) {
+        wrapped += twoPi;
+    }
+    return wrapped - Math.PI;
+}
+
+export function angleDelta(from: number, to: number): number {
+    return wrapAngle(to - from);
+}
+
+// Frame-rate independent damping toward a target value.
+export function damp(current: number, target: number, lambda: number, dt: number): number {
+    return current + (target - current) * (1 - Math.exp(-lambda * dt));
+}
+
 // Frame-rate independent angular damping across the shortest arc.
 export function dampAngle(current: number, target: number, lambda: number, dt: number): number {
-    const twoPi = Math.PI * 2;
-    let difference = (target - current + Math.PI) % twoPi;
-    if (difference < 0) {
-        difference += twoPi;
-    }
-    difference -= Math.PI;
-    return current + difference * (1 - Math.exp(-lambda * dt));
+    return current + angleDelta(current, target) * (1 - Math.exp(-lambda * dt));
+}
+
+export function randomRange(minimum: number, maximum: number, random: () => number = Math.random): number {
+    return minimum + random() * (maximum - minimum);
 }
 
 // Deterministic integer hash, used both to seed per-cell random streams and as cheap 2D noise.
@@ -40,8 +56,7 @@ export function hash32(x: number, y: number, seed: number): number {
     // Bitwise operators coerce to int32; floor and normalize explicitly so fractional or negative
     // seeds do not alias in surprising ways.
     const seedValue = Math.floor(seed) >>> 0;
-    let hash =
-        Math.imul(cellX, 0x27d4eb2d) ^ Math.imul(cellY, 0x165667b1) ^ seedValue;
+    let hash = Math.imul(cellX, 0x27d4eb2d) ^ Math.imul(cellY, 0x165667b1) ^ seedValue;
     hash = Math.imul(hash ^ (hash >>> 15), 0x85ebca6b);
     hash = Math.imul(hash ^ (hash >>> 13), 0xc2b2ae35);
     return (hash ^ (hash >>> 16)) >>> 0;

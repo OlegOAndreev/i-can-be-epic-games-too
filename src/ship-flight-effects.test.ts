@@ -2,10 +2,7 @@ import { Group, Points, Scene, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
 import type { FlightEffectShip } from './ship-flight-effects';
-import {
-    ShipFlightEffects,
-    WING_TRAIL_LENGTH,
-} from './ship-flight-effects';
+import { ShipFlightEffects, WING_TRAIL_LENGTH } from './ship-flight-effects';
 
 function stubShip(): FlightEffectShip {
     const group = new Group();
@@ -25,11 +22,7 @@ function activeParticles(points: Points): Array<{ position: Vector3; alpha: numb
         const alpha = color.getW(index);
         if (alpha > 0) {
             particles.push({
-                position: new Vector3(
-                    position.getX(index),
-                    position.getY(index),
-                    position.getZ(index),
-                ),
+                position: new Vector3(position.getX(index), position.getY(index), position.getZ(index)),
                 alpha,
             });
         }
@@ -43,10 +36,7 @@ function distanceToSegment(point: Vector3, from: Vector3, to: Vector3): number {
     if (lengthSq === 0) {
         return point.distanceTo(from);
     }
-    const t = Math.min(
-        1,
-        Math.max(0, new Vector3().subVectors(point, from).dot(segment) / lengthSq),
-    );
+    const t = Math.min(1, Math.max(0, new Vector3().subVectors(point, from).dot(segment) / lengthSq));
     return point.distanceTo(new Vector3().copy(from).addScaledVector(segment, t));
 }
 
@@ -75,10 +65,7 @@ describe('ship flight effects', () => {
         expect(particles.some((particle) => particle.position.x < 0)).toBe(true);
         expect(particles.some((particle) => particle.position.x > 0)).toBe(true);
         for (const particle of particles) {
-            const distance = Math.min(
-                particle.position.distanceTo(left),
-                particle.position.distanceTo(right),
-            );
+            const distance = Math.min(particle.position.distanceTo(left), particle.position.distanceTo(right));
             expect(distance).toBeLessThanOrEqual(WING_TRAIL_LENGTH + 1e-4);
         }
 
@@ -114,11 +101,7 @@ describe('ship flight effects', () => {
                 closest = Math.min(
                     closest,
                     distanceToSegment(particle.position, path[index - 1].left, path[index].left),
-                    distanceToSegment(
-                        particle.position,
-                        path[index - 1].right,
-                        path[index].right,
-                    ),
+                    distanceToSegment(particle.position, path[index - 1].right, path[index].right),
                 );
             }
             // Emission follows the sampled wingtip path; only the sub-centimetre corner cut

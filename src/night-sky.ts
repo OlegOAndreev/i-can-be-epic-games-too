@@ -15,7 +15,8 @@ import {
 } from 'three';
 import type { Object3D } from 'three';
 
-import { clamp, smoothstep } from './math-utils';
+import { glowSpriteMaterial } from './glow';
+import { clamp, randomRange, smoothstep } from './math-utils';
 
 const STAR_COUNT = 3000;
 const STAR_RADIUS = 2500;
@@ -85,10 +86,6 @@ interface Meteor {
     duration: number;
     trailFraction: number;
     active: boolean;
-}
-
-function randomRange(minimum: number, maximum: number): number {
-    return minimum + Math.random() * (maximum - minimum);
 }
 
 function createStarGeometry(): BufferGeometry {
@@ -192,14 +189,10 @@ function createMeteor(): Meteor {
     line.visible = false;
     line.renderOrder = 1;
 
-    const headMaterial = new SpriteMaterial({
+    const headMaterial = glowSpriteMaterial({
         map: createMeteorGlowTexture(),
         color: 0xfff2d0,
-        transparent: true,
-        opacity: 0,
-        blending: AdditiveBlending,
-        depthWrite: false,
-        toneMapped: false,
+        fog: true,
     });
     const head = new Sprite(headMaterial);
     head.frustumCulled = false;
@@ -289,21 +282,13 @@ export class NightSky {
         const azimuth = Math.atan2(viewDirection.z, viewDirection.x) + randomRange(-0.9, 0.9);
         const startHeight = randomRange(0.24, 0.78);
         const startRing = Math.sqrt(1 - startHeight * startHeight);
-        meteor.start.set(
-            Math.cos(azimuth) * startRing,
-            startHeight,
-            Math.sin(azimuth) * startRing,
-        );
+        meteor.start.set(Math.cos(azimuth) * startRing, startHeight, Math.sin(azimuth) * startRing);
 
         const direction = Math.random() < 0.5 ? -1 : 1;
         const endAzimuth = azimuth + direction * randomRange(0.28, 0.85);
         const endHeight = clamp(startHeight - randomRange(0.12, 0.46), 0.08, 0.9);
         const endRing = Math.sqrt(1 - endHeight * endHeight);
-        meteor.end.set(
-            Math.cos(endAzimuth) * endRing,
-            endHeight,
-            Math.sin(endAzimuth) * endRing,
-        );
+        meteor.end.set(Math.cos(endAzimuth) * endRing, endHeight, Math.sin(endAzimuth) * endRing);
 
         meteor.age = 0;
         meteor.duration = randomRange(METEOR_MIN_DURATION, METEOR_MAX_DURATION);

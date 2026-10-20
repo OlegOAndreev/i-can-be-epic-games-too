@@ -1,5 +1,4 @@
 import {
-    AdditiveBlending,
     Euler,
     Group,
     Mesh,
@@ -16,7 +15,8 @@ import type { GameAudio } from './audio';
 import { DIFFICULTY_SETTINGS } from './enemies';
 import type { Difficulty } from './enemies';
 import type { FlightInput } from './input';
-import { clamp, lerp, smoothstep } from './math-utils';
+import { glowMaterial } from './glow';
+import { angleDelta, clamp, damp, lerp, smoothstep } from './math-utils';
 import type { DialogueLine, NpcRobots } from './npc-robots';
 import type { Player, PlayerInput } from './player';
 import { ShipExplosion } from './ship-explosion';
@@ -112,8 +112,7 @@ const HYPER_LAUNCH_SPEED = 60;
 const HYPER_CRUISE_SECONDS = 1;
 const HYPER_ACCEL_SECONDS = 2;
 const HYPER_BOOST_SECONDS = 3;
-const HYPERDRIVE_SECONDS =
-    HYPER_CRUISE_SECONDS + HYPER_ACCEL_SECONDS + HYPER_BOOST_SECONDS;
+const HYPERDRIVE_SECONDS = HYPER_CRUISE_SECONDS + HYPER_ACCEL_SECONDS + HYPER_BOOST_SECONDS;
 const HYPERDRIVE_FIRST_MULTIPLIER = 10;
 const HYPERDRIVE_SECOND_MULTIPLIER = 100;
 const HYPER_NARROW_SCALE = 0.1;
@@ -127,13 +126,7 @@ const MAX_CAMERA_FOV = 110;
 
 const ZERO_PLAYER_INPUT: PlayerInput = { forward: 0, right: 0, jump: false };
 
-export type FinaleStage =
-    | 'celebration'
-    | 'flight'
-    | 'crash'
-    | 'ascent'
-    | 'hyperdrive'
-    | 'epilogue';
+export type FinaleStage = 'celebration' | 'flight' | 'crash' | 'ascent' | 'hyperdrive' | 'epilogue';
 
 export interface FinaleUi {
     enterStage(stage: FinaleStage): void;
@@ -200,12 +193,7 @@ export interface SkyArc {
 // A circular arc that leaves the ship along its current heading and arrives tangent to the line
 // aimed at the sky. The line then continues in that same direction, so there is no kink where the
 // two segments meet.
-export function planSkyArc(
-    start: Vector3,
-    forward: Vector3,
-    skyDirection: Vector3,
-    radius = SKY_ARC_RADIUS,
-): SkyArc {
+export function planSkyArc(start: Vector3, forward: Vector3, skyDirection: Vector3, radius = SKY_ARC_RADIUS): SkyArc {
     const startTangent = forward.clone().normalize();
     const lineDirection = skyDirection.clone().normalize();
     const angle = Math.acos(clamp(startTangent.dot(lineDirection), -1, 1));
@@ -223,15 +211,8 @@ export function planSkyArc(
 
     // The centre sits one radius to the side the ship turns toward, so rotating the starting
     // radius by the turn angle traces the arc and leaves along the sky direction.
-    const center = new Vector3()
-        .crossVectors(axis, startTangent)
-        .multiplyScalar(radius)
-        .add(start);
-    const lineStart = start
-        .clone()
-        .sub(center)
-        .applyAxisAngle(axis, angle)
-        .add(center);
+    const center = new Vector3().crossVectors(axis, startTangent).multiplyScalar(radius).add(start);
+    const lineStart = start.clone().sub(center).applyAxisAngle(axis, angle).add(center);
 
     return {
         start: start.clone(),
@@ -246,12 +227,7 @@ export function planSkyArc(
     };
 }
 
-export function sampleSkyArc(
-    arc: SkyArc,
-    progress: number,
-    position: Vector3,
-    tangent: Vector3,
-): void {
+export function sampleSkyArc(arc: SkyArc, progress: number, position: Vector3, tangent: Vector3): void {
     const angle = arc.angle * clamp(progress, 0, 1);
     position.copy(arc.start).sub(arc.center).applyAxisAngle(arc.axis, angle).add(arc.center);
     tangent.copy(arc.startTangent).applyAxisAngle(arc.axis, angle);
@@ -264,11 +240,7 @@ export function hyperdriveSpeedMultiplier(boostElapsed: number): number {
         return 1;
     }
     if (boostElapsed < firstBoostEnd) {
-        return lerp(
-            1,
-            HYPERDRIVE_FIRST_MULTIPLIER,
-            smoothstep(HYPER_CRUISE_SECONDS, firstBoostEnd, boostElapsed),
-        );
+        return lerp(1, HYPERDRIVE_FIRST_MULTIPLIER, smoothstep(HYPER_CRUISE_SECONDS, firstBoostEnd, boostElapsed));
     }
     return lerp(
         HYPERDRIVE_FIRST_MULTIPLIER,
@@ -358,13 +330,7 @@ export function findHullCollision(
         sphereFrom.copy(from).add(offset);
         sphereTo.copy(to).add(offset);
 
-        const hit = findFlightCollision(
-            heightAt,
-            intersectsStructure,
-            sphereFrom,
-            sphereTo,
-            sphere.radius,
-        );
+        const hit = findFlightCollision(heightAt, intersectsStructure, sphereFrom, sphereTo, sphere.radius);
         if (!hit) {
             continue;
         }
@@ -444,10 +410,7 @@ function ringBesideStructure(
             length = Math.hypot(dirX, dirZ) || 1;
         }
 
-        const step = Math.hypot(
-            structure.maxX - structure.minX,
-            structure.maxZ - structure.minZ,
-        );
+        const step = Math.hypot(structure.maxX - structure.minX, structure.maxZ - structure.minZ);
         const exitX = fromX + (dirX / length) * step;
         const exitZ = fromZ + (dirZ / length) * step;
         nearestX = clamp(exitX, structure.minX, structure.maxX);
@@ -512,14 +475,7 @@ function pushRingClearOfStructures(
         if (structureGap(x, z, structure) >= clearance) {
             continue;
         }
-        const placed = placeClearOfStructure(
-            structure,
-            x,
-            z,
-            fallbackX,
-            fallbackZ,
-            clearance,
-        );
+        const placed = placeClearOfStructure(structure, x, z, fallbackX, fallbackZ, clearance);
         x = placed.x;
         z = placed.z;
     }
@@ -629,20 +585,14 @@ export function planRingCourse(
 
         if (!best) {
             for (let step = 0; step < RING_SEARCH_STEPS; step++) {
-                const angle =
-                    sectorCentre +
-                    (step / (RING_SEARCH_STEPS - 1) - 0.5) * sectorAngle;
+                const angle = sectorCentre + (step / (RING_SEARCH_STEPS - 1) - 0.5) * sectorAngle;
                 const distance = worldEdgeDistance(shipSite, angle, limit) * bandFraction;
                 const x = clamp(shipSite.x + Math.sin(angle) * distance, -limit, limit);
                 const z = clamp(shipSite.z + Math.cos(angle) * distance, -limit, limit);
 
                 // Ground rings deliberately stay far from walls, so only the two anchored slots
                 // read as being beside a megastructure.
-                if (
-                    structures.some(
-                        (structure) => structureGap(x, z, structure) < groundClearance,
-                    )
-                ) {
+                if (structures.some((structure) => structureGap(x, z, structure) < groundClearance)) {
                     continue;
                 }
 
@@ -657,7 +607,7 @@ export function planRingCourse(
                     continue;
                 }
 
-                const angleDeviation = Math.abs(shortestAngleDelta(sectorCentre, angle));
+                const angleDeviation = Math.abs(angleDelta(sectorCentre, angle));
                 const score = terrainHeight + angleDeviation * 6;
                 if (!best || score < best.score) {
                     best = { x, y, z, score };
@@ -728,31 +678,21 @@ export function planRingCourse(
 }
 
 // Distance from a point inside the map square to the world edge along a compass angle.
-function worldEdgeDistance(
-    origin: { x: number; z: number },
-    angle: number,
-    limit: number,
-): number {
+function worldEdgeDistance(origin: { x: number; z: number }, angle: number, limit: number): number {
     // The ship may start just outside the margin used for ring placement. Clamp the ray origin so
     // the boundary maths still produces a usable non-negative distance.
     const originX = clamp(origin.x, -limit, limit);
     const originZ = clamp(origin.z, -limit, limit);
     const dx = Math.sin(angle);
     const dz = Math.cos(angle);
-    const xDistance =
-        dx > 0 ? (limit - originX) / dx : dx < 0 ? (-limit - originX) / dx : Infinity;
-    const zDistance =
-        dz > 0 ? (limit - originZ) / dz : dz < 0 ? (-limit - originZ) / dz : Infinity;
+    const xDistance = dx > 0 ? (limit - originX) / dx : dx < 0 ? (-limit - originX) / dx : Infinity;
+    const zDistance = dz > 0 ? (limit - originZ) / dz : dz < 0 ? (-limit - originZ) / dz : Infinity;
     return Math.min(xDistance, zDistance);
 }
 
 // The flight speed cap grows with the rings already passed. The bonus is immediate as well: the
 // ring crossing adds the same amount to the current speed.
-export function flightSpeedCap(
-    baseMaxSpeed: number,
-    ringSpeedBonus: number,
-    ringsPassed: number,
-): number {
+export function flightSpeedCap(baseMaxSpeed: number, ringSpeedBonus: number, ringsPassed: number): number {
     return baseMaxSpeed + ringsPassed * ringSpeedBonus;
 }
 
@@ -766,18 +706,14 @@ export function crossedRing(
     radius: number,
 ): boolean {
     const previousDistance =
-        (previous.x - center.x) * normal.x +
-        (previous.y - center.y) * normal.y +
-        (previous.z - center.z) * normal.z;
+        (previous.x - center.x) * normal.x + (previous.y - center.y) * normal.y + (previous.z - center.z) * normal.z;
     const currentDistance =
-        (current.x - center.x) * normal.x +
-        (current.y - center.y) * normal.y +
-        (current.z - center.z) * normal.z;
+        (current.x - center.x) * normal.x + (current.y - center.y) * normal.y + (current.z - center.z) * normal.z;
 
     if (Math.abs(previousDistance - currentDistance) < 1e-6) {
         return false;
     }
-    if ((previousDistance > 0) === (currentDistance > 0)) {
+    if (previousDistance > 0 === currentDistance > 0) {
         return false;
     }
 
@@ -849,26 +785,16 @@ export class Finale {
     private readonly ringRoot = new Group();
     private readonly rings: FlightRing[] = [];
     private readonly ringGeometry = new TorusGeometry(RING_RADIUS, RING_TUBE, 8, 64);
-    private readonly ringHaloGeometry = new TorusGeometry(
-        RING_RADIUS,
-        RING_HALO_TUBE,
-        8,
-        64,
-    );
+    private readonly ringHaloGeometry = new TorusGeometry(RING_RADIUS, RING_HALO_TUBE, 8, 64);
     private readonly ringNodeGeometry = new SphereGeometry(RING_NODE_RADIUS, 8, 6);
     private readonly ringMaterial = new MeshBasicMaterial({
         color: 0xffe7c2,
         toneMapped: false,
         fog: false,
     });
-    private readonly ringHaloMaterial = new MeshBasicMaterial({
+    private readonly ringHaloMaterial = glowMaterial({
         color: 0xff9a36,
-        transparent: true,
         opacity: RING_HALO_OPACITY,
-        blending: AdditiveBlending,
-        depthWrite: false,
-        toneMapped: false,
-        fog: false,
     });
     private readonly ringNodeMaterial = new MeshBasicMaterial({
         color: 0xfff7e8,
@@ -991,10 +917,7 @@ export class Finale {
             this.outroHold = 0;
         }
 
-        if (
-            this.celebrationElapsed >= CELEBRATION_MIN_SECONDS &&
-            this.outroHold >= OUTRO_HOLD_SECONDS
-        ) {
+        if (this.celebrationElapsed >= CELEBRATION_MIN_SECONDS && this.outroHold >= OUTRO_HOLD_SECONDS) {
             this.beginFlight();
         }
     }
@@ -1004,16 +927,9 @@ export class Finale {
         const forward = this.courseForward(new Vector3());
         const side = new Vector3(-forward.z, 0, forward.x);
 
-        this.playerSpot.set(
-            center.x - forward.x * 1.6,
-            0,
-            center.z - forward.z * 1.6,
-        );
+        this.playerSpot.set(center.x - forward.x * 1.6, 0, center.z - forward.z * 1.6);
         this.playerSpot.y = this.terrain.heightAt(this.playerSpot.x, this.playerSpot.z);
-        this.player.respawnAt(
-            this.playerSpot,
-            Math.atan2(forward.x, forward.z),
-        );
+        this.player.respawnAt(this.playerSpot, Math.atan2(forward.x, forward.z));
         this.player.setWrenchEquipped(false);
         this.player.group.visible = true;
         this.player.setOpacity(1);
@@ -1022,17 +938,9 @@ export class Finale {
         // shot looks over their shoulders at the ship instead of into their faces.
         const site = this.terrain.spaceshipSite;
         this.npcs.faceTowards(site.x, site.z);
-        this.shipLookTarget.set(
-            site.x,
-            this.terrain.heightAt(site.x, site.z) + 4,
-            site.z,
-        );
+        this.shipLookTarget.set(site.x, this.terrain.heightAt(site.x, site.z) + 4, site.z);
 
-        this.celebrationLookTarget.set(
-            center.x + forward.x * 0.5,
-            center.y + 1.5,
-            center.z + forward.z * 0.5,
-        );
+        this.celebrationLookTarget.set(center.x + forward.x * 0.5, center.y + 1.5, center.z + forward.z * 0.5);
         this.celebrationCamera.set(
             center.x - forward.x * 10 + side.x * 3.4,
             0,
@@ -1086,19 +994,12 @@ export class Finale {
         // shot faces the other way, so the cut hides the turn.
         const firstRing = this.rings[0];
         if (firstRing) {
-            this.yaw = Math.atan2(
-                firstRing.center.x - site.x,
-                firstRing.center.z - site.z,
-            );
+            this.yaw = Math.atan2(firstRing.center.x - site.x, firstRing.center.z - site.z);
         }
         this.ship.group.rotation.set(-this.pitch, this.yaw, 0);
         this.forwardVector(this.flightForward);
         this.flightEffects.start();
-        this.hullCentre.set(
-            this.shipPosition.x,
-            this.shipPosition.y + HULL_CENTRE_HEIGHT,
-            this.shipPosition.z,
-        );
+        this.hullCentre.set(this.shipPosition.x, this.shipPosition.y + HULL_CENTRE_HEIGHT, this.shipPosition.z);
         this.updateFlightCamera(1, true);
         this.ui.setSpeed(this.speed);
         this.audio.startShipEngine();
@@ -1139,11 +1040,7 @@ export class Finale {
             for (let node = 0; node < RING_NODE_COUNT; node++) {
                 const angle = (node / RING_NODE_COUNT) * Math.PI * 2;
                 const mesh = new Mesh(this.ringNodeGeometry, nodeMaterial);
-                mesh.position.set(
-                    Math.cos(angle) * RING_RADIUS,
-                    Math.sin(angle) * RING_RADIUS,
-                    0,
-                );
+                mesh.position.set(Math.cos(angle) * RING_RADIUS, Math.sin(angle) * RING_RADIUS, 0);
                 spinner.add(mesh);
             }
             group.add(spinner);
@@ -1173,11 +1070,7 @@ export class Finale {
         return DIFFICULTY_SETTINGS[this.difficulty].ringSpeedBonus;
     }
 
-    private updateFlight(
-        dt: number,
-        look: { x: number; y: number },
-        flight: FlightInput,
-    ): void {
+    private updateFlight(dt: number, look: { x: number; y: number }, flight: FlightInput): void {
         const previousYaw = this.yaw;
         // The chase camera looks along the ship's +Z, so screen-right corresponds to a negative
         // yaw. Steering both the mouse and the left stick that way keeps the controls intuitive.
@@ -1195,55 +1088,26 @@ export class Finale {
 
         // The ship accelerates automatically, so the player only steers. Each ring passed raises
         // the cap as well, letting the ship keep every bonus it has earned.
-        const speedCap = flightSpeedCap(
-            this.maxShipSpeed,
-            this.ringSpeedBonus,
-            this.ringPassed,
-        );
+        const speedCap = flightSpeedCap(this.maxShipSpeed, this.ringSpeedBonus, this.ringPassed);
         this.speed = Math.min(speedCap, this.speed + FLIGHT_ACCELERATION * dt);
-        this.audio.setShipEngineThrottle(
-            (this.speed - MIN_SHIP_SPEED) / (speedCap - MIN_SHIP_SPEED),
-        );
+        this.audio.setShipEngineThrottle((this.speed - MIN_SHIP_SPEED) / (speedCap - MIN_SHIP_SPEED));
 
-        const yawRate = clamp(
-            (this.yaw - previousYaw) / Math.max(dt, 0.001),
-            -2.5,
-            2.5,
-        );
+        const yawRate = clamp((this.yaw - previousYaw) / Math.max(dt, 0.001), -2.5, 2.5);
         const targetRoll = clamp(-yawRate * 0.26 + flight.steerX * 0.15, -0.55, 0.55);
-        this.roll += (targetRoll - this.roll) * (1 - Math.exp(-5 * dt));
+        this.roll = damp(this.roll, targetRoll, 5, dt);
 
-        this.previousHullCentre.set(
-            this.shipPosition.x,
-            this.shipPosition.y + HULL_CENTRE_HEIGHT,
-            this.shipPosition.z,
-        );
+        this.previousHullCentre.set(this.shipPosition.x, this.shipPosition.y + HULL_CENTRE_HEIGHT, this.shipPosition.z);
         this.forwardVector(this.flightForward);
 
         const limit = WORLD_HALF_SIZE - 24;
         const ceilingY = this.maxAltitude - HULL_CENTRE_HEIGHT;
         this.flightStep.set(
-            clamp(
-                this.shipPosition.x + this.flightForward.x * this.speed * dt,
-                -limit,
-                limit,
-            ),
-            Math.min(
-                this.shipPosition.y + this.flightForward.y * this.speed * dt,
-                ceilingY,
-            ),
-            clamp(
-                this.shipPosition.z + this.flightForward.z * this.speed * dt,
-                -limit,
-                limit,
-            ),
+            clamp(this.shipPosition.x + this.flightForward.x * this.speed * dt, -limit, limit),
+            Math.min(this.shipPosition.y + this.flightForward.y * this.speed * dt, ceilingY),
+            clamp(this.shipPosition.z + this.flightForward.z * this.speed * dt, -limit, limit),
         );
 
-        this.hullCentre.set(
-            this.flightStep.x,
-            this.flightStep.y + HULL_CENTRE_HEIGHT,
-            this.flightStep.z,
-        );
+        this.hullCentre.set(this.flightStep.x, this.flightStep.y + HULL_CENTRE_HEIGHT, this.flightStep.z);
         this.hullEuler.set(-this.pitch, this.yaw, this.roll);
         this.hullQuaternion.setFromEuler(this.hullEuler);
         const collision = findHullCollision(
@@ -1262,11 +1126,7 @@ export class Finale {
         this.ship.group.position.copy(this.shipPosition);
         this.ship.group.rotation.set(-this.pitch, this.yaw, this.roll);
         this.flightEffects.update(this.ship);
-        this.hullCentre.set(
-            this.shipPosition.x,
-            this.shipPosition.y + HULL_CENTRE_HEIGHT,
-            this.shipPosition.z,
-        );
+        this.hullCentre.set(this.shipPosition.x, this.shipPosition.y + HULL_CENTRE_HEIGHT, this.shipPosition.z);
 
         this.updateFlightCamera(dt, false);
         this.ui.setSpeed(this.speed);
@@ -1312,10 +1172,7 @@ export class Finale {
         this.flightEffects.stop();
         // The lightning sample is a sharp crack over a low rumble, which reads as a crash boom.
         this.audio.playLightningStrike();
-        this.explosion.trigger(
-            point,
-            Math.max(this.terrain.heightAt(point.x, point.z), WATER_LEVEL),
-        );
+        this.explosion.trigger(point, Math.max(this.terrain.heightAt(point.x, point.z), WATER_LEVEL));
         this.ui.enterStage('crash');
     }
 
@@ -1399,13 +1256,9 @@ export class Finale {
         const previousYaw = this.yaw;
         this.yaw = Math.atan2(this.arcTangent.x, this.arcTangent.z);
         this.pitch = Math.asin(clamp(this.arcTangent.y, -1, 1));
-        const yawRate = clamp(
-            shortestAngleDelta(previousYaw, this.yaw) / Math.max(dt, 0.001),
-            -2.5,
-            2.5,
-        );
+        const yawRate = clamp(angleDelta(previousYaw, this.yaw) / Math.max(dt, 0.001), -2.5, 2.5);
         const targetRoll = clamp(-yawRate * 0.26, -0.55, 0.55);
-        this.roll += (targetRoll - this.roll) * (1 - Math.exp(-5 * dt));
+        this.roll = damp(this.roll, targetRoll, 5, dt);
 
         this.flightForward.copy(this.arcTangent);
         this.applyShipTransform();
@@ -1424,21 +1277,13 @@ export class Finale {
 
         const arc = this.arc;
         if (arc && this.cameraPathDistance < arc.length) {
-            sampleSkyArc(
-                arc,
-                this.cameraPathDistance / arc.length,
-                this.cameraAnchor,
-                this.cameraPathTangent,
-            );
+            sampleSkyArc(arc, this.cameraPathDistance / arc.length, this.cameraAnchor, this.cameraPathTangent);
         } else {
             const direction = arc ? arc.lineDirection : SUN_BISECTOR_DIRECTION;
             const lineStart = arc ? arc.lineStart : this.shipPosition;
             this.cameraAnchor
                 .copy(lineStart)
-                .addScaledVector(
-                    direction,
-                    arc ? this.cameraPathDistance - arc.length : this.cameraPathDistance,
-                );
+                .addScaledVector(direction, arc ? this.cameraPathDistance - arc.length : this.cameraPathDistance);
             this.cameraPathTangent.copy(direction);
         }
 
@@ -1451,17 +1296,11 @@ export class Finale {
             -tangent.y * HYPER_CAMERA_BACK + HYPER_CAMERA_LIFT,
             -tangent.z * HYPER_CAMERA_BACK + sideZ * HYPER_CAMERA_SIDE,
         );
-        this.ascentCameraOffset.lerp(
-            this.cameraTarget,
-            1 - Math.exp(-HYPER_CAMERA_SETTLE * dt),
-        );
+        this.ascentCameraOffset.lerp(this.cameraTarget, 1 - Math.exp(-HYPER_CAMERA_SETTLE * dt));
         this.camera.position.copy(this.cameraAnchor).add(this.ascentCameraOffset);
         this.camera.position.y = Math.max(
             this.camera.position.y,
-            Math.max(
-                this.terrain.heightAt(this.camera.position.x, this.camera.position.z),
-                WATER_LEVEL,
-            ) + 2.2,
+            Math.max(this.terrain.heightAt(this.camera.position.x, this.camera.position.z), WATER_LEVEL) + 2.2,
         );
         this.shortenCameraForOcclusion(this.hullCentre);
 
@@ -1476,11 +1315,7 @@ export class Finale {
     private applyShipTransform(): void {
         this.ship.group.position.copy(this.shipPosition);
         this.ship.group.rotation.set(-this.pitch, this.yaw, this.roll);
-        this.hullCentre.set(
-            this.shipPosition.x,
-            this.shipPosition.y + HULL_CENTRE_HEIGHT,
-            this.shipPosition.z,
-        );
+        this.hullCentre.set(this.shipPosition.x, this.shipPosition.y + HULL_CENTRE_HEIGHT, this.shipPosition.z);
     }
 
     private updateFlightCamera(dt: number, snap: boolean): void {
@@ -1495,19 +1330,13 @@ export class Finale {
         );
         this.cameraTarget.y = Math.max(
             this.cameraTarget.y,
-            Math.max(
-                this.terrain.heightAt(this.cameraTarget.x, this.cameraTarget.z),
-                WATER_LEVEL,
-            ) + 2.2,
+            Math.max(this.terrain.heightAt(this.cameraTarget.x, this.cameraTarget.z), WATER_LEVEL) + 2.2,
         );
 
         if (snap) {
             this.camera.position.copy(this.cameraTarget);
         } else {
-            this.camera.position.lerp(
-                this.cameraTarget,
-                1 - Math.exp(-FLIGHT_CAMERA_LAG * dt),
-            );
+            this.camera.position.lerp(this.cameraTarget, 1 - Math.exp(-FLIGHT_CAMERA_LAG * dt));
         }
         this.shortenCameraForOcclusion(this.hullCentre);
 
@@ -1518,14 +1347,10 @@ export class Finale {
         );
         this.camera.lookAt(this.cameraTarget);
 
-        const speedFraction =
-            (this.speed - MIN_SHIP_SPEED) / (this.maxShipSpeed - MIN_SHIP_SPEED);
-        const targetFov = Math.min(
-            MAX_CAMERA_FOV,
-            this.baseFov + speedFraction * FLIGHT_FOV_BOOST,
-        );
+        const speedFraction = (this.speed - MIN_SHIP_SPEED) / (this.maxShipSpeed - MIN_SHIP_SPEED);
+        const targetFov = Math.min(MAX_CAMERA_FOV, this.baseFov + speedFraction * FLIGHT_FOV_BOOST);
         if (Math.abs(this.camera.fov - targetFov) > 0.01) {
-            this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-3 * dt));
+            this.camera.fov = damp(this.camera.fov, targetFov, 3, dt);
             this.camera.updateProjectionMatrix();
         }
     }
@@ -1555,22 +1380,14 @@ export class Finale {
         }
 
         if (safeT < 1) {
-            this.camera.position.set(
-                anchor.x + dx * safeT,
-                anchor.y + dy * safeT,
-                anchor.z + dz * safeT,
-            );
+            this.camera.position.set(anchor.x + dx * safeT, anchor.y + dy * safeT, anchor.z + dz * safeT);
         }
     }
 
     // Track the launch ramp, not the line handoff: the hull narrows to a tenth of its width and
     // goes white over the same two seconds the ship spends accelerating to 10x.
     private applyHyperdriveCharge(): void {
-        const charge = smoothstep(
-            HYPER_CRUISE_SECONDS,
-            HYPER_CRUISE_SECONDS + HYPER_ACCEL_SECONDS,
-            this.boostElapsed,
-        );
+        const charge = smoothstep(HYPER_CRUISE_SECONDS, HYPER_CRUISE_SECONDS + HYPER_ACCEL_SECONDS, this.boostElapsed);
         const narrow = lerp(1, HYPER_NARROW_SCALE, charge);
         this.ship.group.scale.set(narrow, narrow, 1);
         this.ship.setHyperdriveGlow(charge);
@@ -1579,10 +1396,7 @@ export class Finale {
     // The title lands halfway through the no-acceleration cruise rather than at the geometric
     // arc-to-line handoff, so its timing is stable regardless of how long the turn takes.
     private updateHyperdriveText(): void {
-        if (
-            !this.hyperdriveTextShown &&
-            this.boostElapsed >= HYPER_CRUISE_SECONDS * 0.5
-        ) {
+        if (!this.hyperdriveTextShown && this.boostElapsed >= HYPER_CRUISE_SECONDS * 0.5) {
             this.hyperdriveTextShown = true;
             this.ui.enterStage('hyperdrive');
         }
@@ -1624,16 +1438,9 @@ export class Finale {
         this.updateAscentCamera(dt);
 
         const speedLog = Math.log10(Math.max(1, multiplier));
-        const fovFraction = clamp(
-            speedLog / Math.log10(HYPERDRIVE_SECOND_MULTIPLIER),
-            0,
-            1,
-        );
-        const targetFov = Math.min(
-            MAX_CAMERA_FOV,
-            this.baseFov + 8 + HYPER_FOV_BOOST * fovFraction,
-        );
-        this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-4 * dt));
+        const fovFraction = clamp(speedLog / Math.log10(HYPERDRIVE_SECOND_MULTIPLIER), 0, 1);
+        const targetFov = Math.min(MAX_CAMERA_FOV, this.baseFov + 8 + HYPER_FOV_BOOST * fovFraction);
+        this.camera.fov = damp(this.camera.fov, targetFov, 4, dt);
         this.camera.updateProjectionMatrix();
 
         if (this.boostElapsed >= HYPERDRIVE_SECONDS) {
@@ -1654,11 +1461,7 @@ export class Finale {
 
         const center = this.formationCenter(new Vector3());
         const forward = this.courseForward(new Vector3());
-        this.epilogueCamera.set(
-            center.x - forward.x * 10,
-            0,
-            center.z - forward.z * 10,
-        );
+        this.epilogueCamera.set(center.x - forward.x * 10, 0, center.z - forward.z * 10);
         this.epilogueCamera.y = Math.max(
             this.terrain.heightAt(this.epilogueCamera.x, this.epilogueCamera.z) + 2,
             center.y + 2,
@@ -1666,11 +1469,7 @@ export class Finale {
         this.epilogueLookTarget.set(center.x, center.y + 5.2, center.z);
         // The caretakers keep facing the course and look up at the sky, so the slightly-behind
         // camera sees their backs and the sky above them.
-        this.skyTarget.set(
-            center.x + forward.x * 40,
-            center.y + 240,
-            center.z + forward.z * 40,
-        );
+        this.skyTarget.set(center.x + forward.x * 40, center.y + 240, center.z + forward.z * 40);
 
         this.camera.position.copy(this.epilogueCamera);
         this.camera.lookAt(this.epilogueLookTarget);
@@ -1688,10 +1487,7 @@ export class Finale {
             this.farewellShown = true;
             this.ui.showFarewell();
         }
-        if (
-            !this.escapeTimeShown &&
-            this.epilogueElapsed >= FAREWELL_DELAY_SECONDS + ESCAPE_TIME_DELAY_SECONDS
-        ) {
+        if (!this.escapeTimeShown && this.epilogueElapsed >= FAREWELL_DELAY_SECONDS + ESCAPE_TIME_DELAY_SECONDS) {
             this.escapeTimeShown = true;
             this.ui.showEscapeTime();
         }
@@ -1730,13 +1526,4 @@ export class Finale {
             Math.cos(this.yaw) * Math.cos(this.pitch),
         );
     }
-}
-
-function shortestAngleDelta(from: number, to: number): number {
-    const twoPi = Math.PI * 2;
-    let delta = (to - from + Math.PI) % twoPi;
-    if (delta < 0) {
-        delta += twoPi;
-    }
-    return delta - Math.PI;
 }

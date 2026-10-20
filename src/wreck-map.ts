@@ -33,12 +33,7 @@ export class WreckMap {
     private shown = false;
     private structureState = Number.NaN;
 
-    constructor(
-        panel: HTMLElement,
-        canvas: HTMLCanvasElement,
-        terrain: Terrain,
-        parts: SpaceshipParts,
-    ) {
+    constructor(panel: HTMLElement, canvas: HTMLCanvasElement, terrain: Terrain, parts: SpaceshipParts) {
         this.panel = panel;
         this.canvas = canvas;
         this.terrain = terrain;
@@ -167,11 +162,9 @@ export class WreckMap {
                 }
 
                 const left = heights[pixelX > 0 ? index - 1 : index];
-                const right =
-                    heights[pixelX < resolution - 1 ? index + 1 : index];
+                const right = heights[pixelX < resolution - 1 ? index + 1 : index];
                 const up = heights[pixelZ > 0 ? index - resolution : index];
-                const down =
-                    heights[pixelZ < resolution - 1 ? index + resolution : index];
+                const down = heights[pixelZ < resolution - 1 ? index + resolution : index];
                 const gradientX = (right - left) / (2 * step);
                 const gradientZ = (down - up) / (2 * step);
                 const normalY = 1 / Math.sqrt(1 + gradientX * gradientX + gradientZ * gradientZ);
@@ -180,11 +173,7 @@ export class WreckMap {
                 color.convertLinearToSRGB();
 
                 // Light from the upper left keeps the relief readable without hiding the biomes.
-                const shade = clamp(
-                    0.78 + normalY * 0.2 + (gradientX + gradientZ) * 0.35,
-                    0.6,
-                    1.2,
-                );
+                const shade = clamp(0.78 + normalY * 0.2 + (gradientX + gradientZ) * 0.35, 0.6, 1.2);
                 data[offset] = clamp(color.r * 255 * shade, 0, 255);
                 data[offset + 1] = clamp(color.g * 255 * shade, 0, 255);
                 data[offset + 2] = clamp(color.b * 255 * shade, 0, 255);
@@ -207,13 +196,10 @@ export class WreckMap {
             // A flipped switch has taken that tower's energy, so it fades from the cyan power
             // colour to white on the map.
             const drained = this.terrain.megastructures.switches.some(
-                (structureSwitch) =>
-                    structureSwitch.towerIndex === towerIndex && structureSwitch.triggered,
+                (structureSwitch) => structureSwitch.towerIndex === towerIndex && structureSwitch.triggered,
             );
 
-            context.fillStyle = drained
-                ? 'rgba(255, 255, 255, 0.16)'
-                : 'rgba(56, 201, 226, 0.12)';
+            context.fillStyle = drained ? 'rgba(255, 255, 255, 0.16)' : 'rgba(56, 201, 226, 0.12)';
             context.fillRect(minX, minZ, maxX - minX, maxZ - minZ);
 
             for (let index = 0; index < tower.storeys.length; index++) {
@@ -224,8 +210,8 @@ export class WreckMap {
                         ? 'rgba(255, 255, 255, 0.98)'
                         : 'rgba(255, 255, 255, 0.62)'
                     : topStorey
-                        ? 'rgba(132, 244, 255, 0.95)'
-                        : 'rgba(86, 217, 240, 0.48)';
+                      ? 'rgba(132, 244, 255, 0.95)'
+                      : 'rgba(86, 217, 240, 0.48)';
                 context.lineWidth = topStorey ? 2 : 1;
                 context.strokeRect(
                     this.toCanvasX(storey.minX),
@@ -237,9 +223,7 @@ export class WreckMap {
 
             const centreX = this.toCanvasX((tower.minX + tower.maxX) / 2);
             const centreZ = this.toCanvasZ((tower.minZ + tower.maxZ) / 2);
-            context.fillStyle = drained
-                ? 'rgba(255, 255, 255, 0.98)'
-                : 'rgba(160, 250, 255, 0.95)';
+            context.fillStyle = drained ? 'rgba(255, 255, 255, 0.98)' : 'rgba(160, 250, 255, 0.95)';
             context.beginPath();
             context.arc(centreX, centreZ, 2.6, 0, Math.PI * 2);
             context.fill();
@@ -258,11 +242,7 @@ export class WreckMap {
         }
     }
 
-    private drawSearchMark(
-        context: CanvasRenderingContext2D,
-        site: SpaceshipPartSite,
-        markRadius: number,
-    ): void {
+    private drawSearchMark(context: CanvasRenderingContext2D, site: SpaceshipPartSite, markRadius: number): void {
         const x = this.toCanvasX(site.searchX);
         const y = this.toCanvasZ(site.searchZ);
 
@@ -310,4 +290,3 @@ export class WreckMap {
         return ((worldZ + WRECK_MAP_HALF_SIZE) / MAP_VIEW_SIZE) * CANVAS_SIZE;
     }
 }
-

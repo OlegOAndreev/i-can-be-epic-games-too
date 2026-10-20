@@ -10,6 +10,7 @@ import {
 } from 'three';
 
 import { lcg32 } from './math-utils';
+import { applySpin, integrateParticle } from './particle-motion';
 import { WATER_LEVEL } from './terrain';
 
 const MAX_PARTICLES = 26;
@@ -99,16 +100,7 @@ export class WaterSplash {
     // double-jump arc. Main calls this every 0.1 s so the circles trace the arc instead of stacking
     // on one spot.
     spawnDoubleJumpRing(position: Vector3): void {
-        this.spawnFoamPatch(
-            position.x,
-            position.z,
-            0.14,
-            0.45,
-            0.5,
-            0.4,
-            0,
-            position.y + 0.03,
-        );
+        this.spawnFoamPatch(position.x, position.z, 0.14, 0.45, 0.5, 0.4, 0, position.y + 0.03);
     }
 
     // Foam that hugs the legs while moving: a small patch ahead of the robot and a fading trail
@@ -149,11 +141,10 @@ export class WaterSplash {
             }
 
             const progress = particle.age / particle.lifetime;
-            particle.velocity.y -= PARTICLE_GRAVITY * dt;
-            particle.mesh.position.addScaledVector(particle.velocity, dt);
-            particle.mesh.rotation.x += particle.spin.x * dt;
-            particle.mesh.rotation.y += particle.spin.y * dt;
-            particle.mesh.rotation.z += particle.spin.z * dt;
+            integrateParticle(particle.mesh.position, particle.velocity, dt, {
+                gravity: PARTICLE_GRAVITY,
+            });
+            applySpin(particle.mesh, particle.spin, dt);
             particle.mesh.scale.setScalar(particle.size * (1 - progress * 0.85));
             particle.material.opacity = 0.95 * Math.pow(1 - progress, 1.2);
         }
@@ -248,21 +239,9 @@ export class WaterSplash {
             z + Math.sin(angle) * radius,
         );
         particle.mesh.scale.setScalar(size);
-        particle.mesh.rotation.set(
-            Math.random() * Math.PI,
-            Math.random() * Math.PI,
-            Math.random() * Math.PI,
-        );
-        particle.velocity.set(
-            Math.cos(angle) * outward,
-            upward,
-            Math.sin(angle) * outward,
-        );
-        particle.spin.set(
-            (Math.random() - 0.5) * 11,
-            (Math.random() - 0.5) * 11,
-            (Math.random() - 0.5) * 11,
-        );
+        particle.mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+        particle.velocity.set(Math.cos(angle) * outward, upward, Math.sin(angle) * outward);
+        particle.spin.set((Math.random() - 0.5) * 11, (Math.random() - 0.5) * 11, (Math.random() - 0.5) * 11);
         particle.age = 0;
         particle.lifetime = lifetime;
         particle.size = size;
@@ -320,13 +299,8 @@ export class WaterSplash {
             };
         }
 
-        ring.mesh.geometry =
-            this.foamGeometries[Math.floor(Math.random() * this.foamGeometries.length)];
-        ring.mesh.position.set(
-            x + (Math.random() - 0.5) * 0.12,
-            height,
-            z + (Math.random() - 0.5) * 0.12,
-        );
+        ring.mesh.geometry = this.foamGeometries[Math.floor(Math.random() * this.foamGeometries.length)];
+        ring.mesh.position.set(x + (Math.random() - 0.5) * 0.12, height, z + (Math.random() - 0.5) * 0.12);
         ring.mesh.rotation.set(-Math.PI / 2, 0, Math.random() * Math.PI * 2);
         ring.mesh.scale.set(startScale, startScale, 1);
         ring.material.opacity = 0;
@@ -420,7 +394,6 @@ function smoothRing(values: number[]): void {
     const copy = values.slice();
     for (let i = 0; i < values.length; i++) {
         values[i] =
-            (copy[(i + values.length - 1) % values.length] + copy[i] * 2 + copy[(i + 1) % values.length]) *
-            0.25;
+            (copy[(i + values.length - 1) % values.length] + copy[i] * 2 + copy[(i + 1) % values.length]) * 0.25;
     }
 }

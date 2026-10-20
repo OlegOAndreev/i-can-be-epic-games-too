@@ -1,20 +1,14 @@
 import { InstancedMesh, Scene, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
-import {
-    WRENCH_TRAIL_LONG_ARC,
-    WRENCH_TRAIL_SHORT_ARC,
-    WrenchTrail,
-} from './wrench-trail';
+import { WRENCH_TRAIL_LONG_ARC, WRENCH_TRAIL_SHORT_ARC, WrenchTrail } from './wrench-trail';
 
 describe('wrench trail', () => {
     it('follows the wrench with a short π/4 arc and a longer 3π/8 arc', () => {
         const scene = new Scene();
         const shortTrail = new WrenchTrail(scene, WRENCH_TRAIL_SHORT_ARC);
         const longTrail = new WrenchTrail(scene, WRENCH_TRAIL_LONG_ARC);
-        const meshes = scene.children.filter(
-            (child): child is InstancedMesh => child instanceof InstancedMesh,
-        );
+        const meshes = scene.children.filter((child): child is InstancedMesh => child instanceof InstancedMesh);
         expect(meshes).toHaveLength(2);
         expect(meshes.every((mesh) => !mesh.visible)).toBe(true);
 

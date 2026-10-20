@@ -1,40 +1,20 @@
-import {
-    Mesh,
-    OrthographicCamera,
-    PlaneGeometry,
-    Scene,
-    ShaderMaterial,
-    Vector2,
-    type WebGLRenderer,
-} from 'three';
+import { Vector2, type WebGLRenderer } from 'three';
+
+import { FullscreenPass } from './fullscreen-pass';
 
 // Red edge tint that mirrors the robot's remaining floor health. Health drives the overlay directly:
 // it deepens with every laser hit and drains as the robot repairs itself once a floor is cleared.
 export class DamageVignette {
     private readonly renderer: WebGLRenderer;
-    private readonly scene = new Scene();
-    private readonly camera = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    private readonly geometry = new PlaneGeometry(2, 2);
+    private readonly pass: FullscreenPass;
     private readonly size = new Vector2();
-    private readonly material: ShaderMaterial;
     private strength = 0;
 
     constructor(renderer: WebGLRenderer) {
         this.renderer = renderer;
-        this.material = new ShaderMaterial({
-            uniforms: {
-                uLevel: { value: 0 },
-                uAspect: { value: 1 },
-            },
-            vertexShader: /* glsl */ `
-                varying vec2 vUv;
-
-                void main() {
-                    vUv = uv;
-                    gl_Position = vec4(position.xy, 0.0, 1.0);
-                }
-            `,
-            fragmentShader: /* glsl */ `
+        this.pass = new FullscreenPass(
+            renderer,
+            /* glsl */ `
                 uniform float uLevel;
                 uniform float uAspect;
                 varying vec2 vUv;
@@ -75,14 +55,11 @@ export class DamageVignette {
                     gl_FragColor = vec4(tint.rgb, tint.a * uLevel);
                 }
             `,
-            transparent: true,
-            depthTest: false,
-            depthWrite: false,
-        });
-
-        const quad = new Mesh(this.geometry, this.material);
-        quad.frustumCulled = false;
-        this.scene.add(quad);
+            {
+                uLevel: { value: 0 },
+                uAspect: { value: 1 },
+            },
+        );
     }
 
     get level(): number {
@@ -91,23 +68,23 @@ export class DamageVignette {
 
     setLevel(level: number): void {
         this.strength = Math.min(1, Math.max(0, level));
-        this.material.uniforms.uLevel.value = this.strength;
+        this.pass.material.uniforms.uLevel.value = this.strength;
     }
 
     reset(): void {
         this.setLevel(0);
     }
 
-    // Draws over the already-composited frame, so the overlay must not clear the canvas.
     render(): void {
         if (this.strength < 0.001) {
             return;
         }
         this.renderer.getDrawingBufferSize(this.size);
-        this.material.uniforms.uAspect.value = this.size.x / Math.max(1, this.size.y);
-        const autoClear = this.renderer.autoClear;
-        this.renderer.autoClear = false;
-        this.renderer.render(this.scene, this.camera);
-        this.renderer.autoClear = autoClear;
+        this.pass.material.uniforms.uAspect.value = this.size.x / Math.max(1, this.size.y);
+        this.pass.render();
+    }
+
+    dispose(): void {
+        this.pass.dispose();
     }
 }

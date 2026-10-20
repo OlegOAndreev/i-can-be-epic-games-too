@@ -1,14 +1,13 @@
 import { PerspectiveCamera, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
-import { Terrain, WATER_LEVEL } from './terrain';
-
-const FAST_TERRAIN = { meshes: false, decorations: false } as const;
+import { fakeTerrain, testTerrain } from './test-helpers';
+import { WATER_LEVEL } from './terrain';
 import { ThirdPersonCamera } from './third-person-camera';
 
 describe('ThirdPersonCamera', () => {
     it('sits at eye height and looks along yaw and pitch in first person', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
         const controller = new ThirdPersonCamera(camera);
         controller.setFirstPerson(true);
@@ -28,8 +27,6 @@ describe('ThirdPersonCamera', () => {
         expect(forward.x).toBeCloseTo(-Math.sin(controller.yaw) * cosPitch, 4);
         expect(forward.y).toBeCloseTo(-Math.sin(controller.pitch), 4);
         expect(forward.z).toBeCloseTo(-Math.cos(controller.yaw) * cosPitch, 4);
-
-        terrain.dispose();
     });
 
     it('uses wider pitch limits in first person and clamps back when leaving it', () => {
@@ -51,7 +48,7 @@ describe('ThirdPersonCamera', () => {
     });
 
     it('keeps looking up when the camera is clamped to the ground', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
         const controller = new ThirdPersonCamera(camera);
         const spawn = terrain.spawn;
@@ -64,12 +61,10 @@ describe('ThirdPersonCamera', () => {
         const forward = new Vector3();
         camera.getWorldDirection(forward);
         expect(forward.y).toBeGreaterThan(0.9);
-
-        terrain.dispose();
     });
 
     it('pulls the camera in front of a nearby wall instead of pushing it through', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
         const controller = new ThirdPersonCamera(camera);
         const tower = terrain.megastructures.towers[0];
@@ -85,22 +80,17 @@ describe('ThirdPersonCamera', () => {
         controller.update(1 / 60, playerPosition, terrain);
 
         expect(controller.cameraDistance).toBeLessThan(1);
-        expect(
-            terrain.intersectsStructure(camera.position.x, camera.position.y, camera.position.z),
-        ).toBe(false);
-
-        terrain.dispose();
+        expect(terrain.intersectsStructure(camera.position.x, camera.position.y, camera.position.z)).toBe(false);
     });
 
     it('moves the camera distance continuously while approaching a wall', () => {
         const wallZ = 5;
         // The wall is an infinite plane; the camera collision radius is measured against it.
-        const terrain = {
+        const terrain = fakeTerrain({
             walkSurfaceAt: () => -1000,
             heightAt: () => -1000,
-            intersectsStructure: (_x: number, _y: number, z: number, radius = 0) =>
-                z > wallZ - radius,
-        } as unknown as Terrain;
+            intersectsStructure: (_x: number, _y: number, z: number, radius = 0) => z > wallZ - radius,
+        });
 
         const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
         const controller = new ThirdPersonCamera(camera);
@@ -130,11 +120,11 @@ describe('ThirdPersonCamera', () => {
         const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
         const controller = new ThirdPersonCamera(camera);
         const seabed = -12;
-        const terrain = {
+        const terrain = fakeTerrain({
             walkSurfaceAt: () => seabed,
             heightAt: () => seabed,
             intersectsStructure: () => false,
-        } as unknown as Terrain;
+        });
 
         controller.pitch = 0;
         controller.update(1 / 60, new Vector3(0, seabed, 0), terrain);

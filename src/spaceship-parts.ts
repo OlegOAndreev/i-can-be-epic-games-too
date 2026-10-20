@@ -16,7 +16,7 @@ import {
 import type { Material } from 'three';
 
 import type { GameAudio } from './audio';
-import { getRadialGlowTexture } from './glow';
+import { getRadialGlowTexture, glowSpriteMaterial } from './glow';
 import { clamp } from './math-utils';
 import { mulberry32 } from './noise';
 import { WATER_LEVEL, WORLD_HALF_SIZE } from './terrain';
@@ -71,6 +71,56 @@ const UNDERWATER_DEPTH = 2.5;
 const SEARCH_RADIUS = 52;
 const SEARCH_MIN_OFFSET = 14;
 const SEARCH_MAX_OFFSET = 38;
+
+// Samples a ring around the origin, keeping the first point the validator accepts. The angle is
+// drawn before the radius so the caller's random sequence stays stable.
+export function findRingSpot(
+    rng: () => number,
+    options: {
+        attempts: number;
+        minRadius: number;
+        maxRadius: number;
+        accept: (x: number, z: number) => boolean;
+    },
+): { x: number; z: number } | null {
+    for (let attempt = 0; attempt < options.attempts; attempt++) {
+        const angle = rng() * Math.PI * 2;
+        const radius = options.minRadius + rng() * Math.max(1, options.maxRadius - options.minRadius);
+        const x = Math.cos(angle) * radius;
+        const z = Math.sin(angle) * radius;
+        if (options.accept(x, z)) {
+            return { x, z };
+        }
+    }
+
+    return null;
+}
+
+// Coarse grid search used as a placement fallback. Rows run along z and columns along x; the first
+// point reaching the highest score wins, so ties keep the earlier cell.
+export function bestGridSpot(options: {
+    limit: number;
+    step: number;
+    score: (x: number, z: number) => number | null;
+}): { x: number; z: number } | null {
+    let best: { x: number; z: number } | null = null;
+    let bestScore = -Infinity;
+
+    for (let z = -options.limit; z <= options.limit; z += options.step) {
+        for (let x = -options.limit; x <= options.limit; x += options.step) {
+            const score = options.score(x, z);
+            if (score === null) {
+                continue;
+            }
+            if (score > bestScore) {
+                bestScore = score;
+                best = { x, z };
+            }
+        }
+    }
+
+    return best;
+}
 
 // The detector reaches farther than the eye can pick the part out, so the beep leads the player in.
 // Its reach is 30% wider than the original tuning, and the glow radius and beep cadence scale with
@@ -205,10 +255,7 @@ export class SpaceshipParts {
             const horizontalDistance = Math.hypot(dx, dz);
             const distance = Math.hypot(dx, dz, dy);
 
-            if (
-                horizontalDistance <= PICKUP_DISTANCE &&
-                Math.abs(dy) <= PICKUP_VERTICAL_RANGE
-            ) {
+            if (horizontalDistance <= PICKUP_DISTANCE && Math.abs(dy) <= PICKUP_VERTICAL_RANGE) {
                 this.collect(part);
                 continue;
             }
@@ -231,9 +278,7 @@ export class SpaceshipParts {
         this.group.traverse((child) => {
             if (child instanceof Mesh) {
                 child.geometry.dispose();
-                const childMaterials = Array.isArray(child.material)
-                    ? child.material
-                    : [child.material];
+                const childMaterials = Array.isArray(child.material) ? child.material : [child.material];
                 for (const material of childMaterials) {
                     materials.add(material);
                 }
@@ -254,32 +299,24 @@ export class SpaceshipParts {
         for (let index = 0; index < PART_DEFINITIONS.length; index++) {
             // The first piece goes down first so the underwater search never has to dodge the others.
             const position =
-                index === 0
-                    ? this.findUnderwaterPosition(placedPositions)
-                    : this.findPosition(placedPositions);
+                index === 0 ? this.findUnderwaterPosition(placedPositions) : this.findPosition(placedPositions);
             placedPositions.push(position);
             this.parts.push(this.createPart(PART_DEFINITIONS[index], position));
         }
     }
 
-    private findUnderwaterPosition(
-        placed: ReadonlyArray<{ x: number; z: number }>,
-    ): { x: number; z: number } {
+    private findUnderwaterPosition(placed: ReadonlyArray<{ x: number; z: number }>): { x: number; z: number } {
         const spawn = this.terrain.spawn;
         const limit = WORLD_HALF_SIZE - 250;
 
-        for (let attempt = 0; attempt < PLACEMENT_ATTEMPTS; attempt++) {
-            const angle = this.rng() * Math.PI * 2;
-            const radius = 180 + this.rng() * Math.max(1, limit - 180);
-            const x = Math.cos(angle) * radius;
-            const z = Math.sin(angle) * radius;
-
-            if (this.isValidUnderwaterPosition(x, z, spawn, placed)) {
-                return { x, z };
-            }
-        }
-
-        return this.findFallbackUnderwaterPosition(spawn, placed);
+        return (
+            findRingSpot(this.rng, {
+                attempts: PLACEMENT_ATTEMPTS,
+                minRadius: 180,
+                maxRadius: limit,
+                accept: (x, z) => this.isValidUnderwaterPosition(x, z, spawn, placed),
+            }) ?? this.findFallbackUnderwaterPosition(spawn, placed)
+        );
     }
 
     // Coarse scan used only if the random samples keep landing on the shore or on cliffs.
@@ -289,43 +326,39 @@ export class SpaceshipParts {
     ): { x: number; z: number } {
         const limit = WORLD_HALF_SIZE - 250;
         const step = 32;
-        let best: { x: number; z: number } | null = null;
-        let bestScore = -Infinity;
         let anySeabed: { x: number; z: number } | null = null;
 
-        for (let z = -limit; z <= limit; z += step) {
-            for (let x = -limit; x <= limit; x += step) {
+        const best = bestGridSpot({
+            limit,
+            step,
+            score: (x, z) => {
                 const height = this.terrain.heightAt(x, z);
                 if (height > WATER_LEVEL - UNDERWATER_DEPTH) {
-                    continue;
+                    return null;
                 }
                 anySeabed ??= { x, z };
                 if (this.terrain.slopeAt(x, z) > 0.5) {
-                    continue;
+                    return null;
                 }
                 if (this.terrain.megastructures.contains(x, z, 10)) {
-                    continue;
+                    return null;
                 }
 
                 const spawnDistance = Math.hypot(x - spawn.x, z - spawn.z);
                 if (spawnDistance < MIN_SPAWN_DISTANCE * 0.6) {
-                    continue;
+                    return null;
                 }
                 const separation = placed.reduce(
                     (nearest, point) => Math.min(nearest, Math.hypot(x - point.x, z - point.z)),
                     Infinity,
                 );
                 if (separation < MIN_PART_DISTANCE * 0.5) {
-                    continue;
+                    return null;
                 }
 
-                const score = Math.min(spawnDistance, separation);
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = { x, z };
-                }
-            }
-        }
+                return Math.min(spawnDistance, separation);
+            },
+        });
 
         // The relaxed point ignores spacing but still fulfils the one hard rule: the piece is wet.
         const fallback = best ?? anySeabed;
@@ -339,18 +372,14 @@ export class SpaceshipParts {
         const spawn = this.terrain.spawn;
         const limit = WORLD_HALF_SIZE - 250;
 
-        for (let attempt = 0; attempt < PLACEMENT_ATTEMPTS; attempt++) {
-            const angle = this.rng() * Math.PI * 2;
-            const radius = 180 + this.rng() * Math.max(1, limit - 180);
-            const x = Math.cos(angle) * radius;
-            const z = Math.sin(angle) * radius;
-
-            if (this.isValidPosition(x, z, spawn, placed, MIN_SPAWN_DISTANCE, MIN_PART_DISTANCE)) {
-                return { x, z };
-            }
-        }
-
-        return this.findFallbackPosition(spawn, placed);
+        return (
+            findRingSpot(this.rng, {
+                attempts: PLACEMENT_ATTEMPTS,
+                minRadius: 180,
+                maxRadius: limit,
+                accept: (x, z) => this.isValidPosition(x, z, spawn, placed, MIN_SPAWN_DISTANCE, MIN_PART_DISTANCE),
+            }) ?? this.findFallbackPosition(spawn, placed)
+        );
     }
 
     // Coarse scan used only if the random samples keep landing in water or on cliffs.
@@ -360,41 +389,37 @@ export class SpaceshipParts {
     ): { x: number; z: number } {
         const limit = WORLD_HALF_SIZE - 250;
         const step = 32;
-        let best: { x: number; z: number } | null = null;
-        let bestScore = -Infinity;
 
-        for (let z = -limit; z <= limit; z += step) {
-            for (let x = -limit; x <= limit; x += step) {
+        const best = bestGridSpot({
+            limit,
+            step,
+            score: (x, z) => {
                 const height = this.terrain.heightAt(x, z);
                 if (height < WATER_LEVEL + 2 || height > 110) {
-                    continue;
+                    return null;
                 }
                 if (this.terrain.slopeAt(x, z) > 0.4) {
-                    continue;
+                    return null;
                 }
                 if (this.terrain.megastructures.contains(x, z, 10)) {
-                    continue;
+                    return null;
                 }
 
                 const spawnDistance = Math.hypot(x - spawn.x, z - spawn.z);
                 if (spawnDistance < MIN_SPAWN_DISTANCE * 0.6) {
-                    continue;
+                    return null;
                 }
                 const separation = placed.reduce(
                     (nearest, point) => Math.min(nearest, Math.hypot(x - point.x, z - point.z)),
                     Infinity,
                 );
                 if (separation < MIN_PART_DISTANCE * 0.5) {
-                    continue;
+                    return null;
                 }
 
-                const score = Math.min(spawnDistance, separation);
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = { x, z };
-                }
-            }
-        }
+                return Math.min(spawnDistance, separation);
+            },
+        });
 
         return best ?? { x: spawn.x + MIN_SPAWN_DISTANCE, z: spawn.z };
     }
@@ -450,15 +475,10 @@ export class SpaceshipParts {
         if (Math.hypot(x - this.terrain.spaceshipSite.x, z - this.terrain.spaceshipSite.z) < 22) {
             return false;
         }
-        return placed.every(
-            (point) => Math.hypot(x - point.x, z - point.z) >= minimumPartDistance,
-        );
+        return placed.every((point) => Math.hypot(x - point.x, z - point.z) >= minimumPartDistance);
     }
 
-    private createPart(
-        definition: PartDefinition,
-        position: { x: number; z: number },
-    ): PlacedPart {
+    private createPart(definition: PartDefinition, position: { x: number; z: number }): PlacedPart {
         const groundY = this.terrain.heightAt(position.x, position.z);
         const group = new Group();
         group.name = `ship-part-${definition.id}`;
@@ -474,14 +494,10 @@ export class SpaceshipParts {
         });
         group.add(this.buildModel(definition.kind, emissiveMaterial));
 
-        const glowMaterial = new SpriteMaterial({
+        const glowMaterial = glowSpriteMaterial({
             map: getRadialGlowTexture(),
             color: 0x5beeff,
-            transparent: true,
-            opacity: 0,
-            blending: AdditiveBlending,
-            depthWrite: false,
-            toneMapped: false,
+            fog: true,
         });
         const glow = new Sprite(glowMaterial);
         glow.position.y = 1.1;
@@ -674,14 +690,9 @@ export class SpaceshipParts {
             return;
         }
 
-        const closeness = clamp(
-            1 - (nearestDistance - GLOW_DISTANCE) / (DETECTOR_RANGE - GLOW_DISTANCE),
-            0,
-            1,
-        );
+        const closeness = clamp(1 - (nearestDistance - GLOW_DISTANCE) / (DETECTOR_RANGE - GLOW_DISTANCE), 0, 1);
         const interval =
-            (DETECTOR_FAR_INTERVAL +
-                (DETECTOR_NEAR_INTERVAL - DETECTOR_FAR_INTERVAL) * Math.pow(closeness, 1.35)) /
+            (DETECTOR_FAR_INTERVAL + (DETECTOR_NEAR_INTERVAL - DETECTOR_FAR_INTERVAL) * Math.pow(closeness, 1.35)) /
             (inFront ? DETECTOR_FACING_BOOST : 1);
 
         this.beepTimer -= dt;

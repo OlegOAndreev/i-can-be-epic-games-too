@@ -1,18 +1,17 @@
 import {
-    AdditiveBlending,
     Group,
     IcosahedronGeometry,
     Mesh,
     MeshBasicMaterial,
     MeshStandardMaterial,
     Sprite,
-    SpriteMaterial,
     TetrahedronGeometry,
     Vector3,
 } from 'three';
 
-import { getGlowRingTexture, getRadialGlowTexture } from './glow';
+import { getGlowRingTexture, getRadialGlowTexture, glowMaterial, glowSpriteMaterial } from './glow';
 import { smoothstep } from './math-utils';
+import { applySpin, bounceParticle, integrateParticle } from './particle-motion';
 
 const EFFECT_SECONDS = 2.2;
 const FIREBALL_SECONDS = 1.1;
@@ -67,43 +66,19 @@ export class ShipExplosion {
     private readonly debrisGeometry = new IcosahedronGeometry(0.45, 0);
     private readonly smokeGeometry = new IcosahedronGeometry(1, 0);
 
-    private readonly glowMaterial = new SpriteMaterial({
+    private readonly glowMaterial = glowSpriteMaterial({
         map: getRadialGlowTexture(),
         color: 0xffd9a0,
-        transparent: true,
-        opacity: 0,
-        blending: AdditiveBlending,
-        depthWrite: false,
-        fog: false,
-        toneMapped: false,
     });
-    private readonly shockwaveMaterial = new SpriteMaterial({
+    private readonly shockwaveMaterial = glowSpriteMaterial({
         map: getGlowRingTexture(),
         color: 0xffb15a,
-        transparent: true,
-        opacity: 0,
-        blending: AdditiveBlending,
-        depthWrite: false,
-        fog: false,
-        toneMapped: false,
     });
-    private readonly fireballMaterial = new MeshBasicMaterial({
+    private readonly fireballMaterial = glowMaterial({
         color: 0xff8a2a,
-        transparent: true,
-        opacity: 0,
-        blending: AdditiveBlending,
-        depthWrite: false,
-        fog: false,
-        toneMapped: false,
     });
-    private readonly sparkMaterial = new MeshBasicMaterial({
+    private readonly sparkMaterial = glowMaterial({
         color: 0xffe2a4,
-        transparent: true,
-        opacity: 0,
-        blending: AdditiveBlending,
-        depthWrite: false,
-        fog: false,
-        toneMapped: false,
     });
     private readonly debrisMaterial = new MeshStandardMaterial({
         color: 0x5b6063,
@@ -179,23 +154,11 @@ export class ShipExplosion {
         this.shockwaveMaterial.opacity = 0.8;
 
         for (const fireball of this.fireballs) {
-            fireball.mesh.position.set(
-                (Math.random() - 0.5) * 4,
-                (Math.random() - 0.5) * 3,
-                (Math.random() - 0.5) * 4,
-            );
-            fireball.velocity.set(
-                (Math.random() - 0.5) * 5,
-                (Math.random() - 0.5) * 3 + 2,
-                (Math.random() - 0.5) * 5,
-            );
+            fireball.mesh.position.set((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 3, (Math.random() - 0.5) * 4);
+            fireball.velocity.set((Math.random() - 0.5) * 5, (Math.random() - 0.5) * 3 + 2, (Math.random() - 0.5) * 5);
             fireball.size = 1.6 + Math.random() * 2.4;
             fireball.mesh.scale.setScalar(fireball.size);
-            fireball.mesh.rotation.set(
-                Math.random() * Math.PI,
-                Math.random() * Math.PI,
-                Math.random() * Math.PI,
-            );
+            fireball.mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
         }
         this.fireballMaterial.opacity = 1;
 
@@ -204,16 +167,8 @@ export class ShipExplosion {
             const cosPhi = Math.random() * 2 - 1;
             const sinPhi = Math.sqrt(1 - cosPhi * cosPhi);
             const speed = 14 + Math.random() * 34;
-            spark.velocity.set(
-                Math.cos(theta) * sinPhi * speed,
-                cosPhi * speed + 6,
-                Math.sin(theta) * sinPhi * speed,
-            );
-            spark.spin.set(
-                (Math.random() - 0.5) * 16,
-                (Math.random() - 0.5) * 16,
-                (Math.random() - 0.5) * 16,
-            );
+            spark.velocity.set(Math.cos(theta) * sinPhi * speed, cosPhi * speed + 6, Math.sin(theta) * sinPhi * speed);
+            spark.spin.set((Math.random() - 0.5) * 16, (Math.random() - 0.5) * 16, (Math.random() - 0.5) * 16);
             spark.mesh.position.set(
                 (Math.random() - 0.5) * 2.5,
                 (Math.random() - 0.5) * 2,
@@ -228,46 +183,18 @@ export class ShipExplosion {
         this.sparkMaterial.opacity = 0.95;
 
         for (const chunk of this.debris) {
-            chunk.mesh.position.set(
-                (Math.random() - 0.5) * 3,
-                (Math.random() - 0.5) * 2,
-                (Math.random() - 0.5) * 3,
-            );
-            chunk.velocity.set(
-                (Math.random() - 0.5) * 16,
-                Math.random() * 14 + 2,
-                (Math.random() - 0.5) * 16,
-            );
-            chunk.spin.set(
-                (Math.random() - 0.5) * 9,
-                (Math.random() - 0.5) * 9,
-                (Math.random() - 0.5) * 9,
-            );
-            chunk.mesh.rotation.set(
-                Math.random() * Math.PI,
-                Math.random() * Math.PI,
-                Math.random() * Math.PI,
-            );
-            chunk.mesh.scale.set(
-                0.5 + Math.random() * 1.2,
-                0.3 + Math.random() * 0.8,
-                0.4 + Math.random() * 1.1,
-            );
+            chunk.mesh.position.set((Math.random() - 0.5) * 3, (Math.random() - 0.5) * 2, (Math.random() - 0.5) * 3);
+            chunk.velocity.set((Math.random() - 0.5) * 16, Math.random() * 14 + 2, (Math.random() - 0.5) * 16);
+            chunk.spin.set((Math.random() - 0.5) * 9, (Math.random() - 0.5) * 9, (Math.random() - 0.5) * 9);
+            chunk.mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+            chunk.mesh.scale.set(0.5 + Math.random() * 1.2, 0.3 + Math.random() * 0.8, 0.4 + Math.random() * 1.1);
             chunk.mesh.visible = true;
         }
         this.debrisMaterial.opacity = 1;
 
         for (const puff of this.smoke) {
-            puff.mesh.position.set(
-                (Math.random() - 0.5) * 4,
-                (Math.random() - 0.5) * 2,
-                (Math.random() - 0.5) * 4,
-            );
-            puff.velocity.set(
-                (Math.random() - 0.5) * 3,
-                1.5 + Math.random() * 3,
-                (Math.random() - 0.5) * 3,
-            );
+            puff.mesh.position.set((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 2, (Math.random() - 0.5) * 4);
+            puff.velocity.set((Math.random() - 0.5) * 3, 1.5 + Math.random() * 3, (Math.random() - 0.5) * 3);
             puff.size = 1.8 + Math.random() * 2.2;
             puff.mesh.scale.setScalar(puff.size);
             puff.mesh.visible = true;
@@ -298,15 +225,12 @@ export class ShipExplosion {
         for (const fireball of this.fireballs) {
             fireball.mesh.position.addScaledVector(fireball.velocity, dt);
             fireball.velocity.multiplyScalar(1 - 1.8 * dt);
-            fireball.mesh.scale.setScalar(
-                fireball.size * (1 + 1.2 * Math.min(1, this.elapsed / 0.35)),
-            );
+            fireball.mesh.scale.setScalar(fireball.size * (1 + 1.2 * Math.min(1, this.elapsed / 0.35)));
             fireball.mesh.rotation.x += dt * 0.8;
             fireball.mesh.rotation.y += dt * 0.6;
         }
 
-        this.sparkMaterial.opacity =
-            0.95 * (1 - smoothstep(SPARK_SECONDS * 0.4, SPARK_SECONDS, this.elapsed));
+        this.sparkMaterial.opacity = 0.95 * (1 - smoothstep(SPARK_SECONDS * 0.4, SPARK_SECONDS, this.elapsed));
         for (const spark of this.sparks) {
             if (!spark.mesh.visible) {
                 continue;
@@ -316,34 +240,24 @@ export class ShipExplosion {
                 spark.mesh.visible = false;
                 continue;
             }
-            spark.velocity.y -= SPARK_GRAVITY * dt;
-            spark.mesh.position.addScaledVector(spark.velocity, dt);
-            if (spark.mesh.position.y < this.floorY) {
-                spark.mesh.position.y = this.floorY;
-                spark.velocity.y = Math.abs(spark.velocity.y) * 0.25;
-                spark.velocity.x *= 0.6;
-                spark.velocity.z *= 0.6;
-            }
-            spark.mesh.rotation.x += spark.spin.x * dt;
-            spark.mesh.rotation.y += spark.spin.y * dt;
-            spark.mesh.rotation.z += spark.spin.z * dt;
+            integrateParticle(spark.mesh.position, spark.velocity, dt, { gravity: SPARK_GRAVITY });
+            bounceParticle(spark.mesh.position, spark.velocity, null, this.floorY, 0.25, 0.6, {
+                requireDownward: false,
+                inclusive: false,
+            });
+            applySpin(spark.mesh, spark.spin, dt);
             spark.mesh.scale.setScalar(spark.size * (1 - 0.8 * (spark.age / spark.lifetime)));
         }
 
         this.debrisMaterial.opacity = 1 - smoothstep(EFFECT_SECONDS - 0.4, EFFECT_SECONDS, this.elapsed);
         for (const chunk of this.debris) {
-            chunk.velocity.y -= DEBRIS_GRAVITY * dt;
-            chunk.mesh.position.addScaledVector(chunk.velocity, dt);
-            if (chunk.mesh.position.y < this.floorY) {
-                chunk.mesh.position.y = this.floorY;
-                chunk.velocity.y = Math.abs(chunk.velocity.y) * DEBRIS_BOUNCE;
-                chunk.velocity.x *= 0.7;
-                chunk.velocity.z *= 0.7;
-                chunk.spin.multiplyScalar(0.75);
-            }
-            chunk.mesh.rotation.x += chunk.spin.x * dt;
-            chunk.mesh.rotation.y += chunk.spin.y * dt;
-            chunk.mesh.rotation.z += chunk.spin.z * dt;
+            integrateParticle(chunk.mesh.position, chunk.velocity, dt, { gravity: DEBRIS_GRAVITY });
+            bounceParticle(chunk.mesh.position, chunk.velocity, chunk.spin, this.floorY, DEBRIS_BOUNCE, 0.7, {
+                spinDamping: 0.75,
+                requireDownward: false,
+                inclusive: false,
+            });
+            applySpin(chunk.mesh, chunk.spin, dt);
         }
 
         this.smokeMaterial.opacity =

@@ -82,9 +82,7 @@ export class RenderAudit {
 
         this.reportPending = true;
         this.armed = true;
-        this.gpuPromise = this.gpuSource?.available
-            ? this.gpuSource.sample().catch(() => null)
-            : null;
+        this.gpuPromise = this.gpuSource?.available ? this.gpuSource.sample().catch(() => null) : null;
         console.info('[render audit] capturing the next frame…');
     }
 
@@ -123,9 +121,7 @@ export class RenderAudit {
 
         // The GPU query result arrives a frame or two after the capture. Wait briefly so the copied
         // report contains it; fall back to no GPU reading rather than blocking forever.
-        return gpuPromise === null
-            ? Promise.resolve(finish(null))
-            : withTimeout(gpuPromise, 1000).then(finish);
+        return gpuPromise === null ? Promise.resolve(finish(null)) : withTimeout(gpuPromise, 1000).then(finish);
     }
 
     // A lost context can arrive mid-capture; restore the patched renderer methods and drop the
@@ -335,7 +331,7 @@ export class RenderAudit {
             `renderer.info: ${report.infoCalls} draws, ` +
                 `${report.infoTriangles.toLocaleString()} triangles. ` +
                 'Submit ms is CPU time spent inside renderBufferDirect, not GPU time. ' +
-                "performance.now() is quantized, so single draws may round to 0; trust the group and pass totals.",
+                'performance.now() is quantized, so single draws may round to 0; trust the group and pass totals.',
         );
         console.log(`gpu: ${gpuText} (whole captured renderFrame).`);
         console.log(
@@ -459,11 +455,13 @@ interface RenderReport {
 }
 
 function formatReport(report: RenderReport): string {
+    const gpuText =
+        report.gpuMs !== null ? `${report.gpuMs.toFixed(2)} ms` : report.gpuTimingAvailable ? 'unavailable' : 'n/a';
     const lines = [
         `Render audit — ${report.totalMs.toFixed(2)} ms frame ` +
             `(main ${report.mainMs.toFixed(2)} ms, shadow ${report.shadowMs.toFixed(2)} ms)`,
         `renderer.info: ${report.infoCalls} draws, ${report.infoTriangles} triangles`,
-        `gpu: ${report.gpuMs !== null ? `${report.gpuMs.toFixed(2)} ms` : report.gpuTimingAvailable ? 'unavailable' : 'n/a'}`,
+        `gpu: ${gpuText}`,
         `unique geometry: ${report.uniqueTriangles} triangles across ${report.entityPolygons.length} entity types`,
         `shadows: ${report.shadowEnabled ? 'enabled' : 'DISABLED'}, ` +
             `${report.cameraViewports} registered viewport(s), ` +
@@ -473,35 +471,16 @@ function formatReport(report: RenderReport): string {
         '',
         'PASSES',
         ['pass', 'draws', 'triangles', 'submit ms'].join('\t'),
-        ...report.passes.map((row) =>
-            [row.pass, row.draws, row.triangles, row.submitMs.toFixed(2)].join('\t'),
-        ),
+        ...report.passes.map((row) => [row.pass, row.draws, row.triangles, row.submitMs.toFixed(2)].join('\t')),
         '',
         'GROUPS',
         ['group', 'meshes', 'instances', 'triangles', 'submit ms', 'draws'].join('\t'),
         ...report.groups.map((row) =>
-            [
-                row.group,
-                row.meshes,
-                row.instances,
-                row.triangles,
-                row.submitMs.toFixed(2),
-                row.draws,
-            ].join('\t'),
+            [row.group, row.meshes, row.instances, row.triangles, row.submitMs.toFixed(2), row.draws].join('\t'),
         ),
         '',
         `TOP ${report.objects.length} OBJECTS`,
-        [
-            'object',
-            'owner',
-            'type',
-            'instances',
-            'tri/inst',
-            'main',
-            'shadow',
-            'submit ms',
-            'draws',
-        ].join('\t'),
+        ['object', 'owner', 'type', 'instances', 'tri/inst', 'main', 'shadow', 'submit ms', 'draws'].join('\t'),
         ...report.objects.map((row) =>
             [
                 row.object,
@@ -518,9 +497,7 @@ function formatReport(report: RenderReport): string {
         '',
         'ENTITY POLYGONS (unique geometry; includes hidden meshes; instances counted, shadow passes not)',
         ['entity', 'meshes', 'instances', 'triangles'].join('\t'),
-        ...report.entityPolygons.map((row) =>
-            [row.entity, row.meshes, row.instances, row.triangles].join('\t'),
-        ),
+        ...report.entityPolygons.map((row) => [row.entity, row.meshes, row.instances, row.triangles].join('\t')),
         '',
         `unique geometry total: ${report.uniqueTriangles} triangles`,
         '',
@@ -537,10 +514,7 @@ function round(value: number): number {
     return Math.round(value * 100) / 100;
 }
 
-function withTimeout(
-    promise: Promise<number | null>,
-    timeoutMs: number,
-): Promise<number | null> {
+function withTimeout(promise: Promise<number | null>, timeoutMs: number): Promise<number | null> {
     return Promise.race([
         promise,
         new Promise<number | null>((resolve) => {
@@ -601,10 +575,7 @@ function collectShadowCameraLabels(scene: Scene): Map<string, string> {
             if (!camera) {
                 continue;
             }
-            labels.set(
-                camera.uuid,
-                viewports > 1 ? `${lightName} cascade ${viewport}` : `${lightName} shadow`,
-            );
+            labels.set(camera.uuid, viewports > 1 ? `${lightName} cascade ${viewport}` : `${lightName} shadow`);
         }
     });
     return labels;
@@ -627,7 +598,5 @@ function baseName(name: string): string {
     if (!name) {
         return UNNAMED;
     }
-    return name
-        .replace(/-cell--?\d+--?\d+$/, '')
-        .replace(/--?\d+--?\d+$/, '');
+    return name.replace(/-cell--?\d+--?\d+$/, '').replace(/--?\d+--?\d+$/, '');
 }

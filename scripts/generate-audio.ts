@@ -1,7 +1,7 @@
 // Generates the one-shot footstep samples used by the game, including the metallic steps the robot
 // makes on megastructure decks, plus the laser, impact, switch, jump, recovery, power-down,
-// wrench-swing, and lightning one-shots. Each sample is written as a WAV fallback and as an Ogg
-// Opus file for browsers that support it.
+// wrench-swing, wrench-clang, and lightning one-shots. Each sample is written as a WAV fallback and
+// as an Ogg Opus file for browsers that support it.
 // Requires opusenc from opus-tools (brew install opus-tools).
 // Run with: npm run generate:audio
 import { execFileSync } from 'node:child_process';
@@ -57,10 +57,7 @@ function renderFootstep(seed: number): Float32Array {
         const scuffTime = t - scuffDelay;
         const scuff =
             scuffTime > 0
-                ? (white - scuffState) *
-                  Math.min(1, scuffTime / 0.004) *
-                  Math.exp(-scuffTime / scuffDecay) *
-                  0.42
+                ? (white - scuffState) * Math.min(1, scuffTime / 0.004) * Math.exp(-scuffTime / scuffDecay) * 0.42
                 : 0;
 
         samples[i] = thump + body + scuff;
@@ -135,8 +132,7 @@ function renderMetalFootstep(seed: number): Float32Array {
         sample += Math.sin(thumpPhase) * Math.exp(-t / 0.065) * 0.55;
 
         for (const mode of modes) {
-            sample +=
-                Math.sin(mode.phase + mode.omega * t) * Math.exp(-t / mode.decay) * mode.amplitude;
+            sample += Math.sin(mode.phase + mode.omega * t) * Math.exp(-t / mode.decay) * mode.amplitude;
         }
 
         // A quieter second contact plays shortly after the heel lands, like the toe settling.
@@ -239,12 +235,10 @@ function renderJumpBop(seed: number): Float32Array {
 
         // The pitch cracks upward like a plucked rubber band, then settles at the higher note.
         const wobble = 1 + Math.sin(TAU * wobbleRate * t) * wobbleDepth * Math.exp(-t / 0.05);
-        const frequency =
-            endFrequency + (startFrequency - endFrequency) * Math.exp(-t * pitchDecay);
+        const frequency = endFrequency + (startFrequency - endFrequency) * Math.exp(-t * pitchDecay);
         phase += (TAU * frequency * wobble) / SAMPLE_RATE;
 
-        let sample =
-            Math.sin(phase) * Math.min(1, t / 0.0025) * Math.exp(-t / bodyDecay) * 0.95;
+        let sample = Math.sin(phase) * Math.min(1, t / 0.0025) * Math.exp(-t / bodyDecay) * 0.95;
         // A little second harmonic gives the sine enough edge to sit over the music.
         sample += Math.sin(phase * 2) * Math.exp(-t / (bodyDecay * 0.55)) * 0.18;
 
@@ -253,8 +247,7 @@ function renderJumpBop(seed: number): Float32Array {
         sample += (white - clickState) * Math.exp(-t / 0.0045) * 0.35;
 
         // A brief midrange ring turns the tone into a "bop" rather than a plain beep.
-        sample +=
-            Math.sin(TAU * ringFrequency * t) * Math.exp(-t / ringDecay) * 0.12;
+        sample += Math.sin(TAU * ringFrequency * t) * Math.exp(-t / ringDecay) * 0.12;
 
         samples[i] = Math.tanh(sample * 1.35);
     }
@@ -298,10 +291,7 @@ function renderPlayerHit(seed: number): Float32Array {
         const high = white - highState;
 
         const sizzle =
-            high *
-            Math.exp(-t / 0.3) *
-            (0.55 + 0.45 * Math.sin(TAU * 27 * t + Math.sin(TAU * 4 * t) * 1.5)) *
-            0.7;
+            high * Math.exp(-t / 0.3) * (0.55 + 0.45 * Math.sin(TAU * 27 * t + Math.sin(TAU * 4 * t) * 1.5)) * 0.7;
         const body = (white - lowState) * Math.exp(-t / 0.18) * 0.3;
 
         const thumpFrequency = 55 + 110 * Math.exp(-t * 26);
@@ -392,17 +382,14 @@ function renderEnemyHit(seed: number): Float32Array {
         sample += Math.sin(thumpPhase) * Math.exp(-t / 0.08) * 0.5;
 
         for (const mode of modes) {
-            sample +=
-                Math.sin(mode.phase + mode.omega * t) * Math.exp(-t / mode.decay) * mode.amplitude;
+            sample += Math.sin(mode.phase + mode.omega * t) * Math.exp(-t / mode.decay) * mode.amplitude;
         }
 
         const scratchTime = t - scratchDelay;
         if (scratchTime > 0) {
             scratchState += scratchAlpha * (white - scratchState);
             scratchBodyState += scratchBodyAlpha * (white - scratchBodyState);
-            scratchPhase +=
-                (TAU * scratchRate * (0.75 + 0.5 * Math.sin(TAU * 6.3 * scratchTime))) /
-                SAMPLE_RATE;
+            scratchPhase += (TAU * scratchRate * (0.75 + 0.5 * Math.sin(TAU * 6.3 * scratchTime))) / SAMPLE_RATE;
             const stickSlip = 0.25 + 0.75 * Math.abs(Math.sin(scratchPhase));
             sample +=
                 ((white - scratchState) * 0.75 + (white - scratchBodyState) * 0.35) *
@@ -417,9 +404,7 @@ function renderEnemyHit(seed: number): Float32Array {
             if (crackTime > 0 && crackTime < 0.08) {
                 sample +=
                     (white * Math.exp(-crackTime / crack.noiseDecay) * 0.6 +
-                        Math.sin(TAU * crack.frequency * crackTime) *
-                            Math.exp(-crackTime / crack.ringDecay) *
-                            0.35) *
+                        Math.sin(TAU * crack.frequency * crackTime) * Math.exp(-crackTime / crack.ringDecay) * 0.35) *
                     crack.gain;
             }
         }
@@ -428,9 +413,7 @@ function renderEnemyHit(seed: number): Float32Array {
             const tickTime = t - tick.start;
             if (tickTime > 0 && tickTime < 0.02) {
                 sample +=
-                    (white * 0.5 + Math.sin(TAU * tick.frequency * tickTime)) *
-                    Math.exp(-tickTime / 0.004) *
-                    tick.gain;
+                    (white * 0.5 + Math.sin(TAU * tick.frequency * tickTime)) * Math.exp(-tickTime / 0.004) * tick.gain;
             }
         }
 
@@ -491,8 +474,7 @@ function renderSwitchClick(seed: number): Float32Array {
         const reboundTime = t - reboundDelay;
         if (reboundTime > 0) {
             reboundState += reboundAlpha * (white - reboundState);
-            sample +=
-                (white - reboundState) * Math.exp(-reboundTime / 0.006) * 0.4;
+            sample += (white - reboundState) * Math.exp(-reboundTime / 0.006) * 0.4;
         }
 
         const knockFrequency = 72 + 96 * Math.exp(-t * 55);
@@ -500,8 +482,7 @@ function renderSwitchClick(seed: number): Float32Array {
         sample += Math.sin(knockPhase) * Math.exp(-t / 0.045) * 0.4;
 
         for (const ring of rings) {
-            sample +=
-                Math.sin(ring.phase + ring.omega * t) * Math.exp(-t / ring.decay) * ring.gain;
+            sample += Math.sin(ring.phase + ring.omega * t) * Math.exp(-t / ring.decay) * ring.gain;
         }
 
         samples[i] = sample;
@@ -552,10 +533,7 @@ function renderStructureBuzz(seed: number): Float32Array {
         }
 
         // Fast, periodic electrical rattle over the top.
-        raw +=
-            0.1 *
-            Math.sin(TAU * 480 * t) *
-            (0.5 + 0.5 * Math.sin(TAU * 19 * t));
+        raw += 0.1 * Math.sin(TAU * 480 * t) * (0.5 + 0.5 * Math.sin(TAU * 19 * t));
 
         filtered += lowpassAlpha * (raw - filtered);
         if (i >= total - length) {
@@ -651,14 +629,10 @@ function renderRingPassed(seed: number): Float32Array {
         for (let i = startIndex; i < length; i++) {
             const t = i / SAMPLE_RATE;
             const noteTime = t - note.offset;
-            const envelope =
-                noteTime < attack
-                    ? noteTime / attack
-                    : Math.exp(-(noteTime - attack) / note.decay);
+            const envelope = noteTime < attack ? noteTime / attack : Math.exp(-(noteTime - attack) / note.decay);
             const tail = Math.min(1, (duration - t) / 0.03);
             const shimmer = Math.sin(omega * 2 * noteTime) * 0.28;
-            samples[i] +=
-                (Math.sin(omega * noteTime) + shimmer) * envelope * tail * note.level;
+            samples[i] += (Math.sin(omega * noteTime) + shimmer) * envelope * tail * note.level;
         }
     }
 
@@ -763,8 +737,7 @@ function renderLightningStrike(seed: number): Float32Array {
         if (t < 0.04) {
             envelope = rumbleGain * (0.0001 / rumbleGain) ** (1 - t / 0.04);
         } else {
-            envelope =
-                rumbleGain * (0.0001 / rumbleGain) ** ((t - 0.04) / (rumbleDuration - 0.04));
+            envelope = rumbleGain * (0.0001 / rumbleGain) ** ((t - 0.04) / (rumbleDuration - 0.04));
         }
 
         samples[i] += rumbleLow * noiseFade * envelope;
@@ -803,9 +776,7 @@ function renderShipEngine(seed: number): Float32Array {
         // Low engine core: a soft sawtooth built from harmonics of the 55 Hz fundamental.
         let core = 0;
         for (let harmonic = 1; harmonic <= partialCount; harmonic++) {
-            core +=
-                Math.sin(TAU * fundamental * harmonic * t + phases[harmonic - 1]) /
-                harmonic ** 1.35;
+            core += Math.sin(TAU * fundamental * harmonic * t + phases[harmonic - 1]) / harmonic ** 1.35;
         }
         core *= 0.5 * (0.6 + 0.4 * pulse);
 
@@ -821,8 +792,7 @@ function renderShipEngine(seed: number): Float32Array {
         const white = rng() * 2 - 1;
         lowNoise += lowAlpha * (white - lowNoise);
         bandNoise += bandAlpha * (white - bandNoise);
-        const air =
-            (bandNoise - lowNoise * 0.45) * (0.32 + 0.08 * Math.sin(TAU * t));
+        const air = (bandNoise - lowNoise * 0.45) * (0.32 + 0.08 * Math.sin(TAU * t));
 
         samples[i] = core * 0.8 + whineSignal + air * 0.7;
     }
@@ -872,10 +842,7 @@ function renderFallWind(seed: number): Float32Array {
 
         // The gusts complete a whole number of cycles over the loop, so their swell survives the
         // fold at the loop point. The clamped envelope keeps the quieter passages audible.
-        const swell =
-            0.45 +
-            0.3 * Math.sin(TAU * 0.5 * t + gustPhase) +
-            0.25 * Math.sin(TAU * t + swellPhase);
+        const swell = 0.45 + 0.3 * Math.sin(TAU * 0.5 * t + gustPhase) + 0.25 * Math.sin(TAU * t + swellPhase);
         const envelope = Math.max(0.08, swell);
 
         const rush = rushSmooth - rumbleNoise;
@@ -947,6 +914,138 @@ function renderWrenchSwing(seed: number): Float32Array {
     return samples;
 }
 
+// A wrench rapping a boulder: a short, bright steel tink over a dull stone thud. This is
+// deliberately not a ringing clang; the metal modes die within tens of milliseconds and the
+// boulder's mass carries the rest as a low, dry body hit. The characters lean the mix toward a
+// sharper tick or a heavier thud and shift the pitch so repeated strikes do not sound looped. Only
+// the last variation carries a quiet chime tail for a little variety.
+const WRENCH_CLANG_VARIANTS = [
+    { pitch: 1.25, tink: 1.1, thump: 0.9, grit: 1, doubleStrike: false, chime: 0 },
+    { pitch: 0.85, tink: 0.85, thump: 1.3, grit: 0.9, doubleStrike: false, chime: 0 },
+    { pitch: 1.35, tink: 1.25, thump: 0.8, grit: 1.35, doubleStrike: true, chime: 0 },
+    { pitch: 1, tink: 0.95, thump: 1.15, grit: 0.8, doubleStrike: false, chime: 0.2 },
+] as const;
+
+function renderWrenchClang(seed: number, variant: number): Float32Array {
+    const rng = mulberry32(seed);
+    const character = WRENCH_CLANG_VARIANTS[variant % WRENCH_CLANG_VARIANTS.length];
+    const duration = 0.48 + (character.chime > 0 ? 0.5 / 1.5 : 0) + rng() * 0.2;
+    const length = Math.round(duration * SAMPLE_RATE);
+    const samples = new Float32Array(length);
+
+    const baseFrequency = (2100 + rng() * 800) * character.pitch;
+    // Three high, very short modes make the tink. Their decays are measured in tens of
+    // milliseconds, so the steel reads as a tick rather than a chime.
+    const tinkModes = [1, 1.44, 2.07].map((ratio, index) => ({
+        omega: TAU * baseFrequency * ratio * (0.97 + rng() * 0.06),
+        amplitude: 0.46 * 0.72 ** index * character.tink,
+        decay: 0.032 * 0.7 ** index * (0.8 + rng() * 0.5),
+        phase: rng() * TAU,
+    }));
+    // One lower, equally brief clink gives the tick some metal body without ringing on.
+    const clink = {
+        omega: TAU * (760 + rng() * 440) * character.pitch,
+        amplitude: 0.2 * character.tink,
+        decay: 0.045 + rng() * 0.02,
+        phase: rng() * TAU,
+    };
+
+    // Variation 03 alone gets a quiet, slow-decaying chime. Because the tink and thud are gone
+    // quickly, these modes surface as a soft tail rather than turning the whole hit into a bell.
+    const chimeBase = character.chime > 0 ? (1000 + rng() * 400) * character.pitch : 0;
+    const chimeModes =
+        character.chime > 0
+            ? [1, 1.48, 2.05].map((ratio, index) => ({
+                  omega: TAU * chimeBase * ratio * (0.99 + rng() * 0.02),
+                  amplitude: 0.5 * 0.7 ** index * character.chime,
+                  decay: 0.35 * 0.65 ** index * (0.85 + rng() * 0.3),
+                  phase: rng() * TAU,
+              }))
+            : [];
+
+    // The contact is broadband: one very short highpassed tick where steel meets stone, and a
+    // duller lowpassed smack that carries the mass of the boulder.
+    const crackAlpha = 1 - Math.exp((-TAU * 8000) / SAMPLE_RATE);
+    const smackAlpha = 1 - Math.exp((-TAU * 2000) / SAMPLE_RATE);
+    const bodyAlpha = 1 - Math.exp((-TAU * 220) / SAMPLE_RATE);
+    let crackState = 0;
+    let smackState = 0;
+    let bodyState = 0;
+    let thumpPhase = 0;
+
+    // Crushed stone grains scattered through the first tenth of a second. They keep the impact
+    // dry and gritty instead of turning the metal tick into a musical note.
+    const grains = Array.from({ length: 4 + Math.floor(rng() * 5) }, () => ({
+        start: 0.003 + rng() * 0.09,
+        decay: 0.002 + rng() * 0.005,
+        frequency: 1100 + rng() * 2700,
+        gain: (0.04 + rng() * 0.07) * character.grit,
+    }));
+
+    // The wrench skips off the rock a heartbeat after the main blow.
+    const reboundDelay = 0.008 + rng() * 0.024;
+    const reboundGain = character.doubleStrike ? 0.4 : 0.18;
+
+    for (let i = 0; i < length; i++) {
+        const t = i / SAMPLE_RATE;
+        const white = rng() * 2 - 1;
+        crackState += crackAlpha * (white - crackState);
+        smackState += smackAlpha * (white - smackState);
+        bodyState += bodyAlpha * (white - bodyState);
+
+        let sample = (white - crackState) * Math.exp(-t / 0.0028) * 1.1;
+        sample += (white - smackState) * Math.exp(-t / 0.015) * 0.5;
+
+        // The boulder answers with a short pitch-dropping thud. A little second harmonic and
+        // low noise give the body weight without adding a sustained tone.
+        const thumpFrequency = 44 + 100 * Math.exp(-t * 32);
+        thumpPhase += (TAU * thumpFrequency) / SAMPLE_RATE;
+        sample += Math.sin(thumpPhase) * Math.exp(-t / 0.16) * character.thump;
+        sample += Math.sin(thumpPhase * 2) * Math.exp(-t / 0.1) * 0.14 * character.thump;
+        sample += bodyState * Math.exp(-t / 0.07) * 0.55 * character.thump;
+
+        for (const mode of tinkModes) {
+            sample += Math.sin(mode.omega * t + mode.phase) * Math.exp(-t / mode.decay) * mode.amplitude;
+        }
+        sample += Math.sin(clink.omega * t + clink.phase) * Math.exp(-t / clink.decay) * clink.amplitude;
+
+        for (const mode of chimeModes) {
+            sample += Math.sin(mode.omega * t + mode.phase) * Math.exp(-t / mode.decay) * mode.amplitude;
+        }
+
+        const reboundTime = t - reboundDelay;
+        if (reboundTime > 0 && reboundTime < 0.04) {
+            sample += (white - crackState) * Math.exp(-reboundTime / 0.003) * reboundGain;
+            sample +=
+                Math.sin(TAU * baseFrequency * 1.1 * reboundTime) * Math.exp(-reboundTime / 0.008) * reboundGain * 0.35;
+        }
+
+        for (const grain of grains) {
+            const grainTime = t - grain.start;
+            if (grainTime > 0 && grainTime < 0.02) {
+                sample +=
+                    (white * 0.6 + Math.sin(TAU * grain.frequency * grainTime) * 0.4) *
+                    Math.exp(-grainTime / grain.decay) *
+                    grain.gain;
+            }
+        }
+
+        // Soft saturation thickens the attack so the strike reads as loud without simply clipping.
+        samples[i] = Math.tanh(sample * 1.15);
+    }
+
+    const fadeIn = Math.round(0.0003 * SAMPLE_RATE);
+    const fadeOut = Math.round((character.chime > 0 ? 0.1 : 0.06) * SAMPLE_RATE);
+    for (let i = 0; i < fadeIn; i++) {
+        samples[i] *= i / fadeIn;
+    }
+    for (let i = 0; i < fadeOut; i++) {
+        samples[length - 1 - i] *= i / fadeOut;
+    }
+
+    return samples;
+}
+
 function removeDc(samples: Float32Array): void {
     let sum = 0;
     for (const sample of samples) {
@@ -1004,13 +1103,7 @@ function writeSample(name: string, samples: Float32Array): void {
     const opusPath = join(OUTPUT_DIRECTORY, `${name}.opus`);
     const opusTempPath = siblingTempPath(opusPath);
     try {
-        execFileSync('opusenc', [
-            '--quiet',
-            '--bitrate',
-            String(OPUS_BITRATE_KBPS),
-            wavPath,
-            opusTempPath,
-        ]);
+        execFileSync('opusenc', ['--quiet', '--bitrate', String(OPUS_BITRATE_KBPS), wavPath, opusTempPath]);
         renameSync(opusTempPath, opusPath);
     } catch (error) {
         rmSync(opusTempPath, { force: true });
@@ -1020,7 +1113,9 @@ function writeSample(name: string, samples: Float32Array): void {
     const seconds = samples.length / SAMPLE_RATE;
     const opusSize = statSync(opusPath).size;
     console.log(
-        `Generated ${name} (${seconds.toFixed(2)}s, wav ${Math.round(buffer.length / 1024)} KB, opus ${Math.round(opusSize / 1024)} KB)`,
+        `Generated ${name} (${seconds.toFixed(2)}s, ` +
+            `wav ${Math.round(buffer.length / 1024)} KB, ` +
+            `opus ${Math.round(opusSize / 1024)} KB)`,
     );
 }
 
@@ -1030,7 +1125,8 @@ try {
     execFileSync('opusenc', ['--version'], { stdio: 'ignore' });
 } catch {
     throw new Error(
-        'opusenc is required to generate audio. Install opus-tools (brew install opus-tools on macOS, apt install opus-tools on Debian/Ubuntu).',
+        'opusenc is required to generate audio. Install opus-tools ' +
+            '(brew install opus-tools on macOS, apt install opus-tools on Debian/Ubuntu).',
     );
 }
 
@@ -1067,6 +1163,13 @@ const wrenchSwing = renderWrenchSwing(0x6b2f_c4a0);
 removeDc(wrenchSwing);
 normalize(wrenchSwing, 0.8);
 writeSample('wrench-swing', wrenchSwing);
+
+for (let index = 0; index < WRENCH_CLANG_VARIANTS.length; index++) {
+    const wrenchClang = renderWrenchClang(0x3d7e_e000 + index * 0x1111, index);
+    removeDc(wrenchClang);
+    normalize(wrenchClang, 0.97);
+    writeSample(`wrench-clang-${String(index).padStart(2, '0')}`, wrenchClang);
+}
 
 for (let index = 0; index < 4; index++) {
     const jumpBop = renderJumpBop(0x2b0b_7000 + index * 0x1111);

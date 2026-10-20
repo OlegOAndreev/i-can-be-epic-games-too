@@ -81,9 +81,7 @@ describe('shareable player state', () => {
     it('rejects invalid base64 and non-tuple JSON', () => {
         expect(readSharedPlayerState(new URLSearchParams('?state=not-base64'))).toBeNull();
         expect(readSharedPlayerState(new URLSearchParams(`?state=${encodeState([])}`))).toBeNull();
-        expect(
-            readSharedPlayerState(new URLSearchParams(`?state=${btoa(JSON.stringify({ seed: 1 }))}`)),
-        ).toBeNull();
+        expect(readSharedPlayerState(new URLSearchParams(`?state=${btoa(JSON.stringify({ seed: 1 }))}`))).toBeNull();
     });
 
     it.each([

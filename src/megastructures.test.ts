@@ -1,4 +1,13 @@
-import { LatheGeometry, Mesh, MeshBasicMaterial, MeshStandardMaterial, Raycaster, ShaderMaterial, Sprite, Vector3 } from 'three';
+import {
+    LatheGeometry,
+    Mesh,
+    MeshBasicMaterial,
+    MeshStandardMaterial,
+    Raycaster,
+    ShaderMaterial,
+    Sprite,
+    Vector3,
+} from 'three';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -9,12 +18,10 @@ import {
     WINDOW_SILL_HEIGHT,
 } from './megastructures';
 import type { CrownSpiral, MegastructureStorey } from './megastructures';
-import { Player, PLAYER_HEIGHT } from './player';
+import { PLAYER_HEIGHT } from './player';
 import { findStructureBlockingPoint } from './ramp-collision';
-import { Terrain } from './terrain';
+import { stepPlayer, testPlayer, testTerrain } from './test-helpers';
 import { getSurfaceTextures } from './textures';
-
-const FAST_TERRAIN = { meshes: false, decorations: false } as const;
 
 function spiralPoint(spiral: CrownSpiral, fraction: number, radialOffset: number): { x: number; y: number; z: number } {
     const angle = fraction * spiral.totalAngle * spiral.direction;
@@ -29,7 +36,7 @@ function spiralPoint(spiral: CrownSpiral, fraction: number, radialOffset: number
 
 describe('megastructures', () => {
     it('builds tall towers with full floors and ramps', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
 
         expect(structures.sites.length).toBe(6);
@@ -71,12 +78,10 @@ describe('megastructures', () => {
             const run = ramp.axis === 'x' ? ramp.maxX - ramp.minX : ramp.maxZ - ramp.minZ;
             expect(Math.abs(ramp.maxY - ramp.minY) / run).toBeLessThan(1.5);
         }
-
-        terrain.dispose();
     });
 
     it('fills the floors with differently sized rectangular glyph totems', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
 
         expect(structures.floorProps.length).toBeGreaterThan(20);
@@ -202,24 +207,20 @@ describe('megastructures', () => {
         expect(material.uniforms.uTime.value).toBe(0);
         structures.update(0.5);
         expect(material.uniforms.uTime.value).toBeCloseTo(0.5);
-
-        terrain.dispose();
     });
 
     it('builds each tower with a 1.5:1 rectangular footprint', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
 
         for (const tower of terrain.megastructures.towers) {
             const width = tower.maxX - tower.minX;
             const depth = tower.maxZ - tower.minZ;
             expect(Math.max(width, depth) / Math.min(width, depth)).toBeCloseTo(1.5, 5);
         }
-
-        terrain.dispose();
     });
 
     it('walls in all four sides of each tower', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
 
         for (const tower of terrain.megastructures.towers) {
             // Probe the first storey above the entrance, which has no doorway.
@@ -256,12 +257,10 @@ describe('megastructures', () => {
             }
             expect(hasOverhang, `tower at ${tower.minX},${tower.minZ}`).toBe(true);
         }
-
-        terrain.dispose();
     });
 
     it('carries overhanging storeys on a full floor slab', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         let overhangs = 0;
 
         for (const tower of terrain.megastructures.towers) {
@@ -296,11 +295,10 @@ describe('megastructures', () => {
         }
 
         expect(overhangs).toBeGreaterThan(0);
-        terrain.dispose();
     });
 
     it('cuts a low band of real windows into every storey above the ground floor', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
         const windows = structures.group.children.find(
             (child): child is Mesh => child instanceof Mesh && child.name === 'tower-windows',
@@ -389,18 +387,15 @@ describe('megastructures', () => {
                 expect(raycaster.intersectObject(stone!, false).some((hit) => hit.distance < 2.5)).toBe(false);
             }
         }
-
-        terrain.dispose();
     });
 
     it('moves every window sill into double-jump reach and keeps it standable', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
-        const settings = { moveSpeed: 10.5, jumpSpeed: 12, gravity: 26 };
 
         // Measure the real controller's apex so the sill height follows the game's physics.
         const peakFor = (airJumpFrame: number | null): number => {
-            const player = new Player(terrain, settings);
+            const player = testPlayer(terrain);
             const startY = player.group.position.y;
             let peak = startY;
             for (let frame = 0; frame < 180; frame++) {
@@ -432,21 +427,17 @@ describe('megastructures', () => {
                 const x = side === 2 ? storey.maxX - t + 0.2 : side === 3 ? storey.minX + t - 0.2 : along;
                 const z = side === 0 ? storey.maxZ - t + 0.2 : side === 1 ? storey.minZ + t - 0.2 : along;
 
-                const player = new Player(terrain, settings);
+                const player = testPlayer(terrain);
                 player.group.position.set(x, sillY, z);
-                for (let frame = 0; frame < 5; frame++) {
-                    player.update(1 / 60, { forward: 0, right: 0, jump: false }, 0, terrain);
-                }
+                stepPlayer(player, terrain, 5);
 
                 expect(player.group.position.y).toBeCloseTo(sillY, 2);
             }
         }
-
-        terrain.dispose();
     });
 
     it('leaves a ground-level entrance on one side of each tower', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
 
         for (const tower of terrain.megastructures.towers) {
             const centreX = (tower.minX + tower.maxX) / 2;
@@ -465,12 +456,10 @@ describe('megastructures', () => {
                 `entrance side ${tower.entranceSide}`,
             ).toBe(false);
         }
-
-        terrain.dispose();
     });
 
     it('renders generated gold and purple sign glyphs on the towers', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
 
         const signMeshes: Mesh[] = [];
@@ -522,12 +511,10 @@ describe('megastructures', () => {
         }
         expect(goldSigns).toBeGreaterThan(0);
         expect(purpleSigns).toBeGreaterThan(0);
-
-        terrain.dispose();
     });
 
     it('builds a taper and a continuous walkable spiral ramp up each crown', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
 
         // Each tower has a main cone plus the spire on its landing, and one continuous spiral.
@@ -576,19 +563,16 @@ describe('megastructures', () => {
                 }
             }
         }
-
-        terrain.dispose();
     });
 
     it('keeps the crown spiral walkway facing upward in both turn directions', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
         const stone = structures.group.children.find(
             (child): child is Mesh => child instanceof Mesh && child.name === 'tower-stone',
         );
         expect(stone).toBeInstanceOf(Mesh);
         if (!stone) {
-            terrain.dispose();
             return;
         }
         stone.updateMatrixWorld();
@@ -606,10 +590,7 @@ describe('megastructures', () => {
             const climb = 0.5;
             const angle = climb * spiral.totalAngle * spiral.direction;
             const radius =
-                spiral.baseRadius +
-                (spiral.topRadius - spiral.baseRadius) * climb +
-                spiral.width / 2 +
-                spiral.gap;
+                spiral.baseRadius + (spiral.topRadius - spiral.baseRadius) * climb + spiral.width / 2 + spiral.gap;
             const x = spiral.x + Math.cos(angle) * radius;
             const z = spiral.z + Math.sin(angle) * radius;
             const topY = spiral.baseY + spiral.height * climb;
@@ -630,17 +611,16 @@ describe('megastructures', () => {
 
         // Seed 1234 contains both a clockwise and a counter-clockwise crown.
         expect(directions).toEqual(new Set([1, -1]));
-        terrain.dispose();
     });
 
     it('walks a player up a crown spiral without falling through', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
         const spiral = structures.crownSpirals[0];
         const segments = Math.ceil((spiral.totalAngle / (Math.PI * 2)) * 24);
         const waypoints = Array.from({ length: segments + 1 }, (_, index) => spiralPoint(spiral, index / segments, 0));
 
-        const player = new Player(terrain, { moveSpeed: 5, jumpSpeed: 12, gravity: 26 });
+        const player = testPlayer(terrain, { moveSpeed: 5, jumpSpeed: 12, gravity: 26 });
         player.group.position.set(waypoints[0].x, waypoints[0].y, waypoints[0].z);
 
         let targetIndex = 1;
@@ -664,12 +644,10 @@ describe('megastructures', () => {
 
         expect(targetIndex).toBe(waypoints.length);
         expect(highest).toBeGreaterThan(spiral.baseY + spiral.height - 1);
-
-        terrain.dispose();
     });
 
     it('puts a red glowing lamp on every crown', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
         const lampMaterial = structures.materials.find(
             (material): material is MeshStandardMaterial =>
@@ -686,12 +664,10 @@ describe('megastructures', () => {
             }
         });
         expect(lampMeshes).toBe(structures.towers.length);
-
-        terrain.dispose();
     });
 
     it('marks every ground-level entrance with a pulsing glow', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
         let glowMesh: Mesh | null = null;
         structures.group.traverse((child) => {
@@ -706,12 +682,10 @@ describe('megastructures', () => {
         const initialOpacity = material.opacity;
         structures.update(0.25);
         expect(material.opacity).not.toBe(initialOpacity);
-
-        terrain.dispose();
     });
 
     it('breathes the spire glow between smaller and larger radii', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
         const glowMeshes: Mesh[] = [];
         structures.group.traverse((child) => {
@@ -733,12 +707,10 @@ describe('megastructures', () => {
 
         expect(smallest).toBeLessThan(0.8);
         expect(largest).toBeGreaterThan(1.3);
-
-        terrain.dispose();
     });
 
     it('expands a fading hollow ring after each spire glow swells', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
         const rings: Sprite[] = [];
         structures.group.traverse((child) => {
@@ -766,12 +738,10 @@ describe('megastructures', () => {
         expect(becameVisible.every(Boolean)).toBe(true);
         expect(maxScale).toBeGreaterThan(0);
         expect(minOpacity.every((opacity) => opacity < 0.05)).toBe(true);
-
-        terrain.dispose();
     });
 
     it('builds a crown above each tower', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
         const hull = structures.group.children.find(
             (child): child is Mesh => child instanceof Mesh && child.material === structures.materials[0],
@@ -783,12 +753,10 @@ describe('megastructures', () => {
         expect(bounds).not.toBeNull();
         const tallestTower = Math.max(...structures.towers.map((tower) => tower.topY));
         expect(bounds!.max.y).toBeGreaterThan(tallestTower + 50);
-
-        terrain.dispose();
     });
 
     it('keeps the player out of solid blocks', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const box = terrain.megastructures.boxes[0];
         const position = new Vector3(box.minX + 0.05, box.topY - 1, (box.minZ + box.maxZ) / 2);
 
@@ -796,12 +764,10 @@ describe('megastructures', () => {
 
         expect(collided).toBe(true);
         expect(position.x).toBeLessThanOrEqual(box.minX - 0.33);
-
-        terrain.dispose();
     });
 
     it('stops a robot jumping from below at the underside of a ledge', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
         const tower = structures.towers[0];
         // Floor slabs are thin boxes whose top face is a storey floor; walls are much thicker.
@@ -822,7 +788,7 @@ describe('megastructures', () => {
         expect(terrain.ceilingAt(x, z, slab.baseY - 0.5, 0.34)).toBeCloseTo(slab.baseY, 6);
         expect(terrain.ceilingAt(x, z, slab.baseY + 0.5, 0.34)).toBeGreaterThan(slab.baseY + 0.5);
 
-        const player = new Player(terrain, { moveSpeed: 5, jumpSpeed: 12, gravity: 26 });
+        const player = testPlayer(terrain, { moveSpeed: 5, jumpSpeed: 12, gravity: 26 });
         player.restoreSnapshot({
             x,
             y: slab.baseY - 2.4,
@@ -840,12 +806,10 @@ describe('megastructures', () => {
         }
 
         expect(highestHead).toBeLessThanOrEqual(slab.baseY + 1e-6);
-
-        terrain.dispose();
     });
 
     it('detects metal decks and tower interiors for footsteps and reverb', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
         const tower = structures.towers[0];
         const deck = structures.boxes.find(
@@ -867,12 +831,10 @@ describe('megastructures', () => {
         expect(structures.isInside(x, lastFloorY - 0.1, z)).toBe(true);
         expect(structures.isInside(x, lastFloorY, z)).toBe(false);
         expect(structures.isInside(x, tower.topY + 1, z)).toBe(false);
-
-        terrain.dispose();
     });
 
     it('flips a switch with the wrench and turns that crown blue at the strike', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
         expect(structures.switches.length).toBe(structures.crownSpirals.length);
         expect(structures.crownCatwalks.length).toBe(structures.crownSpirals.length);
@@ -956,12 +918,10 @@ describe('megastructures', () => {
             }
         });
         expect(blueLamps).toBe(1);
-
-        terrain.dispose();
     });
 
     it('covers the drained crown in a shield that starts at the spiral', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
         const spiral = structures.crownSpirals[0];
         const structureSwitch = structures.switches[0];
@@ -984,12 +944,10 @@ describe('megastructures', () => {
         expect(bottom).toBeGreaterThan(spiral.baseY - 2);
         expect(bottom).toBeLessThan(spiral.baseY + 2);
         expect(top).toBeGreaterThan(spiral.baseY + spiral.height + 20);
-
-        terrain.dispose();
     });
 
     it('dims the crown shield to half opacity in the distance', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
         const spiral = structures.crownSpirals[0];
         structures.restoreFlippedTowerIndices([structures.switches[0].towerIndex]);
@@ -1013,12 +971,10 @@ describe('megastructures', () => {
         expect(midOpacity).toBeGreaterThan(farOpacity);
         // Past 300 m the cone stays at half the nearby opacity instead of fading away.
         expect(farOpacity).toBeCloseTo(nearOpacity * 0.5, 2);
-
-        terrain.dispose();
     });
 
     it('throws a robot out of the electrified crown and respects the hit cooldown', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
         const spiral = structures.crownSpirals[0];
         structures.restoreFlippedTowerIndices([structures.switches[0].towerIndex]);
@@ -1042,31 +998,27 @@ describe('megastructures', () => {
         // One storey down the crown is out of reach even directly under it.
         structures.update(2, new Vector3(spiral.x, spiral.baseY - 5, spiral.z));
         expect(shoves).toHaveLength(2);
-
-        terrain.dispose();
     });
 
     it('gives the switch a generous, direction-free wrench reach', () => {
         // Reach is a radius around the console, not a cone in front of the player: standing beside
         // it, well outside arm's length, still throws the switch with a swing.
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const target = terrain.megastructures.switches[0];
         const beside = new Vector3(target.x + 3.8, target.y, target.z);
 
         expect(terrain.megastructures.wrenchHit(beside)).not.toBeNull();
-        terrain.dispose();
 
         // Generous, but still bounded; a swing from across the catwalk misses.
-        const farTerrain = new Terrain(1234, FAST_TERRAIN);
+        const farTerrain = testTerrain();
         const farTarget = farTerrain.megastructures.switches[0];
         const far = new Vector3(farTarget.x + 5.5, farTarget.y, farTarget.z);
 
         expect(farTerrain.megastructures.wrenchHit(far)).toBeNull();
-        farTerrain.dispose();
     });
 
     it('restores flipped switches from a save without replaying the strike', () => {
-        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const terrain = testTerrain();
         const structures = terrain.megastructures;
         expect(structures.getFlippedTowerIndices()).toEqual([]);
 
@@ -1079,9 +1031,7 @@ describe('megastructures', () => {
 
         expect(flips).toBe(0);
         expect(structures.getFlippedTowerIndices()).toEqual([restoredSwitch.towerIndex]);
-        expect(
-            structures.wrenchHit(new Vector3(restoredSwitch.x, restoredSwitch.y, restoredSwitch.z)),
-        ).toBeNull();
+        expect(structures.wrenchHit(new Vector3(restoredSwitch.x, restoredSwitch.y, restoredSwitch.z))).toBeNull();
 
         // An untouched switch still flips normally after the restore.
         const untouched = structures.switches[1];
@@ -1090,7 +1040,5 @@ describe('megastructures', () => {
         expect(structures.getFlippedTowerIndices()).toEqual(
             expect.arrayContaining([restoredSwitch.towerIndex, untouched.towerIndex]),
         );
-
-        terrain.dispose();
     });
 });

@@ -1,17 +1,7 @@
-import {
-    AdditiveBlending,
-    Box3,
-    CylinderGeometry,
-    Group,
-    Mesh,
-    MeshBasicMaterial,
-    Sprite,
-    SpriteMaterial,
-    Vector3,
-} from 'three';
+import { Box3, CylinderGeometry, Group, Mesh, MeshBasicMaterial, Sprite, SpriteMaterial, Vector3 } from 'three';
 
 import { EnemyDebris } from './enemy-debris';
-import { getRadialGlowTexture } from './glow';
+import { getRadialGlowTexture, glowMaterial, glowSpriteMaterial } from './glow';
 import { dampAngle } from './math-utils';
 import { disposeGeometry } from './mesh-optimize';
 import type { MegastructureStorey, MegastructureTower, Ramp } from './megastructures';
@@ -205,7 +195,6 @@ export interface PlayerFloorState {
     respawn: { position: Vector3; facing: number } | null;
 }
 
-
 // True while the player is on this storey's floor, the top quarter of the ramp arriving from
 // below, or the bottom quarter of the ramp leaving above. The middle half of every ramp is safe.
 export function playerInAttackZone(
@@ -274,9 +263,7 @@ export function rampFootPoint(ramp: Ramp): { position: Vector3; facing: number }
     const direction = ascendingPositive ? 1 : -1;
 
     return {
-        position: alongX
-            ? new Vector3(along, y, transverse)
-            : new Vector3(transverse, y, along),
+        position: alongX ? new Vector3(along, y, transverse) : new Vector3(transverse, y, along),
         facing: alongX ? Math.atan2(direction, 0) : Math.atan2(0, direction),
     };
 }
@@ -325,10 +312,7 @@ export function rollLaserAim(
     if (!hit && Math.abs(sideOffset) < LASER_MISS_CLEARANCE) {
         sideOffset = (sideOffset < 0 ? -1 : 1) * LASER_MISS_CLEARANCE;
     }
-    const end = target
-        .clone()
-        .addScaledVector(side, sideOffset)
-        .addScaledVector(vertical, verticalOffset);
+    const end = target.clone().addScaledVector(side, sideOffset).addScaledVector(vertical, verticalOffset);
     if (!hit) {
         end.addScaledVector(direction, LASER_MISS_OVERSHOOT);
     }
@@ -383,33 +367,18 @@ export class EnemyRobots {
         this.group.add(this.debris.group);
         this.laserCoreGeometry = new CylinderGeometry(LASER_CORE_RADIUS, LASER_CORE_RADIUS, 1, 6);
         this.laserGlowGeometry = new CylinderGeometry(LASER_GLOW_RADIUS, LASER_GLOW_RADIUS, 1, 6);
-        this.laserCoreMaterial = new MeshBasicMaterial({
+        this.laserCoreMaterial = glowMaterial({
             color: LASER_CORE_COLOR,
-            blending: AdditiveBlending,
-            transparent: true,
             opacity: 1,
-            depthWrite: false,
-            fog: false,
-            toneMapped: false,
         });
-        this.laserGlowMaterial = new MeshBasicMaterial({
+        this.laserGlowMaterial = glowMaterial({
             color: LASER_GLOW_COLOR,
-            blending: AdditiveBlending,
-            transparent: true,
             opacity: 0.3,
-            depthWrite: false,
-            fog: false,
-            toneMapped: false,
         });
-        this.laserFlashMaterial = new SpriteMaterial({
+        this.laserFlashMaterial = glowSpriteMaterial({
             map: getRadialGlowTexture(),
             color: LASER_GLOW_COLOR,
-            transparent: true,
             opacity: 0.9,
-            blending: AdditiveBlending,
-            depthWrite: false,
-            fog: false,
-            toneMapped: false,
         });
 
         const towers = terrain.megastructures.towers;
@@ -704,15 +673,7 @@ export class EnemyRobots {
         }
 
         for (const level of this.levels) {
-            if (
-                !playerInAttackZone(
-                    level.storey,
-                    level.floorY,
-                    level.previousRamp,
-                    level.nextRamp,
-                    position,
-                )
-            ) {
+            if (!playerInAttackZone(level.storey, level.floorY, level.previousRamp, level.nextRamp, position)) {
                 continue;
             }
 
@@ -764,12 +725,7 @@ export class EnemyRobots {
 
     private isOverRamp(position: Vector3): boolean {
         for (const ramp of this.terrain.megastructures.ramps ?? []) {
-            if (
-                position.x < ramp.minX ||
-                position.x > ramp.maxX ||
-                position.z < ramp.minZ ||
-                position.z > ramp.maxZ
-            ) {
+            if (position.x < ramp.minX || position.x > ramp.maxX || position.z < ramp.minZ || position.z > ramp.maxZ) {
                 continue;
             }
 

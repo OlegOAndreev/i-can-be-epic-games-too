@@ -15,17 +15,13 @@ import { MEGASTRUCTURE_LAYER } from './megastructures';
 import { CascadedSunLightShadow } from './sun-light-shadow';
 import type { ShadowPreset } from './sun-light-shadow';
 
-const SUN_SHADOW_LOOKUP =
-    'getSunShadow( sunShadowMap[ i ], sunLightShadow, UNROLLED_LOOP_INDEX )';
+const SUN_SHADOW_LOOKUP = 'getSunShadow( sunShadowMap[ i ], sunLightShadow, UNROLLED_LOOP_INDEX )';
 
 // A second, black sun renders the same cascades as the main sun without the player robot in them.
 // The robot samples this map instead of the main sun's, so it receives shadows from the world but
 // never from its own parts. The main sun still includes the robot so its cast shadow lands on the
 // ground and on nearby objects.
-export function createRobotShadowSun(
-    mainSun: SunLight,
-    preset: ShadowPreset,
-): SunLight {
+export function createRobotShadowSun(mainSun: SunLight, preset: ShadowPreset): SunLight {
     const sun = new SunLight(0x000000, 0);
     sun.name = 'robot-shadow-sun';
     sun.position.copy(mainSun.position);
@@ -56,11 +52,7 @@ export function sunShadowIndex(scene: Scene, shadowSun: SunLight): number {
     return suns.indexOf(shadowSun);
 }
 
-export function applyRobotWorldOnlyShadows(
-    root: Object3D,
-    shadowSun: SunLight,
-    shadowIndex: number,
-): void {
+export function applyRobotWorldOnlyShadows(root: Object3D, shadowSun: SunLight, shadowIndex: number): void {
     if (shadowIndex < 0) {
         throw new Error('Robot shadow sun is not part of the scene.');
     }
@@ -117,10 +109,7 @@ export function applyRobotWorldOnlyShadows(
             }
             patchedMaterials.add(material);
             material.onBeforeCompile = (shader) => {
-                shader.fragmentShader = shader.fragmentShader.replace(
-                    '#include <lights_fragment_begin>',
-                    lightsChunk,
-                );
+                shader.fragmentShader = shader.fragmentShader.replace('#include <lights_fragment_begin>', lightsChunk);
             };
             material.customProgramCacheKey = () => 'robot-world-only-sun-shadow';
         }

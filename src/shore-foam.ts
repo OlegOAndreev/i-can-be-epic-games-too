@@ -1,11 +1,4 @@
-import {
-    BufferAttribute,
-    BufferGeometry,
-    FrontSide,
-    Mesh,
-    MeshBasicMaterial,
-    Scene,
-} from 'three';
+import { BufferAttribute, BufferGeometry, FrontSide, Mesh, MeshBasicMaterial, Scene } from 'three';
 
 import { smoothstep } from './math-utils';
 import { Noise2D } from './noise';
@@ -83,11 +76,7 @@ export function foamAmountForSurfaceArea(area: number): number {
     }
 
     const size = Math.sqrt(Math.max(0, area));
-    const blend = smoothstep(
-        Math.sqrt(SMALL_POOL_AREA),
-        Math.sqrt(LARGE_WATER_AREA),
-        size,
-    );
+    const blend = smoothstep(Math.sqrt(SMALL_POOL_AREA), Math.sqrt(LARGE_WATER_AREA), size);
     return MIN_FOAM_AMOUNT + (1 - MIN_FOAM_AMOUNT) * blend;
 }
 
@@ -325,7 +314,7 @@ diffuseColor.a *= erosion * across * vFoamAmount;`,
                     // A saddle cell has four crossings. Pick the pairing that keeps the two contour
                     // pieces from crossing each other, using the bilinear centre height.
                     const centre = (h00 + h10 + h01 + h11) * 0.25;
-                    const isolateLowerLeft = (h00 > level) !== (centre > level);
+                    const isolateLowerLeft = h00 > level !== centre > level;
                     const first = isolateLowerLeft ? [0, 1, 6, 7] : [0, 1, 2, 3];
                     const second = isolateLowerLeft ? [2, 3, 4, 5] : [4, 5, 6, 7];
 
@@ -381,11 +370,7 @@ diffuseColor.a *= erosion * across * vFoamAmount;`,
     // Measure every closed contour and classify whether it wraps water or land. A shoreline around
     // an island encloses land, so its foam amount comes from the surrounding water body instead of
     // the island's own footprint.
-    private measureLoops(
-        polylines: number[][],
-        nodes: ContourNode[],
-        level: number,
-    ): ContourLoop[] {
+    private measureLoops(polylines: number[][], nodes: ContourNode[], level: number): ContourLoop[] {
         const loops = polylines.map((polyline) => this.measureLoop(polyline, nodes, level));
         const waterLoops = loops.filter((loop) => loop.enclosesWater);
 
@@ -400,11 +385,7 @@ diffuseColor.a *= erosion * across * vFoamAmount;`,
         return loops;
     }
 
-    private measureLoop(
-        polyline: number[],
-        nodes: ContourNode[],
-        level: number,
-    ): ContourLoop {
+    private measureLoop(polyline: number[], nodes: ContourNode[], level: number): ContourLoop {
         const first = nodes[polyline[0]];
         const closed = polyline.length > 3 && polyline[0] === polyline[polyline.length - 1];
         let area = Number.POSITIVE_INFINITY;
@@ -462,11 +443,7 @@ diffuseColor.a *= erosion * across * vFoamAmount;`,
     }
 
     // Smallest water loop that contains the island this land loop surrounds.
-    private enclosingWaterArea(
-        loop: ContourLoop,
-        waterLoops: ContourLoop[],
-        nodes: ContourNode[],
-    ): number {
+    private enclosingWaterArea(loop: ContourLoop, waterLoops: ContourLoop[], nodes: ContourNode[]): number {
         let parent: ContourLoop | null = null;
 
         for (const candidate of waterLoops) {
@@ -528,9 +505,7 @@ diffuseColor.a *= erosion * across * vFoamAmount;`,
                     break;
                 }
                 used[previous] = 1;
-                line.unshift(
-                    segments[previous].a === beginning ? segments[previous].b : segments[previous].a,
-                );
+                line.unshift(segments[previous].a === beginning ? segments[previous].b : segments[previous].a);
             }
 
             polylines.push(line);
@@ -613,9 +588,7 @@ diffuseColor.a *= erosion * across * vFoamAmount;`,
             normalX[i] = -tangentZ;
             normalZ[i] = tangentX;
 
-            const phase = closed
-                ? (arcs[i] / totalLength) * Math.PI * 2
-                : arcs[i] * 0.15;
+            const phase = closed ? (arcs[i] / totalLength) * Math.PI * 2 : arcs[i] * 0.15;
             const variation = closed
                 ? widthNoise.noise(Math.cos(phase) * 1.7, Math.sin(phase) * 1.7)
                 : widthNoise.noise(phase, 4.7);
@@ -624,10 +597,7 @@ diffuseColor.a *= erosion * across * vFoamAmount;`,
 
         // Probe once per contour: normals keep a consistent orientation along the polyline, so a
         // single landward sign keeps the drift coherent for the whole band.
-        const probe = this.terrain.heightAt(
-            centreX[0] + normalX[0] * 0.9,
-            centreZ[0] + normalZ[0] * 0.9,
-        );
+        const probe = this.terrain.heightAt(centreX[0] + normalX[0] * 0.9, centreZ[0] + normalZ[0] * 0.9);
         const landward = probe > level ? 1 : -1;
 
         const leftX = new Float64Array(count);
@@ -648,22 +618,13 @@ diffuseColor.a *= erosion * across * vFoamAmount;`,
             // circle in noise space so the roughness joins up at the seam.
             const roughPhase = closed ? (arcs[i] / totalLength) * Math.PI * 2 : arcs[i];
             const roughLeft = closed
-                ? widthNoise.noise(
-                      Math.cos(roughPhase) * 4.7 + 5.1,
-                      Math.sin(roughPhase) * 4.7 - 2.3,
-                  )
+                ? widthNoise.noise(Math.cos(roughPhase) * 4.7 + 5.1, Math.sin(roughPhase) * 4.7 - 2.3)
                 : widthNoise.noise(roughPhase * 0.85 + 31.7, 11.3);
             const roughRight = closed
-                ? widthNoise.noise(
-                      Math.cos(roughPhase) * 3.9 - 8.7,
-                      Math.sin(roughPhase) * 3.9 + 6.1,
-                  )
+                ? widthNoise.noise(Math.cos(roughPhase) * 3.9 - 8.7, Math.sin(roughPhase) * 3.9 + 6.1)
                 : widthNoise.noise(roughPhase * 0.72 - 17.9, 5.1);
             const meander = closed
-                ? widthNoise.noise(
-                      Math.cos(roughPhase) * 1.9 + 3.3,
-                      Math.sin(roughPhase) * 1.9 - 9.7,
-                  )
+                ? widthNoise.noise(Math.cos(roughPhase) * 1.9 + 3.3, Math.sin(roughPhase) * 1.9 - 9.7)
                 : widthNoise.noise(roughPhase * 0.19 + 7.7, 2.9);
 
             const leftWidth = Math.max(0.04, halfWidths[i] + roughLeft * baseWidth * 0.18);
@@ -695,8 +656,7 @@ diffuseColor.a *= erosion * across * vFoamAmount;`,
             // check each triangle and swap its winding when needed. Every face then points up and
             // the front-side foam disappears when the camera is underwater.
             const pushTriangle = (a: number, b: number, c: number): void => {
-                const normalY =
-                    (zs[b] - zs[a]) * (xs[c] - xs[a]) - (xs[b] - xs[a]) * (zs[c] - zs[a]);
+                const normalY = (zs[b] - zs[a]) * (xs[c] - xs[a]) - (xs[b] - xs[a]) * (zs[c] - zs[a]);
                 // Tight folds can collapse a quad edge onto itself; zero-area triangles render
                 // nothing and have no meaningful winding, so leave them out entirely.
                 if (Math.abs(normalY) < 1e-9) {
@@ -727,7 +687,7 @@ function addCrossing(
     zB: number,
     level: number,
 ): void {
-    if ((heightA < level) === (heightB < level)) {
+    if (heightA < level === heightB < level) {
         return;
     }
 
@@ -737,26 +697,17 @@ function addCrossing(
 
 // Ray-casting containment test for a closed contour. The duplicated closing node is harmless; the
 // last segment simply has zero length.
-function pointInLoop(
-    x: number,
-    z: number,
-    polyline: number[],
-    nodes: ContourNode[],
-): boolean {
+function pointInLoop(x: number, z: number, polyline: number[], nodes: ContourNode[]): boolean {
     let inside = false;
     const count = polyline.length - 1;
 
     for (let i = 0, previous = count - 1; i < count; previous = i++) {
         const a = nodes[polyline[i]];
         const b = nodes[polyline[previous]];
-        if (
-            (a.z > z) !== (b.z > z) &&
-            x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x
-        ) {
+        if (a.z > z !== b.z > z && x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x) {
             inside = !inside;
         }
     }
 
     return inside;
 }
-

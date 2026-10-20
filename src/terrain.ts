@@ -1,5 +1,4 @@
 import {
-    AdditiveBlending,
     BufferAttribute,
     BufferGeometry,
     Color,
@@ -24,22 +23,19 @@ import {
     Vector3,
 } from 'three';
 import { DecalGeometry } from 'three/addons/geometries/DecalGeometry.js';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
-import { getRadialGlowTexture } from './glow';
+import { getRadialGlowTexture, glowSpriteMaterial } from './glow';
 import { clamp, hash32, smoothstep } from './math-utils';
+import { mergeParts } from './mesh-optimize';
 import { Noise2D, mulberry32 } from './noise';
 import { Megastructures, RAMP_PARAPET_HEIGHT, RAMP_PARAPET_THICKNESS, RAMP_THICKNESS } from './megastructures';
 import type { CrownCatwalk, CrownSpiral, Ramp } from './megastructures';
+import { rampRun } from './ramp-collision';
 import { RockEffects } from './rock-effects';
 import { ROCK_COLLIDER_RADIUS_FACTOR, createRockGeometry } from './rock-shapes';
 import { SPACESHIP_CLEARING_RADIUS, Spaceship, findSpaceshipSite, shipFootprintClearance } from './spaceship';
 import type { SpaceshipSite } from './spaceship';
-import {
-    applyTerrainSurfaceShader,
-    applyWaterSurfaceShader,
-    getSurfaceTextures,
-} from './textures';
+import { applyTerrainSurfaceShader, applyWaterSurfaceShader, getSurfaceTextures } from './textures';
 import type { WaterAnimation } from './textures';
 
 export const WATER_LEVEL = 0;
@@ -275,9 +271,7 @@ export class Terrain {
     // Called after a dropped fuel mineral is picked up, with the number gathered so far.
     onMineralCollected: ((collected: number) => void) | null = null;
     // Called when a boulder or spire is removed so its baked shadow can be re-rendered.
-    onBoulderDestroyed:
-        | ((x: number, y: number, z: number, radius: number) => void)
-        | null = null;
+    onBoulderDestroyed: ((x: number, y: number, z: number, radius: number) => void) | null = null;
 
     private noise: Noise2D;
     private readonly sandCornerX: number;
@@ -345,12 +339,7 @@ export class Terrain {
         this.startPoints = this.findStartPoints(scenicSpawn, this.spaceshipSite);
         this.spawn = this.lowestStartPoint(this.startPoints);
         this.spawnFacing = this.startFacing(this.spawn, this.startPoints);
-        this.megastructures = new Megastructures(
-            seed,
-            (x, z) => this.heightAt(x, z),
-            this.spawn,
-            WORLD_HALF_SIZE,
-        );
+        this.megastructures = new Megastructures(seed, (x, z) => this.heightAt(x, z), this.spawn, WORLD_HALF_SIZE);
         this.group.add(this.megastructures.group);
         this.disposables.push(...this.megastructures.materials);
         this.spaceship = new Spaceship(this.spaceshipSite, (x, z) => this.heightAt(x, z));
@@ -388,40 +377,20 @@ export class Terrain {
         const broad = noise.fbm(warpedX * 0.001 + 12.3, warpedZ * 0.001 - 7.1, 5);
         const rolling = noise.fbm(x * 0.0052 + 37.5, z * 0.0052 - 82.1, 4);
         const ridgeDetail =
-            Math.pow(
-                1 - Math.abs(noise.fbm(x * 0.009 - 53.6, z * 0.009 + 27.3, 4)),
-                1.3,
-            ) - RIDGE_DETAIL_MEAN;
+            Math.pow(1 - Math.abs(noise.fbm(x * 0.009 - 53.6, z * 0.009 + 27.3, 4)), 1.3) - RIDGE_DETAIL_MEAN;
         const hills = noise.fbm(x * 0.0046 - 4.7, z * 0.0046 + 8.9, 3);
 
-        const mountainMask = smoothstep(
-            0.08,
-            0.6,
-            noise.fbm(warpedX * 0.00055 + 90.1, warpedZ * 0.00055 - 40.7, 3),
-        );
+        const mountainMask = smoothstep(0.08, 0.6, noise.fbm(warpedX * 0.00055 + 90.1, warpedZ * 0.00055 - 40.7, 3));
         const ridge = 1 - Math.abs(noise.fbm(warpedX * 0.0018 - 21.5, warpedZ * 0.0018 + 33.8, 5));
-        const peakMask = smoothstep(
-            0.05,
-            0.75,
-            noise.fbm(warpedX * 0.00035 + 200.2, warpedZ * 0.00035 - 90.1, 2),
-        );
+        const peakMask = smoothstep(0.05, 0.75, noise.fbm(warpedX * 0.00035 + 200.2, warpedZ * 0.00035 - 90.1, 2));
         const mountains = Math.pow(ridge, 2.5) * (45 + 115 * peakMask) * mountainMask;
 
         const sand = this.sandField(x, z);
         const dunes = noise.fbm(x * 0.013 - 17.2, z * 0.013 + 44.8, 3);
-        const basins = smoothstep(
-            0.45,
-            0.75,
-            noise.fbm(x * 0.0013 - 211.4, z * 0.0013 + 147.2, 3) * 0.5 + 0.5,
-        );
+        const basins = smoothstep(0.45, 0.75, noise.fbm(x * 0.0013 - 211.4, z * 0.0013 + 147.2, 3) * 0.5 + 0.5);
 
-        const lowland =
-            LOWLAND_BASE + broad * 33 * (1 - sand * 0.35) - basins * 24 * (1 - mountainMask);
-        const sandFlats =
-            sand *
-            (1 - smoothstep(22, 58, lowland)) *
-            (1 - mountainMask * 0.7) *
-            (1 - basins * 0.85);
+        const lowland = LOWLAND_BASE + broad * 33 * (1 - sand * 0.35) - basins * 24 * (1 - mountainMask);
+        const sandFlats = sand * (1 - smoothstep(22, 58, lowland)) * (1 - mountainMask * 0.7) * (1 - basins * 0.85);
         const duneShaping = sandFlats * (dunes * 9 - 2) * DUNE_PROMINENCE;
         const relief = rolling * 40 * (1 - sand * 0.45) + ridgeDetail * 20 * (1 - sand * 0.55);
 
@@ -464,13 +433,7 @@ export class Terrain {
 
     // Surface color from an already-sampled height and normal. The map overlay reuses the height
     // grid it needs for hillshading instead of resampling the terrain for every pixel.
-    biomeColorAt(
-        x: number,
-        z: number,
-        height: number,
-        normalY: number,
-        target = new Color(),
-    ): Color {
+    biomeColorAt(x: number, z: number, height: number, normalY: number, target = new Color()): Color {
         this.vertexColor(x, z, height, normalY, target);
         return target;
     }
@@ -563,12 +526,7 @@ export class Terrain {
             if (box.baseY + 1e-4 < headY) {
                 continue;
             }
-            if (
-                x < box.minX - radius ||
-                x > box.maxX + radius ||
-                z < box.minZ - radius ||
-                z > box.maxZ + radius
-            ) {
+            if (x < box.minX - radius || x > box.maxX + radius || z < box.minZ - radius || z > box.maxZ + radius) {
                 continue;
             }
             ceiling = Math.min(ceiling, box.baseY);
@@ -615,19 +573,14 @@ export class Terrain {
     private rampStepHeight(position: Vector3, radius: number): number {
         let stepHeight = 0;
         for (const ramp of this.megastructures.ramps) {
-            if (
-                position.x < ramp.minX ||
-                position.x > ramp.maxX ||
-                position.z < ramp.minZ ||
-                position.z > ramp.maxZ
-            ) {
+            if (position.x < ramp.minX || position.x > ramp.maxX || position.z < ramp.minZ || position.z > ramp.maxZ) {
                 continue;
             }
             const rampY = this.rampHeightAt(ramp, position.x, position.z);
             if (Math.abs(position.y - rampY) > 0.5) {
                 continue;
             }
-            const run = ramp.axis === 'x' ? ramp.maxX - ramp.minX : ramp.maxZ - ramp.minZ;
+            const run = rampRun(ramp);
             const slope = Math.abs(ramp.maxY - ramp.minY) / Math.max(run, 0.001);
             stepHeight = Math.max(stepHeight, slope * radius);
         }
@@ -635,7 +588,7 @@ export class Terrain {
     }
 
     private rampHeightAt(ramp: Ramp, x: number, z: number): number {
-        const run = ramp.axis === 'x' ? ramp.maxX - ramp.minX : ramp.maxZ - ramp.minZ;
+        const run = rampRun(ramp);
         if (!(run > 1e-6)) {
             // A degenerate ramp has no slope; use its low edge instead of dividing by zero.
             return ramp.minY;
@@ -714,12 +667,7 @@ export class Terrain {
     // radius of the ribbon's centreline. The ribbon is continuous, so there are no joint gaps.
     // Fills the shared scratch list and returns how many entries are valid. The caller consumes
     // them immediately; reusing the list keeps the player, camera, and animal queries allocation-free.
-    private crownSpiralSurfaces(
-        spiral: CrownSpiral,
-        x: number,
-        z: number,
-        margin: number,
-    ): number {
+    private crownSpiralSurfaces(spiral: CrownSpiral, x: number, z: number, margin: number): number {
         this.crownSurfaceCount = 0;
         const dx = x - spiral.x;
         const dz = z - spiral.z;
@@ -729,15 +677,10 @@ export class Terrain {
         }
 
         const halfWidth = spiral.width / 2 + margin;
-        const minCenterRadius =
-            Math.min(spiral.baseRadius, spiral.topRadius) + spiral.width / 2 + spiral.gap;
-        const maxCenterRadius =
-            Math.max(spiral.baseRadius, spiral.topRadius) + spiral.width / 2 + spiral.gap;
+        const minCenterRadius = Math.min(spiral.baseRadius, spiral.topRadius) + spiral.width / 2 + spiral.gap;
+        const maxCenterRadius = Math.max(spiral.baseRadius, spiral.topRadius) + spiral.width / 2 + spiral.gap;
         // Most queries are far outside the ribbon's ring, so reject before the per-turn loop.
-        if (
-            pointRadius < minCenterRadius - halfWidth - 1e-6 ||
-            pointRadius > maxCenterRadius + halfWidth + 1e-6
-        ) {
+        if (pointRadius < minCenterRadius - halfWidth - 1e-6 || pointRadius > maxCenterRadius + halfWidth + 1e-6) {
             return 0;
         }
 
@@ -747,10 +690,7 @@ export class Terrain {
         for (let s = angle; s <= spiral.totalAngle + 1e-9; s += Math.PI * 2) {
             const climb = s / spiral.totalAngle;
             const centerRadius =
-                spiral.baseRadius +
-                (spiral.topRadius - spiral.baseRadius) * climb +
-                spiral.width / 2 +
-                spiral.gap;
+                spiral.baseRadius + (spiral.topRadius - spiral.baseRadius) * climb + spiral.width / 2 + spiral.gap;
             if (Math.abs(pointRadius - centerRadius) <= halfWidth + 1e-6) {
                 let surface = this.crownSurfaceScratch[this.crownSurfaceCount];
                 if (!surface) {
@@ -780,12 +720,7 @@ export class Terrain {
         }
 
         for (const box of this.megastructures.boxes) {
-            if (
-                x < box.minX - radius ||
-                x > box.maxX + radius ||
-                z < box.minZ - radius ||
-                z > box.maxZ + radius
-            ) {
+            if (x < box.minX - radius || x > box.maxX + radius || z < box.minZ - radius || z > box.maxZ + radius) {
                 continue;
             }
             if (y > box.baseY - radius && y < box.topY + radius) {
@@ -793,12 +728,7 @@ export class Terrain {
             }
         }
         for (const ramp of this.megastructures.ramps) {
-            if (
-                x < ramp.minX - radius ||
-                x > ramp.maxX + radius ||
-                z < ramp.minZ - radius ||
-                z > ramp.maxZ + radius
-            ) {
+            if (x < ramp.minX - radius || x > ramp.maxX + radius || z < ramp.minZ - radius || z > ramp.maxZ + radius) {
                 continue;
             }
             const rampY = this.rampHeightAt(ramp, x, z);
@@ -811,10 +741,7 @@ export class Terrain {
             const count = this.crownSpiralSurfaces(spiral, x, z, radius);
             for (let i = 0; i < count; i++) {
                 const crownSurface = this.crownSurfaceScratch[i];
-                if (
-                    y > crownSurface.y - spiral.thickness - radius &&
-                    y < crownSurface.y + radius
-                ) {
+                if (y > crownSurface.y - spiral.thickness - radius && y < crownSurface.y + radius) {
                     return true;
                 }
 
@@ -823,8 +750,7 @@ export class Terrain {
                 if (
                     y > crownSurface.y - 0.1 &&
                     y < crownSurface.y + spiral.parapetHeight + 0.05 + radius &&
-                    Math.abs(pointRadius - wallCentre) <=
-                        spiral.parapetThickness / 2 + radius
+                    Math.abs(pointRadius - wallCentre) <= spiral.parapetThickness / 2 + radius
                 ) {
                     return true;
                 }
@@ -842,8 +768,7 @@ export class Terrain {
                 if (
                     y > catwalk.y - 0.1 &&
                     y < catwalk.y + catwalk.parapetHeight + 0.05 + radius &&
-                    Math.abs(Math.abs(local.across) - railDistance) <=
-                        catwalk.parapetThickness / 2 + radius
+                    Math.abs(Math.abs(local.across) - railDistance) <= catwalk.parapetThickness / 2 + radius
                 ) {
                     return true;
                 }
@@ -918,10 +843,7 @@ export class Terrain {
         }
         for (const spiral of structures.crownSpirals) {
             const reach =
-                Math.max(spiral.baseRadius, spiral.topRadius) +
-                spiral.width +
-                spiral.gap +
-                spiral.parapetThickness;
+                Math.max(spiral.baseRadius, spiral.topRadius) + spiral.width + spiral.gap + spiral.parapetThickness;
             expand(
                 spiral.x,
                 spiral.z,
@@ -931,8 +853,7 @@ export class Terrain {
             );
         }
         for (const catwalk of structures.crownCatwalks) {
-            const reach =
-                catwalk.length + catwalk.ledgeLength + Math.max(catwalk.width, catwalk.ledgeWidth) / 2;
+            const reach = catwalk.length + catwalk.ledgeLength + Math.max(catwalk.width, catwalk.ledgeWidth) / 2;
             expand(
                 catwalk.x,
                 catwalk.z,
@@ -942,13 +863,7 @@ export class Terrain {
             );
         }
         for (const cone of structures.crownCones) {
-            expand(
-                cone.x,
-                cone.z,
-                Math.max(cone.baseRadius, cone.topRadius),
-                cone.baseY - 0.1,
-                cone.topY + 0.05,
-            );
+            expand(cone.x, cone.z, Math.max(cone.baseRadius, cone.topRadius), cone.baseY - 0.1, cone.topY + 0.05);
         }
         for (const platform of structures.crownPlatforms) {
             expand(platform.x, platform.z, platform.radius, platform.topY - 0.3, platform.topY + 0.05);
@@ -1072,10 +987,7 @@ export class Terrain {
                     continue;
                 }
 
-                const t = Math.min(
-                    1,
-                    Math.max(0, (position.y - cone.baseY) / (cone.topY - cone.baseY)),
-                );
+                const t = Math.min(1, Math.max(0, (position.y - cone.baseY) / (cone.topY - cone.baseY)));
                 const coneRadius = cone.baseRadius + (cone.topRadius - cone.baseRadius) * t;
                 if (!pushOutOfCircle(position, cone.x, cone.z, radius + coneRadius)) {
                     continue;
@@ -1229,12 +1141,7 @@ export class Terrain {
         return candidates;
     }
 
-    private pushOutOfCollider(
-        position: Vector3,
-        radius: number,
-        headY: number,
-        collider: CylinderCollider,
-    ): boolean {
+    private pushOutOfCollider(position: Vector3, radius: number, headY: number, collider: CylinderCollider): boolean {
         if (headY < collider.base || position.y + 0.25 > collider.top) {
             return false;
         }
@@ -1250,12 +1157,7 @@ export class Terrain {
         };
     }
 
-    private isOnCrownCatwalk(
-        catwalk: CrownCatwalk,
-        x: number,
-        z: number,
-        margin = 0,
-    ): boolean {
+    private isOnCrownCatwalk(catwalk: CrownCatwalk, x: number, z: number, margin = 0): boolean {
         const local = this.crownCatwalkLocal(catwalk, x, z);
         const inWalkway =
             local.along >= -margin &&
@@ -1308,10 +1210,7 @@ export class Terrain {
     // Only the instance buffers are rewritten, and only after the player has moved far enough for
     // the set of near trees to change. Trees beyond the fog distance are simply omitted.
     updateTreeLod(x: number, z: number, force = false): void {
-        if (
-            !force &&
-            Math.hypot(x - this.treeLodX, z - this.treeLodZ) < TREE_LOD_REFRESH_DISTANCE
-        ) {
+        if (!force && Math.hypot(x - this.treeLodX, z - this.treeLodZ) < TREE_LOD_REFRESH_DISTANCE) {
             return;
         }
         this.treeLodX = x;
@@ -1460,18 +1359,13 @@ export class Terrain {
             const awayZ = centreDistance > 1e-4 ? dz / centreDistance : 1;
             const impact = new Vector3(
                 boulder.x - awayX * boulder.radius * 0.7,
-                Math.max(
-                    boulder.base + 0.3,
-                    Math.min(boulder.top - 0.1, playerPosition.y + 0.9),
-                ),
+                Math.max(boulder.base + 0.3, Math.min(boulder.top - 0.1, playerPosition.y + 0.9)),
                 boulder.z - awayZ * boulder.radius * 0.7,
             );
 
             this.rockEffects.spark(impact.x, impact.y, impact.z, boulder.base);
 
-            const shatterHits = boulder.emerald
-                ? ROCK_EMERALD_SHATTER_HITS
-                : ROCK_SHATTER_HITS;
+            const shatterHits = boulder.emerald ? ROCK_EMERALD_SHATTER_HITS : ROCK_SHATTER_HITS;
             if (boulder.hits >= shatterHits) {
                 this.shatterBoulder(boulder);
             } else if (boulder.hits >= ROCK_LARGE_DENT_HITS) {
@@ -1496,13 +1390,7 @@ export class Terrain {
 
     // Projects the crater texture onto the side of the boulder facing the player. The rock
     // geometry never changes, so the instanced boulder stays in place and only gains a decal.
-    private dentBoulder(
-        boulder: Boulder,
-        large: boolean,
-        sideX: number,
-        sideZ: number,
-        impactY: number,
-    ): void {
+    private dentBoulder(boulder: Boulder, large: boolean, sideX: number, sideZ: number, impactY: number): void {
         if (boulder.dentMesh) {
             this.group.remove(boulder.dentMesh);
             boulder.dentMesh.geometry.dispose();
@@ -1535,12 +1423,7 @@ export class Terrain {
             impactY,
             boulder.z + direction.z * (boulder.radius + 4),
         );
-        const raycaster = new Raycaster(
-            rayOrigin,
-            direction.clone().negate(),
-            0,
-            boulder.radius * 2 + 6,
-        );
+        const raycaster = new Raycaster(rayOrigin, direction.clone().negate(), 0, boulder.radius * 2 + 6);
         const intersections = raycaster.intersectObject(target, false);
         const surface =
             intersections.length > 0
@@ -1551,17 +1434,12 @@ export class Terrain {
                       boulder.z + direction.z * boulder.radius * 0.8,
                   );
 
-        const diameter =
-            (large ? ROCK_LARGE_DENT_SIZE : ROCK_SMALL_DENT_SIZE) * boulder.radius;
+        const diameter = (large ? ROCK_LARGE_DENT_SIZE : ROCK_SMALL_DENT_SIZE) * boulder.radius;
         const projectorPosition = surface.addScaledVector(direction, 0.05);
         const orientation = new Euler().setFromQuaternion(
             new Quaternion().setFromUnitVectors(new Vector3(0, 0, 1), direction),
         );
-        const size = new Vector3(
-            diameter,
-            diameter,
-            ROCK_DENT_DEPTH * boulder.radius,
-        );
+        const size = new Vector3(diameter, diameter, ROCK_DENT_DEPTH * boulder.radius);
 
         const geometry = new DecalGeometry(target, projectorPosition, orientation, size);
         // Lift the decal a hair off the surface so it cannot z-fight with the boulder.
@@ -1615,14 +1493,7 @@ export class Terrain {
             Math.max(boulder.radius, boulder.top - boulder.base),
         );
 
-        this.rockEffects.shatter(
-            boulder.x,
-            boulder.y,
-            boulder.z,
-            boulder.scaleX,
-            boulder.scaleY,
-            boulder.scaleZ,
-        );
+        this.rockEffects.shatter(boulder.x, boulder.y, boulder.z, boulder.scaleX, boulder.scaleY, boulder.scaleZ);
 
         if (boulder.emerald && this.mineralsCollectedCount < MINERAL_GOAL) {
             this.dropMineral(boulder);
@@ -1645,11 +1516,7 @@ export class Terrain {
             boulder.top - 0.2,
             boulder.z + (Math.random() - 0.5) * boulder.radius * 0.6,
         );
-        mesh.rotation.set(
-            Math.random() * Math.PI * 2,
-            Math.random() * Math.PI * 2,
-            Math.random() * Math.PI * 2,
-        );
+        mesh.rotation.set(Math.random() * Math.PI * 2, Math.random() * Math.PI * 2, Math.random() * Math.PI * 2);
         this.group.add(mesh);
         if (this.mineralHaloMaterial) {
             const halo = new Sprite(this.mineralHaloMaterial);
@@ -1659,11 +1526,7 @@ export class Terrain {
         }
         this.mineralDrops.push({
             mesh,
-            velocity: new Vector3(
-                (Math.random() - 0.5) * 2.4,
-                2.6 + Math.random() * 1.4,
-                (Math.random() - 0.5) * 2.4,
-            ),
+            velocity: new Vector3((Math.random() - 0.5) * 2.4, 2.6 + Math.random() * 1.4, (Math.random() - 0.5) * 2.4),
             spin: 1.4 + Math.random() * 2.4,
             restY: 0,
             age: 0,
@@ -1681,18 +1544,14 @@ export class Terrain {
                 drop.velocity.y -= MINERAL_GRAVITY * dt;
                 drop.mesh.position.addScaledVector(drop.velocity, dt);
                 const surface = this.heightAt(drop.mesh.position.x, drop.mesh.position.z);
-                if (
-                    drop.velocity.y < 0 &&
-                    drop.mesh.position.y <= surface + MINERAL_REST_HEIGHT
-                ) {
+                if (drop.velocity.y < 0 && drop.mesh.position.y <= surface + MINERAL_REST_HEIGHT) {
                     drop.mesh.position.y = surface + MINERAL_REST_HEIGHT;
                     drop.restY = drop.mesh.position.y;
                     drop.velocity.set(0, 0, 0);
                     drop.resting = true;
                 }
             } else {
-                drop.mesh.position.y =
-                    drop.restY + Math.sin(drop.age * MINERAL_BOB_SPEED) * MINERAL_BOB_HEIGHT;
+                drop.mesh.position.y = drop.restY + Math.sin(drop.age * MINERAL_BOB_SPEED) * MINERAL_BOB_HEIGHT;
             }
 
             if (drop.age < MINERAL_PICKUP_DELAY) {
@@ -1710,10 +1569,7 @@ export class Terrain {
 
             this.group.remove(drop.mesh);
             this.mineralDrops.splice(index, 1);
-            this.mineralsCollectedCount = Math.min(
-                MINERAL_GOAL,
-                this.mineralsCollectedCount + 1,
-            );
+            this.mineralsCollectedCount = Math.min(MINERAL_GOAL, this.mineralsCollectedCount + 1);
             this.onMineralCollected?.(this.mineralsCollectedCount);
         }
     }
@@ -1766,11 +1622,7 @@ export class Terrain {
         const dz = z - this.sandCornerZ;
         const distance = Math.sqrt(dx * dx + dz * dz);
         const wobble = this.noise.fbm(x * 0.004 + 11.7, z * 0.004 - 31.3, 2) * SAND_CORNER_WOBBLE;
-        return 1 - smoothstep(
-            SAND_CORNER_INNER_RADIUS,
-            SAND_CORNER_OUTER_RADIUS,
-            distance + wobble,
-        );
+        return 1 - smoothstep(SAND_CORNER_INNER_RADIUS, SAND_CORNER_OUTER_RADIUS, distance + wobble);
     }
 
     private forestField(x: number, z: number): number {
@@ -1891,14 +1743,7 @@ export class Terrain {
         }
     }
 
-    private vertexColor(
-        x: number,
-        z: number,
-        height: number,
-        normalY: number,
-        target: Color,
-        splat?: Vector3,
-    ): void {
+    private vertexColor(x: number, z: number, height: number, normalY: number, target: Color, splat?: Vector3): void {
         const variation = this.noise.fbm(x * 0.03, z * 0.03, 2) * 0.5 + 0.5;
         const moisture = this.forestField(x, z);
         const desert = this.desertField(x, z);
@@ -2059,8 +1904,7 @@ export class Terrain {
                     const centreZ = spawn.z + Math.sin(centreAngle) * offset;
 
                     for (let step = 0; step < START_SQUARE_ORIENTATION_STEPS; step++) {
-                        const orientation =
-                            facing + (step / START_SQUARE_ORIENTATION_STEPS) * (Math.PI / 2);
+                        const orientation = facing + (step / START_SQUARE_ORIENTATION_STEPS) * (Math.PI / 2);
                         const points = [45, 135, 225, 315].map((degrees) => {
                             const angle = orientation + (degrees * Math.PI) / 180;
                             return {
@@ -2073,27 +1917,17 @@ export class Terrain {
                         let clearance = Infinity;
                         for (const point of points) {
                             if (
-                                this.heightAt(point.x, point.z) >
-                                    WATER_LEVEL + START_SQUARE_MIN_DRY_HEIGHT &&
+                                this.heightAt(point.x, point.z) > WATER_LEVEL + START_SQUARE_MIN_DRY_HEIGHT &&
                                 this.slopeAt(point.x, point.z) < START_SQUARE_MAX_SLOPE
                             ) {
                                 valid++;
                             }
-                            clearance = Math.min(
-                                clearance,
-                                shipFootprintClearance(shipSite, point.x, point.z),
-                            );
+                            clearance = Math.min(clearance, shipFootprintClearance(shipSite, point.x, point.z));
                         }
 
-                        if (
-                            valid === points.length &&
-                            clearance > START_SQUARE_SHIP_CLEARANCE
-                        ) {
+                        if (valid === points.length && clearance > START_SQUARE_SHIP_CLEARANCE) {
                             const player = points.reduce((lowest, point) =>
-                                this.heightAt(point.x, point.z) <
-                                this.heightAt(lowest.x, lowest.z)
-                                    ? point
-                                    : lowest,
+                                this.heightAt(point.x, point.z) < this.heightAt(lowest.x, lowest.z) ? point : lowest,
                             );
                             if (
                                 Math.hypot(player.x - shipSite.x, player.z - shipSite.z) <
@@ -2104,11 +1938,7 @@ export class Terrain {
                             }
                         }
 
-                        if (
-                            !best ||
-                            valid > best.valid ||
-                            (valid === best.valid && clearance > best.clearance)
-                        ) {
+                        if (!best || valid > best.valid || (valid === best.valid && clearance > best.clearance)) {
                             best = { points, valid, clearance };
                         }
                     }
@@ -2270,10 +2100,7 @@ export class Terrain {
                 const angle = awayAngle + (index / EMERALD_CRASH_SITE_SAMPLES) * Math.PI * 2;
                 const x = site.x + Math.cos(angle) * distance;
                 const z = site.z + Math.sin(angle) * distance;
-                if (
-                    Math.abs(x) > WORLD_HALF_SIZE - 24 ||
-                    Math.abs(z) > WORLD_HALF_SIZE - 24
-                ) {
+                if (Math.abs(x) > WORLD_HALF_SIZE - 24 || Math.abs(z) > WORLD_HALF_SIZE - 24) {
                     continue;
                 }
 
@@ -2306,20 +2133,13 @@ export class Terrain {
         for (let ring = EMERALD_CRASH_SITE_RINGS; ring < EMERALD_CRASH_SITE_RINGS * 2; ring++) {
             const distance = EMERALD_CRASH_SITE_MIN_DISTANCE + ring * EMERALD_CRASH_SITE_RING_STEP;
             for (let index = 0; index < EMERALD_CRASH_SITE_SAMPLES * 2; index++) {
-                const angle =
-                    awayAngle + (index / (EMERALD_CRASH_SITE_SAMPLES * 2)) * Math.PI * 2;
+                const angle = awayAngle + (index / (EMERALD_CRASH_SITE_SAMPLES * 2)) * Math.PI * 2;
                 const x = site.x + Math.cos(angle) * distance;
                 const z = site.z + Math.sin(angle) * distance;
-                if (
-                    Math.abs(x) > WORLD_HALF_SIZE - 24 ||
-                    Math.abs(z) > WORLD_HALF_SIZE - 24
-                ) {
+                if (Math.abs(x) > WORLD_HALF_SIZE - 24 || Math.abs(z) > WORLD_HALF_SIZE - 24) {
                     continue;
                 }
-                if (
-                    this.heightAt(x, z) >= 0.2 &&
-                    this.isScatterPositionClear(x, z, 8, 4)
-                ) {
+                if (this.heightAt(x, z) >= 0.2 && this.isScatterPositionClear(x, z, 8, 4)) {
                     return { x, z };
                 }
             }
@@ -2331,12 +2151,7 @@ export class Terrain {
     }
 
     // Rejects scattered decoration positions too close to the spawn, the ship, or a megastructure.
-    private isScatterPositionClear(
-        x: number,
-        z: number,
-        spawnDistance: number,
-        structureMargin: number,
-    ): boolean {
+    private isScatterPositionClear(x: number, z: number, spawnDistance: number, structureMargin: number): boolean {
         if (Math.hypot(x - this.spawn.x, z - this.spawn.z) < spawnDistance) {
             return false;
         }
@@ -2367,10 +2182,7 @@ export class Terrain {
                         continue;
                     }
                     for (const point of bucket) {
-                        if (
-                            Math.hypot(x - point.x, z - point.z) <
-                            radius + point.radius + SCATTER_SPACING_MARGIN
-                        ) {
+                        if (Math.hypot(x - point.x, z - point.z) < radius + point.radius + SCATTER_SPACING_MARGIN) {
                             return false;
                         }
                     }
@@ -2391,20 +2203,10 @@ export class Terrain {
         const treeShapes = DEAD_TREE_SEEDS.map((seed) => createDeadTreeShape(seed));
         const lowTreeShapes = DEAD_TREE_SEEDS.map((seed) => createDeadTreeShape(seed, 'low'));
         const leafHighGeometries = treeShapes.map((shape, index) =>
-            createLeafCanopy(
-                DEAD_TREE_SEEDS[index],
-                shape.leafAnchors,
-                'high',
-                LEAF_STYLES[index],
-            ),
+            createLeafCanopy(DEAD_TREE_SEEDS[index], shape.leafAnchors, 'high', LEAF_STYLES[index]),
         );
         const leafLowGeometries = treeShapes.map((shape, index) =>
-            createLeafCanopy(
-                DEAD_TREE_SEEDS[index],
-                shape.leafAnchors,
-                'low',
-                LEAF_STYLES[index],
-            ),
+            createLeafCanopy(DEAD_TREE_SEEDS[index], shape.leafAnchors, 'low', LEAF_STYLES[index]),
         );
         const treeMaterial = new MeshStandardMaterial({ color: 0xffffff, roughness: 1, flatShading: true });
         const leafMaterial = new MeshStandardMaterial({
@@ -2519,12 +2321,7 @@ export class Terrain {
             return mesh;
         });
         this.treeLowCells = lowTreeShapes.map((shape, index) =>
-            this.createTreeCells(
-                treeInstances[index],
-                shape.geometry,
-                treeMaterial,
-                `dead-tree-low-${index}`,
-            ),
+            this.createTreeCells(treeInstances[index], shape.geometry, treeMaterial, `dead-tree-low-${index}`),
         );
         this.leafHighMeshes = leafInstances.map((instances, index) => {
             if (instances.length === 0) {
@@ -2549,9 +2346,7 @@ export class Terrain {
         // Boulders and spires use several independently deformed rock meshes so neighbouring rocks
         // keep different silhouettes instead of repeating one shape. Pebbles keep the cheap
         // 20-face shape.
-        const boulderGeometries = Array.from({ length: BOULDER_VARIANTS }, (_, variant) =>
-            createRockGeometry(variant),
-        );
+        const boulderGeometries = Array.from({ length: BOULDER_VARIANTS }, (_, variant) => createRockGeometry(variant));
         const rockGeometry = new IcosahedronGeometry(1, 0);
         this.boulderGeometries = boulderGeometries;
         const rockMaterial = new MeshStandardMaterial({ color: 0xffffff, roughness: 0.97, flatShading: true });
@@ -2583,14 +2378,11 @@ export class Terrain {
         });
         this.mineralGeometry = mineralGeometry;
         this.mineralMaterial = mineralMaterial;
-        const mineralHaloMaterial = new SpriteMaterial({
+        const mineralHaloMaterial = glowSpriteMaterial({
             map: getRadialGlowTexture(),
             color: 0x5cffa6,
-            transparent: true,
             opacity: 0.22,
-            blending: AdditiveBlending,
-            depthWrite: false,
-            toneMapped: false,
+            fog: true,
         });
         this.mineralHaloMaterial = mineralHaloMaterial;
         const rockDentMaterial = new MeshStandardMaterial({
@@ -2620,20 +2412,14 @@ export class Terrain {
         const boulderInstances = boulderGeometries.map(() => [] as DecorationInstance[]);
         const emeraldBoulderInstances = boulderGeometries.map(() => [] as DecorationInstance[]);
         const smallBoulderInstances = boulderGeometries.map(() => [] as DecorationInstance[]);
-        const smallEmeraldBoulderInstances = boulderGeometries.map(
-            () => [] as DecorationInstance[],
-        );
+        const smallEmeraldBoulderInstances = boulderGeometries.map(() => [] as DecorationInstance[]);
         const guaranteedEmeraldSite = this.findEmeraldBoulderSite();
         let guaranteedPlaced = false;
         let boulderCount = 0;
         for (let attempt = 0; attempt < 6200 && boulderCount < MAX_BOULDERS; attempt++) {
             const forcedEmerald = !guaranteedPlaced;
-            const x = forcedEmerald
-                ? guaranteedEmeraldSite.x
-                : (rng() - 0.5) * 2 * (WORLD_HALF_SIZE - 24);
-            const z = forcedEmerald
-                ? guaranteedEmeraldSite.z
-                : (rng() - 0.5) * 2 * (WORLD_HALF_SIZE - 24);
+            const x = forcedEmerald ? guaranteedEmeraldSite.x : (rng() - 0.5) * 2 * (WORLD_HALF_SIZE - 24);
+            const z = forcedEmerald ? guaranteedEmeraldSite.z : (rng() - 0.5) * 2 * (WORLD_HALF_SIZE - 24);
             const height = this.heightAt(x, z);
 
             if (!forcedEmerald) {
@@ -2646,10 +2432,7 @@ export class Terrain {
 
                 const rock = this.rockField(x, z);
                 const desert = this.desertField(x, z);
-                const density = Math.min(
-                    1,
-                    0.1 + rock * 0.85 + smoothstep(50, 120, height) * 0.35 + desert * 0.08,
-                );
+                const density = Math.min(1, 0.1 + rock * 0.85 + smoothstep(50, 120, height) * 0.35 + desert * 0.08);
                 if (rng() > density) {
                     continue;
                 }
@@ -2657,9 +2440,7 @@ export class Terrain {
 
             // The guaranteed boulder is deliberately large so its seam is easy to spot near the
             // crash site.
-            const scale = forcedEmerald
-                ? 1.7 + rng() * 0.6
-                : 0.35 + Math.pow(rng(), 2.2) * 2.8;
+            const scale = forcedEmerald ? 1.7 + rng() * 0.6 : 0.35 + Math.pow(rng(), 2.2) * 2.8;
             const scaleX = scale * (0.78 + rng() * 0.44);
             const scaleY = scale * (0.65 + rng() * 0.65);
             const scaleZ = scale * (0.78 + rng() * 0.44);
@@ -2671,8 +2452,7 @@ export class Terrain {
 
             // Cover the deformed silhouette, not the undeformed unit sphere. The broadphase stays
             // a cheap cylinder; only its radius grows to match the visible rock.
-            const colliderRadius =
-                Math.max(scaleX, scaleZ, scaleY * 0.35) * ROCK_COLLIDER_RADIUS_FACTOR;
+            const colliderRadius = Math.max(scaleX, scaleZ, scaleY * 0.35) * ROCK_COLLIDER_RADIUS_FACTOR;
             const scatterRadius = Math.max(1, colliderRadius);
             if (!forcedEmerald && !isScatterSpaced(x, z, scatterRadius)) {
                 continue;
@@ -2697,8 +2477,7 @@ export class Terrain {
             const matrix = dummy.matrix.clone();
             const tint = color.copy(ROCK_LIGHT_COLOR).lerp(ROCK_WARM_COLOR, rng()).clone();
             const emerald =
-                forcedEmerald ||
-                (colliderRadius >= EMERALD_MIN_BOULDER_RADIUS && rng() < EMERALD_BOULDER_CHANCE);
+                forcedEmerald || (colliderRadius >= EMERALD_MIN_BOULDER_RADIUS && rng() < EMERALD_BOULDER_CHANCE);
             if (emerald) {
                 tint.lerp(EMERALD_ROCK_COLOR, 0.2);
             }
@@ -2741,11 +2520,7 @@ export class Terrain {
             guaranteedPlaced = true;
             boulderCount++;
         }
-        const bindBoulder = (
-            instance: DecorationInstance,
-            mesh: InstancedMesh,
-            index: number,
-        ): void => {
+        const bindBoulder = (instance: DecorationInstance, mesh: InstancedMesh, index: number): void => {
             if (!instance.boulder) {
                 return;
             }
@@ -2929,7 +2704,7 @@ export class Terrain {
             cactusParts.push(arm);
         }
 
-        const cactusGeometry = mergeGeometries(cactusParts);
+        const cactusGeometry = mergeParts(cactusParts);
         const cactusMaterial = new MeshStandardMaterial({ color: 0xffffff, roughness: 0.92, flatShading: true });
         this.disposables.push(cactusMaterial);
 
@@ -3023,12 +2798,7 @@ export class Terrain {
         material: MeshStandardMaterial,
         variant: number,
     ): Map<string, TreeCell> {
-        const cells = this.createTreeCells(
-            instances,
-            geometry,
-            material,
-            `dead-tree-leaf-low-${variant}`,
-        );
+        const cells = this.createTreeCells(instances, geometry, material, `dead-tree-leaf-low-${variant}`);
         return new Map(cells.map((cell) => [`${cell.cx},${cell.cz}`, cell]));
     }
 
@@ -3044,7 +2814,6 @@ export class Terrain {
         this.group.add(mesh);
     }
 }
-
 
 // Pushes the player horizontally out of a rectangular obstacle. Returns true if the position moved.
 function compareAscending(a: number, b: number): number {
@@ -3093,12 +2862,7 @@ function pushOutOfBox(
 }
 
 // Pushes the player horizontally out of a circular obstacle. Returns true if the position moved.
-function pushOutOfCircle(
-    position: Vector3,
-    centerX: number,
-    centerZ: number,
-    minimumDistance: number,
-): boolean {
+function pushOutOfCircle(position: Vector3, centerX: number, centerZ: number, minimumDistance: number): boolean {
     const dx = position.x - centerX;
     const dz = position.z - centerZ;
     const distanceSquared = dx * dx + dz * dz;
@@ -3263,8 +3027,32 @@ function createDeadTreeShape(seed: number, detail: 'high' | 'low' = 'high'): Dea
         const startRadius = Math.max(0.03, point.radius * (0.45 + rng() * 0.3));
         const midRadius = Math.max(0.02, startRadius * (0.5 + rng() * 0.25));
 
-        addBranchCylinder(parts, startX, startY, startZ, midX, midY, midZ, startRadius, midRadius, radialSegments, openEnded);
-        addBranchCylinder(parts, midX, midY, midZ, endX, endY, endZ, midRadius, 0.016 + rng() * 0.012, radialSegments, openEnded);
+        addBranchCylinder(
+            parts,
+            startX,
+            startY,
+            startZ,
+            midX,
+            midY,
+            midZ,
+            startRadius,
+            midRadius,
+            radialSegments,
+            openEnded,
+        );
+        addBranchCylinder(
+            parts,
+            midX,
+            midY,
+            midZ,
+            endX,
+            endY,
+            endZ,
+            midRadius,
+            0.016 + rng() * 0.012,
+            radialSegments,
+            openEnded,
+        );
 
         if (endY > height * 0.42) {
             pushLeafAnchor(endX, endY, endZ, 0.45 + length * 0.2, endX - midX, endY - midY, endZ - midZ);
@@ -3328,33 +3116,14 @@ function createDeadTreeShape(seed: number, detail: 'high' | 'low' = 'high'): Dea
             radialSegments,
             openEnded,
         );
-        pushLeafAnchor(
-            endX,
-            endY,
-            endZ,
-            0.55 + length * 0.25,
-            endX - tip.x,
-            endY - tip.y,
-            endZ - tip.z,
-        );
+        pushLeafAnchor(endX, endY, endZ, 0.55 + length * 0.25, endX - tip.x, endY - tip.y, endZ - tip.z);
     }
 
     // A central blob fills the gap between the forked crown branches. Its cone follows the trunk.
     const previousTip = trunkPoints[trunkPoints.length - 2] ?? tip;
-    pushLeafAnchor(
-        tip.x,
-        tip.y + 0.3,
-        tip.z,
-        0.7,
-        tip.x - previousTip.x,
-        tip.y - previousTip.y,
-        tip.z - previousTip.z,
-    );
+    pushLeafAnchor(tip.x, tip.y + 0.3, tip.z, 0.7, tip.x - previousTip.x, tip.y - previousTip.y, tip.z - previousTip.z);
 
-    const geometry = mergeGeometries(parts)!;
-    for (const part of parts) {
-        part.dispose();
-    }
+    const geometry = mergeParts(parts);
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
 
@@ -3381,9 +3150,7 @@ function createLeafCanopy(
     for (const anchor of anchors) {
         const radius = anchor.radius * (0.8 + rng() * 0.4);
         const leaf =
-            style === 'palm'
-                ? createPalmLeaf(radius, anchor, detail, rng)
-                : createBlobLeaf(radius, detail, rng);
+            style === 'palm' ? createPalmLeaf(radius, anchor, detail, rng) : createBlobLeaf(radius, detail, rng);
         leaf.translate(anchor.x, anchor.y, anchor.z);
 
         // Per-leaf brightness variation breaks up the silhouette without a texture.
@@ -3395,10 +3162,7 @@ function createLeafCanopy(
         leaves.push(leaf);
     }
 
-    const geometry = mergeGeometries(leaves)!;
-    for (const leaf of leaves) {
-        leaf.dispose();
-    }
+    const geometry = mergeParts(leaves);
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
     return geometry;
@@ -3414,12 +3178,7 @@ function createBlobLeaf(radius: number, detail: 'high' | 'low', rng: () => numbe
 // Builds a fan of flattened, tapered blades that radiate from the branch tip like palm fronds.
 // Each blade is a cone squashed across one axis and gently curved, so it reads as a broad leaf
 // while keeping closed, low-poly geometry.
-function createPalmLeaf(
-    radius: number,
-    anchor: LeafAnchor,
-    detail: 'high' | 'low',
-    rng: () => number,
-): BufferGeometry {
+function createPalmLeaf(radius: number, anchor: LeafAnchor, detail: 'high' | 'low', rng: () => number): BufferGeometry {
     const frondCount = detail === 'high' ? 5 : 3;
     const radialSegments = detail === 'high' ? 4 : 3;
     const heightSegments = detail === 'high' ? 2 : 1;
@@ -3442,8 +3201,7 @@ function createPalmLeaf(
             let bladeZ = z;
             if (Math.hypot(x, z) > 1e-6) {
                 const angle = Math.atan2(z, x);
-                const wobble =
-                    0.72 + 0.5 * (Math.sin(angle * 2.7 + y * 5.3 + phase) * 0.5 + 0.5);
+                const wobble = 0.72 + 0.5 * (Math.sin(angle * 2.7 + y * 5.3 + phase) * 0.5 + 0.5);
                 bladeX = x * wobble;
                 bladeZ = z * wobble;
             }
@@ -3465,18 +3223,12 @@ function createPalmLeaf(
         blade.rotateZ((0.45 + rng() * 0.65) * (rng() < 0.5 ? 1 : -1));
         blade.rotateY((frond / frondCount) * Math.PI * 2 + (rng() - 0.5) * 0.6);
         blade.applyQuaternion(
-            new Quaternion().setFromUnitVectors(
-                UP,
-                new Vector3(anchor.dirX, anchor.dirY, anchor.dirZ),
-            ),
+            new Quaternion().setFromUnitVectors(UP, new Vector3(anchor.dirX, anchor.dirY, anchor.dirZ)),
         );
         fronds.push(blade);
     }
 
-    const geometry = mergeGeometries(fronds)!;
-    for (const frond of fronds) {
-        frond.dispose();
-    }
+    const geometry = mergeParts(fronds);
     return geometry;
 }
 
@@ -3500,14 +3252,7 @@ function addBranchCylinder(
     }
     direction.divideScalar(length);
 
-    const geometry = new CylinderGeometry(
-        endRadius,
-        startRadius,
-        length,
-        radialSegments,
-        1,
-        openEnded,
-    );
+    const geometry = new CylinderGeometry(endRadius, startRadius, length, radialSegments, 1, openEnded);
     geometry.translate(0, length / 2, 0);
     geometry.applyQuaternion(new Quaternion().setFromUnitVectors(UP, direction));
     geometry.translate(startX, startY, startZ);
