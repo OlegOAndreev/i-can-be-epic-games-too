@@ -1,4 +1,4 @@
-import { ShaderChunk } from 'three';
+import { ShaderChunk, Sphere, Vector3 } from 'three';
 import { describe, expect, it, vi } from 'vitest';
 
 import { CascadedSunLightShadow, SHADOW_PRESETS, configureSunShadowCascades } from './sun-light-shadow';
@@ -39,6 +39,18 @@ describe('shadow presets', () => {
 
     it('rejects a fraction count that does not match the cascades', () => {
         expect(() => new CascadedSunLightShadow(3, [0.1])).toThrow();
+    });
+
+    it('can skip a cascade while keeping it in the uniform layout', () => {
+        const shadow = new CascadedSunLightShadow(3, [0.1, 0.4]);
+        const fitted = shadow.getFrustum(1);
+
+        shadow.disableCascadeRendering(1);
+
+        expect(shadow.getViewportCount()).toBe(3);
+        expect(shadow.getFrustum(1)).not.toBe(fitted);
+        expect(shadow.getFrustum(1).intersectsSphere(new Sphere(new Vector3(), 1e6))).toBe(false);
+        expect(() => shadow.disableCascadeRendering(3)).toThrow();
     });
 
     it('patches the shader cascade constant', () => {

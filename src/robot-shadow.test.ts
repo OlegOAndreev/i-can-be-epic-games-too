@@ -1,4 +1,4 @@
-import { Group, Mesh, MeshStandardMaterial, Scene, SphereGeometry, WebGLRenderer } from 'three';
+import { Group, Mesh, MeshStandardMaterial, Scene, Sphere, SphereGeometry, Vector3, WebGLRenderer } from 'three';
 import { SunLight } from 'three/addons/lights/SunLight.js';
 import { describe, expect, it } from 'vitest';
 
@@ -37,9 +37,11 @@ describe('robot shadows', () => {
         expect(helper.shadow.getViewportCount()).toBe(PRESET.cascades);
         expect(helper.shadow.mapSize.toArray()).toEqual([PRESET.mapSize, PRESET.mapSize]);
         expect(helper.shadow.camera.far).toBe(ROBOT_SHADOW_DISTANCE);
-        expect(helper.shadow.getCamera(0).layers.mask).not.toBe(0);
+        // The first cascade is fitted to the close range and keeps its real frustum.
+        expect(helper.shadow.getFrustum(0).intersectsSphere(new Sphere(new Vector3(), 1))).toBe(true);
         for (let index = 1; index < helper.shadow.getViewportCount(); index++) {
-            expect(helper.shadow.getCamera(index).layers.mask).toBe(0);
+            // Far cascades exist only for the uniform stride; their pass renders nothing.
+            expect(helper.shadow.getFrustum(index).intersectsSphere(new Sphere(new Vector3(), 1e6))).toBe(false);
         }
     });
 

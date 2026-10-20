@@ -1,7 +1,11 @@
 import { Group, Mesh, MeshStandardMaterial, ShaderChunk, SphereGeometry, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
-import { STATIC_SHADOW_LAYER, StaticSunShadow, installStaticSunShadowShaderChunks } from './static-sun-shadow';
+import {
+    STATIC_SHADOW_LAYER,
+    StaticSunShadow,
+    installStaticSunShadowShaderChunks,
+} from './static-sun-shadow';
 
 function createShadow(): StaticSunShadow {
     return new StaticSunShadow({
@@ -16,7 +20,7 @@ function createShadow(): StaticSunShadow {
 }
 
 describe('static sun shadows', () => {
-    it('moves static casters onto their own layer', () => {
+    it('keeps static casters in the near cascade', () => {
         const shadow = createShadow();
         const root = new Group();
         const staticMesh = new Mesh(new SphereGeometry(), new MeshStandardMaterial());
@@ -29,7 +33,8 @@ describe('static sun shadows', () => {
         shadow.addStaticRoot(root, (object) => object.name === 'water');
 
         expect(staticMesh.layers.isEnabled(STATIC_SHADOW_LAYER)).toBe(true);
-        expect(staticMesh.castShadow).toBe(false);
+        // The near live cascade still casts the real silhouette; only the far cascades skip it.
+        expect(staticMesh.castShadow).toBe(true);
         expect(dynamicMesh.layers.isEnabled(STATIC_SHADOW_LAYER)).toBe(false);
         expect(dynamicMesh.castShadow).toBe(true);
         expect(shadow.isBaked()).toBe(false);

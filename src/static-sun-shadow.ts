@@ -26,7 +26,8 @@ import type { IUniform } from 'three';
 
 import { clamp } from './math-utils';
 
-// Static geometry is baked onto its own layer so the live cascade maps only see dynamic casters.
+// Static geometry is baked onto its own layer so the atlas can render it independently of the
+// live cascade maps.
 export const STATIC_SHADOW_LAYER = 2;
 
 const SUN_SHADOW_LOOKUP = 'getSunShadow( sunShadowMap[ i ], sunLightShadow, UNROLLED_LOOP_INDEX )';
@@ -312,8 +313,9 @@ export class StaticSunShadow {
         };
     }
 
-    // Marks every mesh under the root as a static caster. Static casters stop writing into the live
-    // cascade maps and are rendered into the baked atlas instead.
+    // Marks every mesh under the root as a static caster. Static geometry is rendered into the
+    // baked atlas and keeps its original castShadow flag, so the single live cascade still draws
+    // crisp near-field shadows from it.
     addStaticRoot(root: Object3D, exclude?: (object: Object3D) => boolean): void {
         this.markStatic(root, exclude ?? (() => false));
     }
@@ -410,7 +412,6 @@ export class StaticSunShadow {
         }
         if (object instanceof Mesh) {
             object.layers.enable(STATIC_SHADOW_LAYER);
-            object.castShadow = false;
         }
         for (const child of object.children) {
             this.markStatic(child, exclude);

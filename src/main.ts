@@ -119,6 +119,9 @@ const DAMAGE_VIGNETTE_BOOST = 1.6;
 const MAX_SHADOW_DISTANCE = 620;
 // The static shadow atlas spans the whole world; this leaves room for the tallest structures.
 const STATIC_SHADOW_MAX_HEIGHT = 400;
+// In baked mode one live cascade covers the near field at high resolution, while the atlas fills
+// in static shadows farther away. Fog starts at 90 m, so dynamic shadows beyond this barely show.
+const BAKED_LIVE_SHADOW_DISTANCE = 120;
 const SEED_STORAGE_KEY = 'walking-game.seed';
 const PLAYER_STORAGE_KEY = 'walking-game.player';
 const SETTINGS_STORAGE_KEY = 'walking-game.settings';
@@ -180,7 +183,7 @@ const DEFAULT_SETTINGS = {
     thirdPersonFov: FOV,
     antialias: false,
     shadowQuality: 'high' as ShadowQuality,
-    shadowMode: 'cascaded' as ShadowMode,
+    shadowMode: 'baked' as ShadowMode,
     grassRadius: DEFAULT_GRASS_RADIUS,
     difficulty: 'medium' as const,
     volume: 0.8,
@@ -1387,13 +1390,22 @@ function createLights(): void {
     // automatically to the view frustum, with the first one kept tight around the player so the
     // nearest objects get a high-resolution shadow map.
     const preset = SHADOW_PRESETS[renderSettings.shadowQuality];
-    configureSunShadowCascades(preset.cascades);
+    const baked = renderSettings.shadowMode === 'baked';
+    // Baked mode spends its shadow budget on one high-resolution near cascade. The atlas already
+    // covers static geometry across the island, so extra live cascades mostly duplicate work.
+    const cascadeCount = baked ? 1 : preset.cascades;
+    const cascadeFractions = baked ? [] : preset.fractions;
+    const liveMapSize = baked ? Math.min(4096, preset.mapSize * 2) : preset.mapSize;
+    const liveDistance = baked
+        ? Math.min(renderSettings.shadowDistance, BAKED_LIVE_SHADOW_DISTANCE)
+        : renderSettings.shadowDistance;
+    configureSunShadowCascades(cascadeCount);
     sun = new SunLight(0xfff0d3, 3);
     sun.position.copy(SUN_DIRECTION).multiplyScalar(1600);
     sun.castShadow = true;
-    sun.shadow = new CascadedSunLightShadow(preset.cascades, preset.fractions);
-    sun.shadow.mapSize.set(preset.mapSize, preset.mapSize);
-    sun.shadow.camera.far = renderSettings.shadowDistance;
+    sun.shadow = new CascadedSunLightShadow(cascadeCount, cascadeFractions);
+    sun.shadow.mapSize.set(liveMapSize, liveMapSize);
+    sun.shadow.camera.far = liveDistance;
     sun.shadow.bias = -0.0001;
     sun.shadow.normalBias = 0.03;
     // Be explicit about the shadow-caster layers so the structures are included even if the
@@ -1405,12 +1417,12 @@ function createLights(): void {
 
     // This zero-intensity sun renders an identical cascade set without the player robot. The
     // robot samples it for its own shading, giving it world shadows without self-shadowing.
-    robotShadowSun = createRobotShadowSun(sun, preset);
+    robotShadowSun = createRobotShadowSun(sun, { ...preset, cascades: cascadeCount, mapSize: liveMapSize });
     view.scene.add(robotShadowSun);
 
-    if (renderSettings.shadowMode === 'baked') {
-        // Static geometry is baked into a world-space tiled atlas once per world build. The live
-        // cascade maps above only need to render moving objects, so their cost stays low.
+    if (baked) {
+        // Static geometry is baked into a world-space tiled atlas once per world build. The single
+        // live cascade above keeps near shadows crisp; the atlas extends them across the island.
         installStaticSunShadowShaderChunks();
         staticSunShadow = new StaticSunShadow({
             sunDirection: SUN_DIRECTION,
@@ -2258,7 +2270,8 @@ function rebuildWorld(seed: number): void {
 
 function setShadowDistance(distance: number): void {
     renderSettings.shadowDistance = distance;
-    sun.shadow.camera.far = distance;
+    sun.shadow.camera.far =
+        renderSettings.shadowMode === 'baked' ? Math.min(distance, BAKED_LIVE_SHADOW_DISTANCE) : distance;
     robotShadowSun.shadow.camera.far = Math.min(distance, ROBOT_SHADOW_DISTANCE);
 }
 

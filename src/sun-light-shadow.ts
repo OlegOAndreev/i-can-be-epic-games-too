@@ -4,6 +4,7 @@ import {
     Light,
     Matrix4,
     OrthographicCamera,
+    Plane,
     ShaderChunk,
     Vector2,
     Vector3,
@@ -124,6 +125,16 @@ export class CascadedSunLightShadow extends SunLightShadow {
     private readonly cascadeSplits: number[];
     private readonly cascadeViewports: Vector4[] = [];
     private readonly cascadeFrameExtents: Vector2;
+    private readonly disabledCascades = new Set<number>();
+    // Every plane rejects every point in the scene, so the shadow renderer culls all objects.
+    private readonly emptyFrustum = new Frustum(
+        new Plane(new Vector3(0, 0, 1), -1e9),
+        new Plane(new Vector3(0, 0, 1), -1e9),
+        new Plane(new Vector3(0, 0, 1), -1e9),
+        new Plane(new Vector3(0, 0, 1), -1e9),
+        new Plane(new Vector3(0, 0, 1), -1e9),
+        new Plane(new Vector3(0, 0, 1), -1e9),
+    );
 
     constructor(cascadeCount: number, fractions: readonly number[]) {
         super();
@@ -169,7 +180,16 @@ export class CascadedSunLightShadow extends SunLightShadow {
     }
 
     override getFrustum(cascadeIndex = 0): Frustum {
-        return this.cascadeFrustums[cascadeIndex];
+        return this.disabledCascades.has(cascadeIndex) ? this.emptyFrustum : this.cascadeFrustums[cascadeIndex];
+    }
+
+    // Keeps the cascade in the shader's uniform layout while making its shadow pass render nothing.
+    // Used for the robot sun's far cascades, which only exist to satisfy the fixed array stride.
+    disableCascadeRendering(cascadeIndex: number): void {
+        if (cascadeIndex < 0 || cascadeIndex >= this.cascadeCount) {
+            throw new Error(`Invalid cascade index: ${cascadeIndex}`);
+        }
+        this.disabledCascades.add(cascadeIndex);
     }
 
     override updateMatrices(light: Light, viewCamera?: Camera): void {

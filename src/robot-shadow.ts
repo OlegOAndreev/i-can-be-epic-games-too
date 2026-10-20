@@ -11,7 +11,6 @@ import {
 } from 'three';
 import { SunLight } from 'three/addons/lights/SunLight.js';
 
-import { MEGASTRUCTURE_LAYER } from './megastructures';
 import { CascadedSunLightShadow } from './sun-light-shadow';
 import type { ShadowPreset } from './sun-light-shadow';
 
@@ -32,21 +31,21 @@ export function createRobotShadowSun(mainSun: SunLight, preset: ShadowPreset): S
     sun.castShadow = true;
     // Keep the same cascade count as the main sun: three.js packs all sun-shadow uniforms at a
     // fixed SUN_LIGHT_CASCADES stride, so a smaller viewport count leaves undefined uniform slots.
-    // Instead, make the first cascade cover the full close range and give the remaining cascades
-    // no layers, so they still exist for the shader but render zero casters.
+    // Instead, make the first cascade cover the full close range and skip rendering the remaining
+    // zero-width cascades, so they still exist for the shader but cost nothing.
     const fractions = new Array<number>(Math.max(0, preset.cascades - 1)).fill(1);
-    sun.shadow = new CascadedSunLightShadow(preset.cascades, fractions);
-    sun.shadow.mapSize.set(preset.mapSize, preset.mapSize);
-    sun.shadow.camera.far = Math.min(mainSun.shadow.camera.far, ROBOT_SHADOW_DISTANCE);
-    sun.shadow.bias = mainSun.shadow.bias;
-    sun.shadow.normalBias = mainSun.shadow.normalBias;
-    sun.shadow.intensity = mainSun.shadow.intensity;
+    const shadow = new CascadedSunLightShadow(preset.cascades, fractions);
+    sun.shadow = shadow;
+    shadow.mapSize.set(preset.mapSize, preset.mapSize);
+    shadow.camera.far = Math.min(mainSun.shadow.camera.far, ROBOT_SHADOW_DISTANCE);
+    shadow.bias = mainSun.shadow.bias;
+    shadow.normalBias = mainSun.shadow.normalBias;
+    shadow.intensity = mainSun.shadow.intensity;
 
     // Cascade 0 covers the whole close range; the empty far cascades only contribute the fade
     // band at the very edge of ROBOT_SHADOW_DISTANCE.
-    sun.shadow.getCamera(0).layers.enable(MEGASTRUCTURE_LAYER);
-    for (let index = 1; index < sun.shadow.getViewportCount(); index++) {
-        sun.shadow.getCamera(index).layers.disableAll();
+    for (let index = 1; index < shadow.getViewportCount(); index++) {
+        shadow.disableCascadeRendering(index);
     }
 
     return sun;
