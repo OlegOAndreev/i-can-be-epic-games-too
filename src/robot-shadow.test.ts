@@ -2,7 +2,12 @@ import { Group, Mesh, MeshStandardMaterial, Scene, SphereGeometry, WebGLRenderer
 import { SunLight } from 'three/addons/lights/SunLight.js';
 import { describe, expect, it } from 'vitest';
 
-import { applyRobotWorldOnlyShadows, createRobotShadowSun, sunShadowIndex } from './robot-shadow';
+import {
+    applyRobotWorldOnlyShadows,
+    createRobotShadowSun,
+    ROBOT_SHADOW_DISTANCE,
+    sunShadowIndex,
+} from './robot-shadow';
 import { CascadedSunLightShadow, SHADOW_PRESETS } from './sun-light-shadow';
 
 const PRESET = SHADOW_PRESETS.high;
@@ -17,10 +22,11 @@ function buildRobot() {
 }
 
 describe('robot shadows', () => {
-    it('creates a black helper sun with the same cascades as the main sun', () => {
+    it('keeps the cascade count but only populates the first close-range cascade', () => {
         const main = new SunLight(0xfff0d3, 3);
         main.shadow = new CascadedSunLightShadow(PRESET.cascades, PRESET.fractions);
         main.shadow.mapSize.set(PRESET.mapSize, PRESET.mapSize);
+        main.shadow.camera.far = 620;
 
         const helper = createRobotShadowSun(main, PRESET);
 
@@ -30,6 +36,11 @@ describe('robot shadows', () => {
         expect(helper.shadow).toBeInstanceOf(CascadedSunLightShadow);
         expect(helper.shadow.getViewportCount()).toBe(PRESET.cascades);
         expect(helper.shadow.mapSize.toArray()).toEqual([PRESET.mapSize, PRESET.mapSize]);
+        expect(helper.shadow.camera.far).toBe(ROBOT_SHADOW_DISTANCE);
+        expect(helper.shadow.getCamera(0).layers.mask).not.toBe(0);
+        for (let index = 1; index < helper.shadow.getViewportCount(); index++) {
+            expect(helper.shadow.getCamera(index).layers.mask).toBe(0);
+        }
     });
 
     it('numbers sun shadows in scene traversal order', () => {

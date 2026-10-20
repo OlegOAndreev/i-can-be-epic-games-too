@@ -2,7 +2,7 @@ import { Group, MeshStandardMaterial, Sprite, SpriteMaterial, Vector3 } from 'th
 
 import { getRadialGlowTexture, glowSpriteMaterial } from './glow';
 import { damp, dampAngle, hash32, wrapAngle } from './math-utils';
-import { disposeSceneGraph } from './mesh-optimize';
+import { disposeSceneGraph, isSharedMaterial } from './mesh-optimize';
 import { addBox, addCylinder, addSegment, addSphere, createMaterial, prepareMeshes } from './npc-robots';
 import { mulberry32 } from './noise';
 import { WATER_LEVEL } from './terrain';
@@ -117,6 +117,8 @@ interface AnimalRig {
     stride: number;
     gait: number;
     tailSway: number;
+    // The tail rolls around the nose-tail axis when this is 'z'; otherwise it yaws around 'y'.
+    tailWagAxis?: 'y' | 'z';
 }
 
 interface AnimalModel {
@@ -231,10 +233,13 @@ export class RobotAnimals {
         disposeSceneGraph(this.group);
 
         for (const palette of this.palettes) {
-            palette.shell.dispose();
-            palette.dark.dispose();
-            palette.metal.dispose();
-            palette.accent.dispose();
+            // Body materials are shared module-wide and deliberately outlive this instance. Only the
+            // per-instance eye and glow materials are released here.
+            for (const material of [palette.shell, palette.dark, palette.metal, palette.accent]) {
+                if (!isSharedMaterial(material)) {
+                    material.dispose();
+                }
+            }
             palette.eye.dispose();
             palette.glow.dispose();
         }
@@ -984,9 +989,26 @@ function buildWolf(palette: Palette, variation: ModelVariation): AnimalModel {
     const tail = new Group();
     tail.position.set(0, hipY + 0.25, -0.52);
     body.add(tail);
-    addBox(tail, 0.14, 0.14, 0.26, palette.dark, 0, 0.03, -0.1);
-    addBox(tail, 0.12, 0.12, 0.26, palette.metal, 0, -0.02, -0.3);
-    addBox(tail, 0.09, 0.09, 0.22, palette.accent, 0, -0.09, -0.48);
+
+    // The tail leaves the rump 15° above the ground, almost parallel to it, then curls upward
+    // through 160° into a raised tip.
+    const tailArc = (160 * Math.PI) / 180;
+    const tailStart = (15 * Math.PI) / 180;
+    const tailRadius = 0.72 / tailArc;
+    const tailLinks = [
+        { width: 0.145, height: 0.145, depth: 0.24, material: palette.dark },
+        { width: 0.13, height: 0.13, depth: 0.24, material: palette.dark },
+        { width: 0.115, height: 0.115, depth: 0.24, material: palette.metal },
+        { width: 0.09, height: 0.09, depth: 0.22, material: palette.accent },
+    ];
+
+    tailLinks.forEach((link, index) => {
+        const angle = tailStart + (tailArc * (index + 0.5)) / tailLinks.length;
+        const y = tailRadius * (Math.cos(tailStart) - Math.cos(angle));
+        const z = -tailRadius * (Math.sin(angle) - Math.sin(tailStart));
+        const mesh = addBox(tail, link.width, link.height, link.depth, link.material, 0, y, z);
+        mesh.rotation.x = angle;
+    });
 
     const legs = [
         addLeg(visual, -0.16, 0.34, hipY, legLength, legThickness, palette, 0),
@@ -1007,6 +1029,7 @@ function buildWolf(palette: Palette, variation: ModelVariation): AnimalModel {
             stride: 0.55,
             gait: 8.5,
             tailSway: 0.22,
+            tailWagAxis: 'z',
         },
         variation,
     );
@@ -1086,7 +1109,8 @@ function finishRig(rig: AnimalRig, variation: ModelVariation): AnimalModel {
             const clamped = Math.max(-1.15, Math.min(1.15, headYaw));
             rig.head.rotation.y = dampAngle(rig.head.rotation.y, clamped, 7, dt);
             rig.head.rotation.x = Math.sin(time * 1.1) * 0.02;
-            rig.tail.rotation.y = Math.sin(time * (wagging ? 9 : 1.8) + phase * 0.35) * (wagging ? 0.6 : rig.tailSway);
+            const wag = Math.sin(time * (wagging ? 13.5 : 1.8) + phase * 0.35) * (wagging ? 0.6 : rig.tailSway);
+            rig.tail.rotation[rig.tailWagAxis ?? 'y'] = wag;
         },
     };
 }

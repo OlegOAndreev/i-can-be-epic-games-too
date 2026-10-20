@@ -1,9 +1,30 @@
-import { Sprite, Vector3 } from 'three';
+import { InstancedMesh, Matrix4, Sprite, Vector3 } from 'three';
+import type { Object3D } from 'three';
 import { describe, expect, it } from 'vitest';
 
 import { EnemyDebris } from './enemy-debris';
 import { mulberry32 } from './noise';
-import { fakeTerrain, visibleMeshes } from './test-helpers';
+import { fakeTerrain } from './test-helpers';
+
+// Collects the transforms of the active instances across the eight debris batches.
+function chunkPositions(group: Object3D): Vector3[] {
+    const positions: Vector3[] = [];
+    const matrix = new Matrix4();
+    for (const child of group.children) {
+        if (!(child instanceof InstancedMesh)) {
+            continue;
+        }
+        for (let index = 0; index < child.count; index++) {
+            child.getMatrixAt(index, matrix);
+            positions.push(new Vector3().setFromMatrixPosition(matrix));
+        }
+    }
+    return positions;
+}
+
+function averageY(positions: Vector3[]): number {
+    return positions.reduce((sum, position) => sum + position.y, 0) / positions.length;
+}
 
 describe('enemy debris', () => {
     it('scatters a per-kind burst that falls and eventually disappears', () => {
@@ -11,34 +32,35 @@ describe('enemy debris', () => {
         const height = 2.5;
 
         debris.spawn('matron', new Vector3(0, 10, 0), height);
-        const chunks = visibleMeshes(debris.group);
-        expect(chunks.length).toBeGreaterThan(10);
+        const startPositions = chunkPositions(debris.group);
+        expect(startPositions.length).toBeGreaterThan(10);
 
         // Every chunk is spawned inside the robot's vertical silhouette.
-        for (const chunk of chunks) {
-            expect(chunk.position.y).toBeGreaterThanOrEqual(10);
-            expect(chunk.position.y).toBeLessThanOrEqual(10 + height);
+        for (const position of startPositions) {
+            expect(position.y).toBeGreaterThanOrEqual(10);
+            expect(position.y).toBeLessThanOrEqual(10 + height);
         }
 
-        const averageStart = chunks.reduce((sum, chunk) => sum + chunk.position.y, 0) / chunks.length;
+        const averageStart = averageY(startPositions);
         debris.update(0.5);
-        const averageAfter = chunks.reduce((sum, chunk) => sum + chunk.position.y, 0) / chunks.length;
-        expect(averageAfter).toBeLessThan(averageStart);
+        const afterPositions = chunkPositions(debris.group);
+        expect(averageY(afterPositions)).toBeLessThan(averageStart);
 
         const averageDistance =
-            chunks.reduce((sum, chunk) => sum + Math.hypot(chunk.position.x, chunk.position.z), 0) / chunks.length;
+            afterPositions.reduce((sum, position) => sum + Math.hypot(position.x, position.z), 0) /
+            afterPositions.length;
         expect(averageDistance).toBeGreaterThan(1.2);
 
         // Debris stays on the ground for a while, then is removed after 15 seconds.
         for (let step = 0; step < 200; step++) {
             debris.update(0.05);
         }
-        expect(visibleMeshes(debris.group).length).toBeGreaterThan(0);
+        expect(chunkPositions(debris.group).length).toBeGreaterThan(0);
 
         for (let step = 0; step < 120; step++) {
             debris.update(0.05);
         }
-        expect(visibleMeshes(debris.group)).toHaveLength(0);
+        expect(chunkPositions(debris.group)).toHaveLength(0);
         debris.dispose();
     });
 
@@ -51,10 +73,10 @@ describe('enemy debris', () => {
             debris.update(0.1);
         }
 
-        const chunks = visibleMeshes(debris.group);
-        expect(chunks.length).toBeGreaterThan(0);
-        for (const chunk of chunks) {
-            expect(chunk.position.y).toBeGreaterThanOrEqual(floorY);
+        const positions = chunkPositions(debris.group);
+        expect(positions.length).toBeGreaterThan(0);
+        for (const position of positions) {
+            expect(position.y).toBeGreaterThanOrEqual(floorY);
         }
         debris.dispose();
     });
@@ -64,7 +86,7 @@ describe('enemy debris', () => {
             const debris = new EnemyDebris(fakeTerrain({ walkSurfaceAt: () => 0 }), mulberry32(31));
             debris.spawn(kind, new Vector3(0, 10, 0), 2);
 
-            expect(visibleMeshes(debris.group).length).toBeGreaterThan(40);
+            expect(chunkPositions(debris.group).length).toBeGreaterThan(40);
             const sprites = debris.group.children.filter(
                 (child): child is Sprite => child instanceof Sprite && child.visible,
             );
@@ -84,16 +106,16 @@ describe('enemy debris', () => {
 
         const visibleSprites = (): Sprite[] =>
             debris.group.children.filter((child): child is Sprite => child instanceof Sprite && child.visible);
-        expect(visibleMeshes(debris.group).length).toBeGreaterThan(0);
+        expect(chunkPositions(debris.group).length).toBeGreaterThan(0);
         expect(visibleSprites().length).toBeGreaterThan(0);
 
         debris.clear();
-        expect(visibleMeshes(debris.group)).toHaveLength(0);
+        expect(chunkPositions(debris.group)).toHaveLength(0);
         expect(visibleSprites()).toHaveLength(0);
 
         // The pool survives the clear and can spawn the next burst.
         debris.spawn('walle', new Vector3(0, 5, 0), 1.5);
-        expect(visibleMeshes(debris.group).length).toBeGreaterThan(0);
+        expect(chunkPositions(debris.group).length).toBeGreaterThan(0);
         debris.dispose();
     });
 
@@ -105,7 +127,7 @@ describe('enemy debris', () => {
         matron.spawn('matron', new Vector3(0, 10, 0), 2.5);
         probe.spawn('probe', new Vector3(0, 10, 0), 1.9);
 
-        expect(visibleMeshes(matron.group).length).toBeGreaterThan(visibleMeshes(probe.group).length);
+        expect(chunkPositions(matron.group).length).toBeGreaterThan(chunkPositions(probe.group).length);
         matron.dispose();
         probe.dispose();
     });

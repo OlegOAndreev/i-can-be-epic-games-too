@@ -1,4 +1,14 @@
-import { Group, Mesh, MeshStandardMaterial, Vector2, Vector3, type WebGLRenderer } from 'three';
+import {
+    Group,
+    InstancedMesh,
+    Matrix4,
+    Mesh,
+    MeshStandardMaterial,
+    Vector2,
+    Vector3,
+    type Object3D,
+    type WebGLRenderer,
+} from 'three';
 import { describe, expect, it } from 'vitest';
 
 import { DamageVignette } from './damage-vignette';
@@ -24,6 +34,24 @@ import type { Terrain } from './terrain';
 function sequence(values: number[]): () => number {
     let index = 0;
     return () => values[Math.min(index++, values.length - 1)];
+}
+
+function debrisAverageY(debris: Object3D): number {
+    const matrix = new Matrix4();
+    const position = new Vector3();
+    let sum = 0;
+    let count = 0;
+    for (const child of debris.children) {
+        if (!(child instanceof InstancedMesh)) {
+            continue;
+        }
+        for (let index = 0; index < child.count; index++) {
+            child.getMatrixAt(index, matrix);
+            sum += position.setFromMatrixPosition(matrix).y;
+            count++;
+        }
+    }
+    return sum / count;
 }
 
 function singleEnemyLevel(
@@ -914,12 +942,14 @@ describe('enemy robots', () => {
         expect(enemy.getObjectByName('enemy-visual')?.visible).toBe(false);
         const debris = enemies.group.children.find((child) => child.name === 'enemy-debris');
         expect(debris).toBeDefined();
-        const chunks = visibleMeshes(debris!);
+        const chunks = debris!.children.filter(
+            (child): child is InstancedMesh => child instanceof InstancedMesh && child.count > 0,
+        );
         expect(chunks.length).toBeGreaterThan(0);
 
-        const averageStart = chunks.reduce((sum, chunk) => sum + chunk.position.y, 0) / chunks.length;
+        const averageStart = debrisAverageY(debris!);
         enemies.update(0.5, away);
-        const averageAfter = chunks.reduce((sum, chunk) => sum + chunk.position.y, 0) / chunks.length;
+        const averageAfter = debrisAverageY(debris!);
         expect(averageAfter).toBeLessThan(averageStart);
 
         enemies.dispose();

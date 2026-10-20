@@ -3,7 +3,7 @@ import { Box3, CylinderGeometry, Group, Mesh, MeshBasicMaterial, Sprite, SpriteM
 import { EnemyDebris } from './enemy-debris';
 import { getRadialGlowTexture, glowMaterial, glowSpriteMaterial } from './glow';
 import { dampAngle } from './math-utils';
-import { disposeGeometry } from './mesh-optimize';
+import { disposeGeometry, isSharedMaterial } from './mesh-optimize';
 import type { MegastructureStorey, MegastructureTower, Ramp } from './megastructures';
 import { mulberry32 } from './noise';
 import { createEnemyRobotModel } from './npc-robots';
@@ -888,12 +888,17 @@ export class EnemyRobots {
                     if (
                         material !== this.laserCoreMaterial &&
                         material !== this.laserGlowMaterial &&
-                        material !== this.laserFlashMaterial
+                        material !== this.laserFlashMaterial &&
+                        !isSharedMaterial(material)
                     ) {
                         material.dispose();
                     }
                 }
-            } else if (child instanceof Sprite && child.material !== this.laserFlashMaterial) {
+            } else if (
+                child instanceof Sprite &&
+                child.material !== this.laserFlashMaterial &&
+                !isSharedMaterial(child.material)
+            ) {
                 child.material.dispose();
             }
         });

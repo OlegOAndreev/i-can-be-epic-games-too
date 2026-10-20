@@ -24,7 +24,7 @@ import {
 } from 'three';
 import { DecalGeometry } from 'three/addons/geometries/DecalGeometry.js';
 
-import { getRadialGlowTexture, glowSpriteMaterial } from './glow';
+import { getRadialGlowTexture, getSparkleTexture, glowSpriteMaterial } from './glow';
 import { clamp, hash32, smoothstep } from './math-utils';
 import { mergeParts } from './mesh-optimize';
 import { Noise2D, mulberry32 } from './noise';
@@ -136,6 +136,13 @@ const MINERAL_GRAVITY = 16;
 const MINERAL_REST_HEIGHT = 0.4;
 const MINERAL_BOB_HEIGHT = 0.1;
 const MINERAL_BOB_SPEED = 2.4;
+// Each dropped shard continuously sheds short-lived glints that drift off its surface.
+const MINERAL_SPARKLE_COUNT = 12;
+const MINERAL_SPARKLE_LIFETIME_MIN = 0.18;
+const MINERAL_SPARKLE_LIFETIME_MAX = 0.42;
+const MINERAL_SPARKLE_DELAY_MIN = 0.04;
+const MINERAL_SPARKLE_DELAY_MAX = 0.26;
+const MINERAL_SPARKLE_COLORS = [0xffffff, 0xd7ffe8, 0x5cffa6];
 // Several independently deformed boulder meshes are distributed across the world so neighbouring
 // rocks do not repeat the same silhouette.
 const BOULDER_VARIANTS = 6;
@@ -216,6 +223,18 @@ interface Boulder {
     emerald: boolean;
 }
 
+// A single glint shed by a dropped mineral. Sparkles are children of the shard, so they follow it
+// as it tumbles and bobs without any per-frame position sync.
+interface MineralSparkle {
+    sprite: Sprite;
+    material: SpriteMaterial;
+    velocity: Vector3;
+    age: number;
+    lifetime: number;
+    delay: number;
+    scale: number;
+}
+
 interface MineralDrop {
     mesh: Mesh;
     velocity: Vector3;
@@ -223,6 +242,7 @@ interface MineralDrop {
     restY: number;
     age: number;
     resting: boolean;
+    sparkles: MineralSparkle[];
 }
 
 interface DecorationCell {
@@ -1318,6 +1338,7 @@ export class Terrain {
         this.megastructures.update(dt, playerPosition);
         this.spaceship.update(dt);
         this.rockEffects.update(dt);
+        this.updateMineralSparkles(dt);
         if (playerPosition) {
             this.updateMineralDrops(dt, playerPosition);
         }
@@ -1531,7 +1552,90 @@ export class Terrain {
             restY: 0,
             age: 0,
             resting: false,
+            sparkles: this.createMineralSparkles(mesh),
         });
+    }
+
+    // A fresh shard immediately sheds a handful of glints, then keeps sparkling from its surface.
+    private createMineralSparkles(mesh: Mesh): MineralSparkle[] {
+        const texture = getSparkleTexture();
+        return Array.from({ length: MINERAL_SPARKLE_COUNT }, (_, index) => {
+            const material = glowSpriteMaterial({
+                map: texture,
+                color: MINERAL_SPARKLE_COLORS[index % MINERAL_SPARKLE_COLORS.length],
+                fog: true,
+            });
+            const sprite = new Sprite(material);
+            sprite.name = 'emerald-mineral-sparkle';
+            mesh.add(sprite);
+            const sparkle: MineralSparkle = {
+                sprite,
+                material,
+                velocity: new Vector3(),
+                age: 0,
+                lifetime: 1,
+                delay: 0,
+                scale: 1,
+            };
+            this.resetMineralSparkle(sparkle);
+            return sparkle;
+        });
+    }
+
+    private resetMineralSparkle(sparkle: MineralSparkle): void {
+        const angle = Math.random() * Math.PI * 2;
+        const radius = 0.18 + Math.random() * 0.22;
+        sparkle.sprite.position.set(Math.cos(angle) * radius, (Math.random() - 0.4) * 0.5, Math.sin(angle) * radius);
+        const outward = 0.5 + Math.random() * 0.8;
+        sparkle.velocity.set(Math.cos(angle) * outward, 0.4 + Math.random() * 0.8, Math.sin(angle) * outward);
+        sparkle.age = 0;
+        sparkle.lifetime =
+            MINERAL_SPARKLE_LIFETIME_MIN +
+            Math.random() * (MINERAL_SPARKLE_LIFETIME_MAX - MINERAL_SPARKLE_LIFETIME_MIN);
+        sparkle.delay = 0;
+        sparkle.scale = 0.16 + Math.random() * 0.2;
+        sparkle.sprite.scale.setScalar(sparkle.scale);
+        sparkle.material.opacity = 1;
+        sparkle.material.rotation = Math.random() * Math.PI;
+        sparkle.sprite.visible = true;
+    }
+
+    private updateMineralSparkles(dt: number): void {
+        for (const drop of this.mineralDrops) {
+            for (const sparkle of drop.sparkles) {
+                if (!sparkle.sprite.visible) {
+                    sparkle.delay -= dt;
+                    if (sparkle.delay <= 0) {
+                        this.resetMineralSparkle(sparkle);
+                    }
+                    continue;
+                }
+
+                sparkle.age += dt;
+                const progress = sparkle.age / sparkle.lifetime;
+                if (progress >= 1) {
+                    sparkle.sprite.visible = false;
+                    sparkle.delay =
+                        MINERAL_SPARKLE_DELAY_MIN +
+                        Math.random() * (MINERAL_SPARKLE_DELAY_MAX - MINERAL_SPARKLE_DELAY_MIN);
+                    continue;
+                }
+
+                sparkle.sprite.position.addScaledVector(sparkle.velocity, dt);
+                sparkle.velocity.multiplyScalar(Math.exp(-2.6 * dt));
+                // Shrink as well as fade so each glint pops out instead of dimming into a blob.
+                const fade = 1 - progress;
+                sparkle.sprite.scale.setScalar(sparkle.scale * (0.45 + 0.55 * fade));
+                sparkle.material.opacity = fade * fade;
+            }
+        }
+    }
+
+    private disposeMineralSparkles(drop: MineralDrop): void {
+        for (const sparkle of drop.sparkles) {
+            sparkle.material.dispose();
+        }
+        drop.sparkles.length = 0;
     }
 
     private updateMineralDrops(dt: number, playerPosition: Vector3): void {
@@ -1567,6 +1671,7 @@ export class Terrain {
                 continue;
             }
 
+            this.disposeMineralSparkles(drop);
             this.group.remove(drop.mesh);
             this.mineralDrops.splice(index, 1);
             this.mineralsCollectedCount = Math.min(MINERAL_GOAL, this.mineralsCollectedCount + 1);
@@ -1593,6 +1698,9 @@ export class Terrain {
         this.waterAnimation = null;
         this.water = null;
         this.boulders.length = 0;
+        for (const drop of this.mineralDrops) {
+            this.disposeMineralSparkles(drop);
+        }
         this.mineralDrops.length = 0;
         this.mineralsCollectedCount = 0;
         this.boulderGeometries = [];

@@ -1,10 +1,13 @@
 import {
     AdditiveBlending,
     BoxGeometry,
+    Color,
     CylinderGeometry,
+    DynamicDrawUsage,
     Group,
-    Mesh,
+    InstancedMesh,
     MeshStandardMaterial,
+    Object3D,
     SphereGeometry,
     Sprite,
     SpriteMaterial,
@@ -101,8 +104,13 @@ const PROFILES: Record<RobotKind, DebrisProfile> = {
     },
 };
 
+type DebrisShape = 'box' | 'cylinder' | 'sphere' | 'shard';
+
 interface DebrisChunk {
-    mesh: Mesh;
+    object: Object3D;
+    shape: DebrisShape;
+    glow: boolean;
+    color: Color;
     velocity: Vector3;
     spin: Vector3;
     baseScale: Vector3;
@@ -138,8 +146,11 @@ export class EnemyDebris {
     private readonly cylinderGeometry: CylinderGeometry;
     private readonly sphereGeometry: SphereGeometry;
     private readonly shardGeometry: TetrahedronGeometry;
-    private readonly materials = new Map<number, MeshStandardMaterial>();
+    private readonly whiteMaterial: MeshStandardMaterial;
     private readonly glowMaterial: MeshStandardMaterial;
+    private readonly litBatches: Record<DebrisShape, InstancedMesh>;
+    private readonly glowBatches: Record<DebrisShape, InstancedMesh>;
+    private readonly batches: InstancedMesh[] = [];
     private readonly chunks: DebrisChunk[] = [];
     private readonly bursts: BurstSprite[] = [];
 
@@ -152,6 +163,11 @@ export class EnemyDebris {
         this.cylinderGeometry = new CylinderGeometry(0.5, 0.5, 1, 7);
         this.sphereGeometry = new SphereGeometry(0.5, 7, 5);
         this.shardGeometry = new TetrahedronGeometry(0.5, 0);
+        this.whiteMaterial = new MeshStandardMaterial({
+            color: 0xffffff,
+            roughness: 0.58,
+            metalness: 0.3,
+        });
         this.glowMaterial = new MeshStandardMaterial({
             color: 0x1a0605,
             emissive: ENEMY_EYE_COLOR,
@@ -160,15 +176,25 @@ export class EnemyDebris {
             metalness: 0.2,
         });
 
+        this.litBatches = {
+            box: this.createBatch('enemy-debris-box', this.boxGeometry, this.whiteMaterial, true),
+            cylinder: this.createBatch('enemy-debris-cylinder', this.cylinderGeometry, this.whiteMaterial, true),
+            sphere: this.createBatch('enemy-debris-sphere', this.sphereGeometry, this.whiteMaterial, true),
+            shard: this.createBatch('enemy-debris-shard', this.shardGeometry, this.whiteMaterial, true),
+        };
+        this.glowBatches = {
+            box: this.createBatch('enemy-debris-box-glow', this.boxGeometry, this.glowMaterial, false),
+            cylinder: this.createBatch('enemy-debris-cylinder-glow', this.cylinderGeometry, this.glowMaterial, false),
+            sphere: this.createBatch('enemy-debris-sphere-glow', this.sphereGeometry, this.glowMaterial, false),
+            shard: this.createBatch('enemy-debris-shard-glow', this.shardGeometry, this.glowMaterial, false),
+        };
+
         for (let index = 0; index < POOL_SIZE; index++) {
-            const mesh = new Mesh(this.boxGeometry, this.materialFor(0x8f9594));
-            mesh.name = 'enemy-debris-chunk';
-            mesh.castShadow = true;
-            mesh.receiveShadow = true;
-            mesh.visible = false;
-            this.group.add(mesh);
             this.chunks.push({
-                mesh,
+                object: new Object3D(),
+                shape: 'box',
+                glow: false,
+                color: new Color(0x8f9594),
                 velocity: new Vector3(),
                 spin: new Vector3(),
                 baseScale: new Vector3(1, 1, 1),
@@ -226,22 +252,21 @@ export class EnemyDebris {
             const angle = this.rng() * TAU;
             const spawnDistance = spawnRadius * Math.sqrt(this.rng());
             const size = lerp(profile.size[0], profile.size[1], this.rng());
-            const geometry = this.pickGeometry(profile);
+            const shape = this.pickShape(profile);
             const glow = this.rng() < profile.glowChance;
-            const scale = this.scaleFor(geometry, size);
+            const scale = this.scaleFor(shape, size);
+            const color = glow ? 0xffffff : profile.palette[Math.floor(this.rng() * profile.palette.length)];
 
-            chunk.mesh.geometry = geometry;
-            chunk.mesh.material = glow
-                ? this.glowMaterial
-                : this.materialFor(profile.palette[Math.floor(this.rng() * profile.palette.length)]);
-            chunk.mesh.position.set(
+            chunk.shape = shape;
+            chunk.glow = glow;
+            chunk.color.setHex(color);
+            chunk.object.position.set(
                 position.x + Math.cos(angle) * spawnDistance,
                 lerp(minimumY, maximumY, this.rng()),
                 position.z + Math.sin(angle) * spawnDistance,
             );
-            chunk.mesh.rotation.set(this.rng() * TAU, this.rng() * TAU, this.rng() * TAU);
-            chunk.mesh.scale.copy(scale);
-            chunk.mesh.visible = true;
+            chunk.object.rotation.set(this.rng() * TAU, this.rng() * TAU, this.rng() * TAU);
+            chunk.object.scale.copy(scale);
 
             chunk.baseScale.copy(scale);
             chunk.halfHeight = Math.max(scale.x, scale.y, scale.z) * 0.5;
@@ -263,6 +288,7 @@ export class EnemyDebris {
             chunk.resting = false;
         }
 
+        this.rebuildBatches();
         this.spawnBurst(profile, position, height);
     }
 
@@ -275,30 +301,29 @@ export class EnemyDebris {
             chunk.age += dt;
             if (chunk.age >= chunk.lifetime) {
                 chunk.active = false;
-                chunk.mesh.visible = false;
                 continue;
             }
 
             if (!chunk.resting) {
-                const previousY = chunk.mesh.position.y;
-                integrateParticle(chunk.mesh.position, chunk.velocity, dt, {
+                const previousY = chunk.object.position.y;
+                integrateParticle(chunk.object.position, chunk.velocity, dt, {
                     gravity: chunk.gravity,
                     horizontalDrag: HORIZONTAL_DRAG,
                 });
-                applySpin(chunk.mesh, chunk.spin, dt);
+                applySpin(chunk.object, chunk.spin, dt);
 
                 const surface = this.terrain.walkSurfaceAt(
-                    chunk.mesh.position.x,
-                    chunk.mesh.position.z,
+                    chunk.object.position.x,
+                    chunk.object.position.z,
                     previousY - chunk.halfHeight + 0.05,
                 );
-                if (chunk.velocity.y < 0 && chunk.mesh.position.y - chunk.halfHeight <= surface) {
+                if (chunk.velocity.y < 0 && chunk.object.position.y - chunk.halfHeight <= surface) {
                     const surfaceY = surface + chunk.halfHeight;
-                    chunk.mesh.position.y = surfaceY;
+                    chunk.object.position.y = surfaceY;
                     const impactSpeed = -chunk.velocity.y;
                     if (chunk.bounces < MAX_BOUNCES && impactSpeed > 1.5) {
                         bounceParticle(
-                            chunk.mesh.position,
+                            chunk.object.position,
                             chunk.velocity,
                             chunk.spin,
                             surfaceY,
@@ -317,9 +342,11 @@ export class EnemyDebris {
 
             const fade = Math.min(1, (chunk.lifetime - chunk.age) / FADE_SECONDS);
             if (fade < 1) {
-                chunk.mesh.scale.copy(chunk.baseScale).multiplyScalar(fade);
+                chunk.object.scale.copy(chunk.baseScale).multiplyScalar(fade);
             }
         }
+
+        this.rebuildBatches();
 
         for (const burst of this.bursts) {
             if (!burst.active) {
@@ -344,7 +371,9 @@ export class EnemyDebris {
     clear(): void {
         for (const chunk of this.chunks) {
             chunk.active = false;
-            chunk.mesh.visible = false;
+        }
+        for (const batch of this.batches) {
+            batch.count = 0;
         }
         for (const burst of this.bursts) {
             burst.active = false;
@@ -362,14 +391,15 @@ export class EnemyDebris {
         }
         this.bursts.length = 0;
 
+        for (const batch of this.batches) {
+            batch.dispose();
+        }
+        this.batches.length = 0;
         this.boxGeometry.dispose();
         this.cylinderGeometry.dispose();
         this.sphereGeometry.dispose();
         this.shardGeometry.dispose();
-        for (const material of this.materials.values()) {
-            material.dispose();
-        }
-        this.materials.clear();
+        this.whiteMaterial.dispose();
         this.glowMaterial.dispose();
     }
 
@@ -402,47 +432,89 @@ export class EnemyDebris {
         }
     }
 
-    private pickGeometry(profile: DebrisProfile): BufferGeometry {
+    private pickShape(profile: DebrisProfile): DebrisShape {
         const roll = this.rng();
         if (roll < profile.boxChance) {
-            return this.boxGeometry;
+            return 'box';
         }
         if (roll < profile.boxChance + profile.shardChance) {
-            return this.shardGeometry;
+            return 'shard';
         }
         if (roll < profile.boxChance + profile.shardChance + profile.cylinderChance) {
-            return this.cylinderGeometry;
+            return 'cylinder';
         }
-        return this.sphereGeometry;
+        return 'sphere';
     }
 
-    private scaleFor(geometry: BufferGeometry, size: number): Vector3 {
-        if (geometry === this.boxGeometry) {
+    private scaleFor(shape: DebrisShape, size: number): Vector3 {
+        if (shape === 'box') {
             return new Vector3(
                 size * (0.7 + this.rng() * 0.9),
                 size * (0.55 + this.rng() * 0.8),
                 size * (0.7 + this.rng() * 0.9),
             );
         }
-        if (geometry === this.cylinderGeometry) {
+        if (shape === 'cylinder') {
             return new Vector3(size * 0.75, size * (1.3 + this.rng() * 0.8), size * 0.75);
         }
-        if (geometry === this.shardGeometry) {
+        if (shape === 'shard') {
             return new Vector3(size, size * (0.8 + this.rng() * 0.8), size);
         }
         return new Vector3(size, size, size);
     }
 
-    private materialFor(color: number): MeshStandardMaterial {
-        let material = this.materials.get(color);
-        if (!material) {
-            material = new MeshStandardMaterial({
-                color,
-                roughness: 0.58,
-                metalness: 0.3,
-            });
-            this.materials.set(color, material);
+    private createBatch(
+        name: string,
+        geometry: BufferGeometry,
+        material: MeshStandardMaterial,
+        lit: boolean,
+    ): InstancedMesh {
+        const batch = new InstancedMesh(geometry, material, POOL_SIZE);
+        batch.name = name;
+        batch.castShadow = true;
+        batch.receiveShadow = true;
+        batch.frustumCulled = false;
+        batch.instanceMatrix.setUsage(DynamicDrawUsage);
+        if (lit) {
+            batch.setColorAt(0, new Color(0xffffff));
+            batch.instanceColor?.setUsage(DynamicDrawUsage);
         }
-        return material;
+        batch.count = 0;
+        this.group.add(batch);
+        this.batches.push(batch);
+        return batch;
+    }
+
+    // Rebuilds the instance buffers from the active chunk records. Inactive chunks simply fall
+    // outside each batch's count and are not drawn.
+    private rebuildBatches(): void {
+        for (const batch of this.batches) {
+            batch.count = 0;
+        }
+
+        for (const chunk of this.chunks) {
+            if (!chunk.active) {
+                continue;
+            }
+
+            const batch = chunk.glow ? this.glowBatches[chunk.shape] : this.litBatches[chunk.shape];
+            const index = batch.count;
+            chunk.object.updateMatrix();
+            batch.setMatrixAt(index, chunk.object.matrix);
+            if (!chunk.glow) {
+                batch.setColorAt(index, chunk.color);
+            }
+            batch.count = index + 1;
+        }
+
+        for (const batch of this.batches) {
+            if (batch.count === 0) {
+                continue;
+            }
+            batch.instanceMatrix.needsUpdate = true;
+            if (batch.instanceColor) {
+                batch.instanceColor.needsUpdate = true;
+            }
+        }
     }
 }

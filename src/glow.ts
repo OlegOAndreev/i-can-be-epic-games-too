@@ -20,6 +20,7 @@ export const GLOW_RING_TEXTURE_RADIUS = 0.4;
 
 let radialGlowTexture: DataTexture | null = null;
 let glowRingTexture: DataTexture | null = null;
+let sparkleTexture: DataTexture | null = null;
 
 export function glowMaterial(options: {
     color: ColorRepresentation;
@@ -87,6 +88,40 @@ export function getRadialGlowTexture(): DataTexture {
     radialGlowTexture.generateMipmaps = false;
     radialGlowTexture.needsUpdate = true;
     return radialGlowTexture;
+}
+
+// Four-point star shared by the dropped-mineral sparkles. A soft disc reads as dust at gem scale;
+// the sharp cardinal flares make each glint read as a sparkle.
+export function getSparkleTexture(): DataTexture {
+    if (sparkleTexture) {
+        return sparkleTexture;
+    }
+
+    const size = 64;
+    const data = new Uint8Array(size * size * 4);
+    for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+            const offset = (y * size + x) * 4;
+            const nx = ((x + 0.5) / size) * 2 - 1;
+            const ny = ((y + 0.5) / size) * 2 - 1;
+            const core = Math.max(0, 1 - Math.hypot(nx, ny) * 1.8);
+            const horizontal = Math.max(0, 1 - Math.abs(nx)) * Math.max(0, 1 - Math.abs(ny) * 9);
+            const vertical = Math.max(0, 1 - Math.abs(ny)) * Math.max(0, 1 - Math.abs(nx) * 9);
+            const alpha = Math.pow(Math.max(core, horizontal, vertical), 1.5);
+            data[offset] = 255;
+            data[offset + 1] = 255;
+            data[offset + 2] = 255;
+            data[offset + 3] = Math.round(alpha * 255);
+        }
+    }
+
+    sparkleTexture = new DataTexture(data, size, size, RGBAFormat);
+    sparkleTexture.colorSpace = SRGBColorSpace;
+    sparkleTexture.minFilter = LinearFilter;
+    sparkleTexture.magFilter = LinearFilter;
+    sparkleTexture.generateMipmaps = false;
+    sparkleTexture.needsUpdate = true;
+    return sparkleTexture;
 }
 
 // Shared soft annulus used by the expanding megastructure crown and detector rings. Building it as

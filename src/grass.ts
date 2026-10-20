@@ -29,10 +29,13 @@ const FADE_END = 80;
 // The terrain shader multiplies its vertex color by the grass texture. This is the average of
 // the grass texture variants, so tuft colors land on the same value as the ground under them.
 const GROUND_TEXTURE_TINT = new Color().setRGB(0.65, 0.74, 0.4);
+// Released slots keep their index and are zero-scaled, so no active instance ever has to shift.
+const HIDDEN_MATRIX = new Matrix4().makeScale(0, 0, 0);
 
 export const DEFAULT_GRASS_RADIUS = 100;
 
 interface GrassTuft {
+    slot: number;
     matrix: Matrix4;
     color: Color;
 }
@@ -53,6 +56,12 @@ export class GrassField {
     private dummy = new Object3D();
     private cells = new Map<string, GrassCell>();
     private generation = 0;
+    // Cells own their instance slots for their whole lifetime. Freed slots become zero-scale
+    // holes and are handed to newly visible cells, so existing cells never need rewriting.
+    private readonly freeSlots: number[] = [];
+    private nextSlot = 0;
+    private activeTufts = 0;
+    private buffersDirty = false;
     private cellRadius: number;
     private lastCellX = Number.NaN;
     private lastCellZ = Number.NaN;
@@ -120,8 +129,9 @@ export class GrassField {
         this.group.add(this.mesh);
     }
 
+    // Visible tufts only: mesh.count also covers zero-scale holes below the high-water mark.
     get instanceCount(): number {
-        return this.mesh.count;
+        return this.activeTufts;
     }
 
     setVisible(visible: boolean): void {
@@ -149,10 +159,8 @@ export class GrassField {
         this.lastCellZ = centerZ;
         this.generation++;
 
-        let count = 0;
-        let truncated = false;
-
-        for (let cellZ = centerZ - this.cellRadius; cellZ <= centerZ + this.cellRadius && !truncated; cellZ++) {
+        // Existing cells keep their slots and buffers; only newly created cells write instances.
+        for (let cellZ = centerZ - this.cellRadius; cellZ <= centerZ + this.cellRadius; cellZ++) {
             for (let cellX = centerX - this.cellRadius; cellX <= centerX + this.cellRadius; cellX++) {
                 const key = cellKey(cellX, cellZ);
                 let cell = this.cells.get(key);
@@ -161,32 +169,21 @@ export class GrassField {
                     this.cells.set(key, cell);
                 }
                 cell.lastSeen = this.generation;
-
-                for (const tuft of cell.tufts) {
-                    if (count >= MAX_INSTANCES) {
-                        truncated = true;
-                        break;
-                    }
-                    this.mesh.setMatrixAt(count, tuft.matrix);
-                    this.mesh.setColorAt(count, tuft.color);
-                    count++;
-                }
-
-                if (truncated) {
-                    break;
-                }
             }
         }
 
         for (const [key, cell] of this.cells) {
             if (cell.lastSeen !== this.generation) {
+                for (const tuft of cell.tufts) {
+                    this.releaseSlot(tuft.slot);
+                }
                 this.cells.delete(key);
             }
         }
 
-        this.mesh.count = count;
-        // Tufts are generated for the full cell ring even when the instance cap truncates the
-        // copy, so this conservative sphere always contains everything that was written.
+        this.mesh.count = this.nextSlot;
+        // The ring bounds are conservative: every allocated slot, including invisible holes,
+        // sits inside this sphere even when the instance cap leaves some cells empty.
         const horizontalRadius = (this.cellRadius + 0.5) * CELL_SIZE * Math.SQRT2;
         const halfHeight = (62 - WATER_LEVEL) * 0.5;
         this.boundsSphere.center.set(
@@ -196,9 +193,13 @@ export class GrassField {
         );
         this.boundsSphere.radius = Math.hypot(horizontalRadius, halfHeight) + 1;
         this.mesh.boundingSphere = this.boundsSphere;
-        this.mesh.instanceMatrix.needsUpdate = true;
-        if (this.mesh.instanceColor) {
-            this.mesh.instanceColor.needsUpdate = true;
+
+        if (this.buffersDirty) {
+            this.mesh.instanceMatrix.needsUpdate = true;
+            if (this.mesh.instanceColor) {
+                this.mesh.instanceColor.needsUpdate = true;
+            }
+            this.buffersDirty = false;
         }
     }
 
@@ -209,6 +210,10 @@ export class GrassField {
         this.group.clear();
         this.group.removeFromParent();
         this.cells.clear();
+        this.freeSlots.length = 0;
+        this.nextSlot = 0;
+        this.activeTufts = 0;
+        this.buffersDirty = false;
     }
 
     private createCell(cellX: number, cellZ: number): GrassCell {
@@ -232,7 +237,10 @@ export class GrassField {
             if (suitability < 0.08 || rng() > suitability) {
                 continue;
             }
-            if (this.terrain.slopeAt(x, z) > 0.8) {
+            // Reuse this slope for both the cutoff and the surface color so the terrain is not
+            // resampled (four heightAt calls) a second time just to rebuild the same normal.
+            const slope = this.terrain.slopeAt(x, z);
+            if (slope > 0.8) {
                 continue;
             }
 
@@ -242,14 +250,50 @@ export class GrassField {
             this.dummy.scale.set(scale, scale * (0.8 + rng() * 0.5), scale);
             this.dummy.updateMatrix();
 
+            const normalY = 1 / Math.sqrt(1 + slope * slope);
             const color = this.terrain
-                .groundColorAt(x, z)
+                .biomeColorAt(x, z, height, normalY)
                 .multiply(GROUND_TEXTURE_TINT)
                 .multiplyScalar(0.9 + rng() * 0.2);
-            tufts.push({ matrix: this.dummy.matrix.clone(), color });
+            const slot = this.allocateSlot();
+            if (slot === -1) {
+                // The instance buffer is full, so this cell keeps only the tufts placed so far.
+                break;
+            }
+
+            const matrix = this.dummy.matrix.clone();
+            this.mesh.setMatrixAt(slot, matrix);
+            this.mesh.setColorAt(slot, color);
+            // setColorAt allocates the color buffer lazily; it changes as slots are freed and reused.
+            const instanceColor = this.mesh.instanceColor;
+            if (instanceColor && instanceColor.usage !== DynamicDrawUsage) {
+                instanceColor.setUsage(DynamicDrawUsage);
+            }
+            tufts.push({ slot, matrix, color });
+            this.buffersDirty = true;
         }
 
         return { tufts, lastSeen: this.generation };
+    }
+
+    private allocateSlot(): number {
+        const freeSlot = this.freeSlots.pop();
+        if (freeSlot !== undefined) {
+            this.activeTufts++;
+            return freeSlot;
+        }
+        if (this.nextSlot >= MAX_INSTANCES) {
+            return -1;
+        }
+        this.activeTufts++;
+        return this.nextSlot++;
+    }
+
+    private releaseSlot(slot: number): void {
+        this.mesh.setMatrixAt(slot, HIDDEN_MATRIX);
+        this.freeSlots.push(slot);
+        this.activeTufts--;
+        this.buffersDirty = true;
     }
 }
 

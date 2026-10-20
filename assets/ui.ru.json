@@ -113,7 +113,7 @@
   "gui.renderReportCopied": "Отчёт скопирован",
   "gui.renderReportFailed": "Не удалось скопировать — отчёт в консоли",
   "gui.isolation": "Изолированный контекст",
-  "gui.isolation.yes": "да — точный таймер",
-  "gui.isolation.no": "нет — таймер пониженной точности",
+  "gui.isolation.yes": "да",
+  "gui.isolation.no": "нет",
   "gui.resetToDefaults": "Сбросить настройки"
 }

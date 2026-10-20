@@ -1,5 +1,6 @@
 import {
     BoxGeometry,
+    BufferAttribute,
     CircleGeometry,
     ConeGeometry,
     CylinderGeometry,
@@ -17,7 +18,7 @@ import type { GameAudio, RobotBeepHandle } from './audio';
 import { getRadialGlowTexture, glowSpriteMaterial } from './glow';
 import { t } from './i18n';
 import { clamp } from './math-utils';
-import { disposeSceneGraph } from './mesh-optimize';
+import { disposeSceneGraph, mergeMeshesByMaterial, registerSharedMaterial } from './mesh-optimize';
 import type { CrownCatwalk, MegastructureStorey, MegastructureTower, Ramp } from './megastructures';
 import { mulberry32 } from './noise';
 import { SpeechLabel, createCaretakerModel, dimRobotModel } from './npc-robots';
@@ -36,6 +37,48 @@ const SPEECH_HEIGHT = 2.2;
 // Every salvaged core restores a quarter of the ship's energy goal.
 const REMAINS_ENERGY = 25;
 const OSSUARY_FLICKER_SECONDS = 1.6;
+
+// Decal and prop materials repeat across encounters, so one instance per kind lets task 2.6 batch
+// their meshes. They are registered as shared so rebuilding a world does not dispose materials that
+// the next world (and every surviving sibling mesh) still uses.
+const SAND_MOUND_MATERIAL = registerSharedMaterial(
+    new MeshStandardMaterial({
+        name: 'remains-sand-mound',
+        color: 0xffffff,
+        vertexColors: true,
+        roughness: 0.95,
+        metalness: 0,
+    }),
+);
+const CRATER_DISC_MATERIAL = registerSharedMaterial(
+    new MeshStandardMaterial({
+        name: 'remains-crater-disc',
+        color: 0x231f1a,
+        roughness: 0.98,
+        metalness: 0,
+        transparent: true,
+        opacity: 0.5,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+    }),
+);
+const CRATER_DEBRIS_MATERIAL = registerSharedMaterial(
+    new MeshStandardMaterial({
+        name: 'remains-crater-debris',
+        color: 0x34393a,
+        roughness: 0.58,
+        metalness: 0.5,
+    }),
+);
+const SLEEPING_GRASS_MATERIAL = registerSharedMaterial(
+    new MeshStandardMaterial({
+        name: 'remains-sleeping-grass',
+        color: 0x4f7d3a,
+        roughness: 0.9,
+        metalness: 0,
+    }),
+);
 
 type RemainsInteraction = 'powerdown' | 'battery' | 'cache';
 
@@ -260,6 +303,7 @@ export class RobotRemains {
 
         const speech = this.addSpeech(group, SPEECH_HEIGHT);
         this.tidewalkerSpeech = speech;
+        mergeStaticGeometry(group);
         this.group.add(group);
         this.addSite('tidewalker', shore.x, shore.y, shore.z);
     }
@@ -316,6 +360,7 @@ export class RobotRemains {
         };
         this.colliders.push(this.sweeperCollider);
 
+        mergeStaticGeometry(group, (object) => object === this.sweeperToolArm);
         this.group.add(group);
         this.sweeperServoTimer = 1.5;
         this.addSite('sweeper', anchor.x, groundY, anchor.z);
@@ -363,6 +408,7 @@ export class RobotRemains {
 
         const speech = this.addSpeech(group, 1.8);
         this.drownedSpeech = speech;
+        mergeStaticGeometry(group);
         this.group.add(group);
         this.addSite('drowned', site.x, site.y, site.z);
     }
@@ -383,6 +429,7 @@ export class RobotRemains {
         entranceGroup.position.set(entrance.x, entranceY, entrance.z);
         entranceGroup.rotation.y = Math.atan2(entrance.inwardX, entrance.inwardZ) + Math.PI;
         this.addBody(entranceGroup, 'matron', 0, 0, 0, 0, 'slump', { weather: true });
+        mergeStaticGeometry(entranceGroup);
         this.group.add(entranceGroup);
         this.addSite('pilgrim-entrance', entrance.x, entranceY, entrance.z);
 
@@ -401,6 +448,7 @@ export class RobotRemains {
                 weather: true,
                 slope: point.slope,
             });
+            mergeStaticGeometry(group);
             this.group.add(group);
             this.addSite(`pilgrim-ramp-${index}`, point.x, point.y, point.z);
         }
@@ -417,6 +465,7 @@ export class RobotRemains {
         fallGroup.position.set(fallX, fallY, fallZ);
         fallGroup.rotation.y = this.rng() * Math.PI * 2;
         this.addBody(fallGroup, 'probe', 0, 0.18, 0, 0, 'lie-forward', { weather: true });
+        mergeStaticGeometry(fallGroup);
         this.group.add(fallGroup);
         this.addSite('pilgrim-fall', fallX, fallY, fallZ);
 
@@ -437,6 +486,7 @@ export class RobotRemains {
             group.position.set(x, structureSwitch.y + 0.02, z);
             group.rotation.y = Math.atan2(structureSwitch.x - x, structureSwitch.z - z);
             this.addBody(group, 'matron', 0, 0, 0, 0, 'slump', { weather: true });
+            mergeStaticGeometry(group);
             this.group.add(group);
             this.addSite('pilgrim-crown', x, structureSwitch.y, z);
         }
@@ -535,6 +585,9 @@ export class RobotRemains {
             }
         }
 
+        mergeStaticGeometry(origin, (object) => object === cacheGroup);
+        mergeStaticGeometry(cacheGroup);
+
         this.colliders.push({
             kind: 'npc',
             x: centreX,
@@ -615,6 +668,8 @@ export class RobotRemains {
 
         const speech = this.addSpeech(group, 2.6);
         this.sleeperSpeech = speech;
+        mergeStaticGeometry(group, (object) => object === batteryGroup);
+        mergeStaticGeometry(batteryGroup);
         this.group.add(group);
         this.colliders.push({
             kind: 'npc',
@@ -860,10 +915,19 @@ export class RobotRemains {
 
     private addSandMound(group: Group, x: number, z: number, radius: number): void {
         const color = this.terrain.groundColorAt(x, z).clone();
-        const mound = new Mesh(
-            new SphereGeometry(radius, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2),
-            new MeshStandardMaterial({ color, roughness: 0.95, metalness: 0 }),
-        );
+        const geometry = new SphereGeometry(radius, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2);
+        // The local ground tint rides in vertex colours so every mound can share one batching
+        // material instead of allocating a material per location.
+        const vertexCount = geometry.getAttribute('position').count;
+        const colors = new Float32Array(vertexCount * 3);
+        for (let index = 0; index < vertexCount; index++) {
+            colors[index * 3] = color.r;
+            colors[index * 3 + 1] = color.g;
+            colors[index * 3 + 2] = color.b;
+        }
+        geometry.setAttribute('color', new BufferAttribute(colors, 3));
+
+        const mound = new Mesh(geometry, SAND_MOUND_MATERIAL);
         mound.scale.set(1.6, 0.32, 1.15);
         mound.position.y = -0.02;
         mound.castShadow = true;
@@ -874,53 +938,34 @@ export class RobotRemains {
     private addCrater(x: number, y: number, z: number): void {
         const group = new Group();
         group.position.set(x, y + 0.02, z);
-        const disc = new Mesh(
-            new CircleGeometry(2.2, 20),
-            new MeshStandardMaterial({
-                color: 0x231f1a,
-                roughness: 0.98,
-                metalness: 0,
-                transparent: true,
-                opacity: 0.5,
-                depthWrite: false,
-                polygonOffset: true,
-                polygonOffsetFactor: -1,
-            }),
-        );
+        const disc = new Mesh(new CircleGeometry(2.2, 20), CRATER_DISC_MATERIAL);
         disc.rotation.x = -Math.PI / 2;
         group.add(disc);
 
-        const debrisMaterial = new MeshStandardMaterial({
-            color: 0x34393a,
-            roughness: 0.58,
-            metalness: 0.5,
-        });
         for (let index = 0; index < 7; index++) {
             const angle = (index / 7) * Math.PI * 2 + this.rng() * 0.4;
             const radius = 0.8 + this.rng() * 1.8;
             const debris = new Mesh(
                 new BoxGeometry(0.18 + this.rng() * 0.35, 0.08, 0.25 + this.rng() * 0.4),
-                debrisMaterial,
+                CRATER_DEBRIS_MATERIAL,
             );
             debris.position.set(Math.cos(angle) * radius, 0.06, Math.sin(angle) * radius);
             debris.rotation.set(this.rng() * 0.5, this.rng() * Math.PI, this.rng() * 0.5);
             debris.castShadow = false;
             group.add(debris);
         }
+        // The crater is entirely static, so its shared debris material collapses the seven boxes
+        // into one mesh; the disc keeps its own transparent material.
+        mergeStaticGeometry(group);
         this.group.add(group);
     }
 
     private addSleepingGrass(group: Group): void {
-        const grassMaterial = new MeshStandardMaterial({
-            color: 0x4f7d3a,
-            roughness: 0.9,
-            metalness: 0,
-        });
         for (let index = 0; index < 14; index++) {
             const angle = (index / 14) * Math.PI * 2 + this.rng() * 0.3;
             const radius = 0.55 + this.rng() * 0.75;
             const height = 0.24 + this.rng() * 0.38;
-            const blade = new Mesh(new ConeGeometry(0.035, height, 4), grassMaterial);
+            const blade = new Mesh(new ConeGeometry(0.035, height, 4), SLEEPING_GRASS_MATERIAL);
             blade.position.set(Math.cos(angle) * radius, height / 2, Math.sin(angle) * radius);
             blade.rotation.z = (this.rng() - 0.5) * 0.2;
             blade.castShadow = false;
@@ -978,19 +1023,45 @@ export class RobotRemains {
     }
 }
 
+// Merges a posed encounter group's static parts, leaving every emissive mesh in place so
+// dimRobotModel(), collectGlow(), and setGlow() keep operating on the original glows.
+function mergeStaticGeometry(root: Object3D, skip?: (object: Object3D) => boolean): void {
+    mergeMeshesByMaterial(root, {
+        skip,
+        mergeMaterial: (material) => material.emissive.getHex() === 0,
+    });
+}
+
+// Shared body materials are reused by living robots, so weathering must never darken them in place.
+// Cloning once per source material keeps every part of this remains on one material, which lets the
+// later per-group merge still batch those meshes together.
 function weatherModel(root: Group): void {
+    const weathered = new Map<MeshStandardMaterial, MeshStandardMaterial>();
     root.traverse((child) => {
         if (!(child instanceof Mesh)) {
             return;
         }
         const materials = Array.isArray(child.material) ? child.material : [child.material];
-        for (const material of materials) {
+        for (let index = 0; index < materials.length; index++) {
+            const material = materials[index];
             if (!(material instanceof MeshStandardMaterial)) {
                 continue;
             }
-            material.color.offsetHSL(0, -0.12, -0.055);
-            material.roughness = Math.min(1, material.roughness + 0.18);
-            material.metalness = Math.max(0, material.metalness - 0.05);
+
+            let clone = weathered.get(material);
+            if (!clone) {
+                clone = material.clone();
+                clone.color.offsetHSL(0, -0.12, -0.055);
+                clone.roughness = Math.min(1, clone.roughness + 0.18);
+                clone.metalness = Math.max(0, clone.metalness - 0.05);
+                weathered.set(material, clone);
+            }
+
+            if (Array.isArray(child.material)) {
+                child.material[index] = clone;
+            } else {
+                child.material = clone;
+            }
         }
     });
 }

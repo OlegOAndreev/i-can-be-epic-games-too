@@ -5,8 +5,8 @@ import {
     CylinderGeometry,
     Group,
     Mesh,
-    MeshBasicMaterial,
     MeshStandardMaterial,
+    type Object3D,
     SphereGeometry,
     Sprite,
     SpriteMaterial,
@@ -18,7 +18,13 @@ import type { GameAudio, RobotBeepHandle } from './audio';
 import type { Difficulty } from './enemies';
 import { getRadialGlowTexture, glowSpriteMaterial } from './glow';
 import { damp, dampAngle, wrapAngle } from './math-utils';
-import { disposeSceneGraph, mergeMeshesByMaterial, registerSharedGeometry } from './mesh-optimize';
+import {
+    disposeSceneGraph,
+    mergeMeshesByMaterial,
+    mergeMeshesWithVertexColors,
+    registerSharedGeometry,
+    registerSharedMaterial,
+} from './mesh-optimize';
 import { mulberry32 } from './noise';
 import { PLAYER_HEIGHT } from './player';
 import type { CylinderCollider, Terrain } from './terrain';
@@ -514,8 +520,9 @@ export function createEnemyRobotModel(id: RobotKind): RobotModel {
 }
 
 // A neutral caretaker body for the ones that stopped long ago. The caller decides how to pose it.
-// Remains deliberately skip static merging because dimRobotModel() scales emissive intensity once
-// per mesh that uses a material; merging would change how strongly those shared glows are dimmed.
+// Remains deliberately skip the per-body static merge used by enemies, because that would also
+// collapse the emissive parts that dimRobotModel() scales once per mesh using a material. Instead
+// RobotRemains merges each posed group's non-emissive meshes afterwards.
 export function createCaretakerModel(id: RobotKind): RobotModel {
     return createRobotModel(id);
 }
@@ -531,11 +538,23 @@ export function dimRobotModel(root: Group, factor = 0.04): void {
         const materials = Array.isArray(child.material) ? child.material : [child.material];
         for (const material of materials) {
             if (material instanceof MeshStandardMaterial) {
-                material.emissiveIntensity *= factor;
+                // Body materials are shared and have no emissive, so dimming must leave them alone.
+                if (material.emissive.getHex() !== 0) {
+                    material.emissiveIntensity *= factor;
+                }
             } else if (material instanceof SpriteMaterial) {
                 material.opacity *= factor;
             }
         }
+    });
+}
+
+// Glow parts share one per-model material and animate as a whole, so they can be batched within a
+// pivot. Reusing the pivot's skip predicate keeps them from merging across animated groups.
+function mergeGlowParts(root: Group, skip?: (object: Object3D) => boolean): void {
+    mergeMeshesByMaterial(root, {
+        skip,
+        mergeMaterial: (material) => material.emissive.getHex() !== 0,
     });
 }
 
@@ -620,14 +639,24 @@ function buildMatronModel(hostile: boolean, mergeStatic = false): RobotModel {
 
     if (mergeStatic) {
         // Collapse static parts inside each animated pivot. The visual, body, head, and arms keep
-        // their own transforms, so every existing animation still drives the same group.
-        mergeMeshesByMaterial(visual, { skip: (object) => object === body });
-        mergeMeshesByMaterial(body, {
-            skip: (object) => object === head || arms.includes(object as Group),
+        // their own transforms, so every existing animation still drives the same group. Body
+        // colours are baked into vertex colours so each pivot collapses to one mesh per finish
+        // bucket; glow parts opt out of those buckets but still batch within their own pivot.
+        mergeMeshesWithVertexColors(visual, {
+            skip: (object) => object === body,
+            targetMaterial: robotBodyMaterial,
         });
-        mergeMeshesByMaterial(head);
+        mergeGlowParts(visual, (object) => object === body);
+        mergeMeshesWithVertexColors(body, {
+            skip: (object) => object === head || arms.includes(object as Group),
+            targetMaterial: robotBodyMaterial,
+        });
+        mergeGlowParts(body, (object) => object === head || arms.includes(object as Group));
+        mergeMeshesWithVertexColors(head, { targetMaterial: robotBodyMaterial });
+        mergeGlowParts(head);
         for (const arm of arms) {
-            mergeMeshesByMaterial(arm);
+            mergeMeshesWithVertexColors(arm, { targetMaterial: robotBodyMaterial });
+            mergeGlowParts(arm);
         }
     }
 
@@ -704,12 +733,20 @@ function buildTrackedModel(hostile: boolean, mergeStatic = false): RobotModel {
     addBox(toolArm, 0.14, 0.1, 0.26, metal, 0, -0.3, 0.21);
 
     if (mergeStatic) {
-        mergeMeshesByMaterial(visual, { skip: (object) => object === hull });
-        mergeMeshesByMaterial(hull, {
-            skip: (object) => object === head || object === toolArm,
+        mergeMeshesWithVertexColors(visual, {
+            skip: (object) => object === hull,
+            targetMaterial: robotBodyMaterial,
         });
-        mergeMeshesByMaterial(head);
-        mergeMeshesByMaterial(toolArm);
+        mergeGlowParts(visual, (object) => object === hull);
+        mergeMeshesWithVertexColors(hull, {
+            skip: (object) => object === head || object === toolArm,
+            targetMaterial: robotBodyMaterial,
+        });
+        mergeGlowParts(hull, (object) => object === head || object === toolArm);
+        mergeMeshesWithVertexColors(head, { targetMaterial: robotBodyMaterial });
+        mergeGlowParts(head);
+        mergeMeshesWithVertexColors(toolArm, { targetMaterial: robotBodyMaterial });
+        mergeGlowParts(toolArm);
     }
 
     prepareMeshes(visual);
@@ -815,9 +852,14 @@ function buildProbeModel(hostile: boolean, mergeStatic = false): RobotModel {
 
     if (mergeStatic) {
         const pivots = new Set<Group>([head, ...legs, ...manipulators.map(({ group }) => group)]);
-        mergeMeshesByMaterial(visual, { skip: (object) => pivots.has(object as Group) });
+        mergeMeshesWithVertexColors(visual, {
+            skip: (object) => pivots.has(object as Group),
+            targetMaterial: robotBodyMaterial,
+        });
+        mergeGlowParts(visual, (object) => pivots.has(object as Group));
         for (const pivot of pivots) {
-            mergeMeshesByMaterial(pivot);
+            mergeMeshesWithVertexColors(pivot, { targetMaterial: robotBodyMaterial });
+            mergeGlowParts(pivot);
         }
     }
 
@@ -840,45 +882,34 @@ function buildProbeModel(hostile: boolean, mergeStatic = false): RobotModel {
     };
 }
 
-// Shared material for the per-model shadow proxy. It is invisible in the main pass because it
-// writes neither colour nor depth, but the shadow map replaces the material with a depth material,
-// so the proxy still casts.
-const SHADOW_PROXY_MATERIAL = new MeshBasicMaterial({ colorWrite: false, depthWrite: false });
 // Every box-shaped robot part scales this one geometry instead of allocating its own.
 const UNIT_BOX_GEOMETRY = registerSharedGeometry(new BoxGeometry(1, 1, 1));
 
+// Robot models cast their actual merged geometry. This costs one draw per body/emissive mesh per
+// shadow cascade; the alternative was a single box proxy, which lost the real silhouette.
 export function prepareMeshes(root: Group): void {
     root.traverse((child) => {
         if (child instanceof Mesh) {
-            child.castShadow = false;
+            child.castShadow = true;
             child.receiveShadow = true;
         }
     });
-
-    // One low-poly proxy per model carries the whole silhouette into every shadow cascade. The
-    // real parts still receive shadows, but they no longer each add a draw per cascade. The proxy
-    // writes neither colour nor depth in the main pass, so it is invisible there.
-    root.updateMatrixWorld(true);
-    const bounds = new Box3().setFromObject(root);
-    if (bounds.isEmpty()) {
-        return;
-    }
-
-    const size = bounds.getSize(new Vector3());
-    const center = bounds.getCenter(new Vector3());
-    const proxy = new Mesh(UNIT_BOX_GEOMETRY, SHADOW_PROXY_MATERIAL);
-    proxy.name = 'shadow-proxy';
-    proxy.scale.set(Math.max(0.05, size.x), Math.max(0.05, size.y), Math.max(0.05, size.z));
-    proxy.position.copy(root.worldToLocal(center));
-    proxy.castShadow = true;
-    proxy.receiveShadow = false;
-    proxy.updateMatrix();
-    proxy.matrixAutoUpdate = false;
-    root.add(proxy);
 }
 
+// Every robot of a kind repeats the same handful of body colours. One material per colour/finish
+// combination keeps draw calls on the same state and lets the cache outlive any single model.
+const bodyMaterials = new Map<string, MeshStandardMaterial>();
+
 export function createMaterial(color: number, roughness: number, metalness = 0): MeshStandardMaterial {
-    return new MeshStandardMaterial({ color, roughness, metalness });
+    const key = `${color}|${roughness}|${metalness}`;
+    const cached = bodyMaterials.get(key);
+    if (cached) {
+        return cached;
+    }
+
+    const material = registerSharedMaterial(new MeshStandardMaterial({ color, roughness, metalness }));
+    bodyMaterials.set(key, material);
+    return material;
 }
 
 function createGlowMaterial(color: number): MeshStandardMaterial {
@@ -889,6 +920,52 @@ function createGlowMaterial(color: number): MeshStandardMaterial {
         roughness: 0.35,
         metalness: 0.2,
     });
+}
+
+// Body parts only differ by base colour and a few finish values, so their colours are baked into
+// vertex colours and every part lands in one of these three shared finish buckets. The buckets use
+// representative roughness/metalness values, which approximates the finish but keeps every tint.
+const BODY_MATTE = registerSharedMaterial(
+    new MeshStandardMaterial({
+        name: 'robot-body-matte',
+        color: 0xffffff,
+        vertexColors: true,
+        roughness: 0.58,
+        metalness: 0.2,
+    }),
+);
+const BODY_METAL = registerSharedMaterial(
+    new MeshStandardMaterial({
+        name: 'robot-body-metal',
+        color: 0xffffff,
+        vertexColors: true,
+        roughness: 0.42,
+        metalness: 0.65,
+    }),
+);
+const BODY_RUBBER = registerSharedMaterial(
+    new MeshStandardMaterial({
+        name: 'robot-body-rubber',
+        color: 0xffffff,
+        vertexColors: true,
+        roughness: 0.92,
+        metalness: 0.04,
+    }),
+);
+
+// Glow, textured, and transparent parts keep their own materials and meshes so emissive animation,
+// collectGlow(), and dimRobotModel() still see them individually.
+function robotBodyMaterial(source: MeshStandardMaterial): MeshStandardMaterial | null {
+    if (source.emissive.getHex() !== 0 || source.map !== null || source.transparent || source.opacity < 1) {
+        return null;
+    }
+    if (source.metalness >= 0.5) {
+        return BODY_METAL;
+    }
+    if (source.roughness >= 0.8) {
+        return BODY_RUBBER;
+    }
+    return BODY_MATTE;
 }
 
 export function addBox(

@@ -15,7 +15,7 @@ import { installCanvasDocument, stubAudio, testPlayer, testTerrain } from './tes
 installCanvasDocument(1024, 320);
 
 describe('shadow casters', () => {
-    it('uses one shadow proxy for the whole model', () => {
+    it('casts shadows from the real meshes', () => {
         const root = new Group();
         const material = new MeshStandardMaterial();
         const large = new Mesh(new BoxGeometry(2, 2, 2), material);
@@ -25,20 +25,18 @@ describe('shadow casters', () => {
 
         prepareMeshes(root);
 
-        expect(large.castShadow).toBe(false);
-        expect(small.castShadow).toBe(false);
+        expect(large.castShadow).toBe(true);
+        expect(small.castShadow).toBe(true);
         expect(large.receiveShadow).toBe(true);
         expect(small.receiveShadow).toBe(true);
 
-        const proxies: Mesh[] = [];
+        let proxies = 0;
         root.traverse((object) => {
             if (object instanceof Mesh && object.name === 'shadow-proxy') {
-                proxies.push(object);
+                proxies++;
             }
         });
-        expect(proxies).toHaveLength(1);
-        expect(proxies[0].castShadow).toBe(true);
-        expect(proxies[0].receiveShadow).toBe(false);
+        expect(proxies).toBe(0);
     });
 });
 

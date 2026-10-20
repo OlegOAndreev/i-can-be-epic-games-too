@@ -391,8 +391,8 @@ export function buildPlayerModel(): PlayerModel {
     const robotMaterials: MeshStandardMaterial[] = [];
     visual.traverse((child) => {
         if (child instanceof Mesh) {
-            // The robot casts its shadow onto the world, and receives a world-only shadow map so
-            // it is shaded by trees and structures without its own parts shadowing it.
+            // The player casts its actual silhouette and receives the world-only shadow map so
+            // trees and structures shade the robot.
             child.castShadow = true;
             child.receiveShadow = true;
             const materials = Array.isArray(child.material) ? child.material : [child.material];

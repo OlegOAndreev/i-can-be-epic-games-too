@@ -17,24 +17,36 @@ import type { ShadowPreset } from './sun-light-shadow';
 
 const SUN_SHADOW_LOOKUP = 'getSunShadow( sunShadowMap[ i ], sunLightShadow, UNROLLED_LOOP_INDEX )';
 
-// A second, black sun renders the same cascades as the main sun without the player robot in them.
-// The robot samples this map instead of the main sun's, so it receives shadows from the world but
-// never from its own parts. The main sun still includes the robot so its cast shadow lands on the
-// ground and on nearby objects.
+// Robots are small and stay close to the camera. One cascade over this distance covers every world
+// shadow that can meaningfully fall on them; enemies are culled at 65 m and NPCs are closer, so
+// 80 m keeps the cascade tight enough for readable shadows on robot surfaces.
+export const ROBOT_SHADOW_DISTANCE = 80;
+
+// A second, black sun renders a single close-range cascade without the player robot in it. The
+// robot samples this map instead of the main sun's, so it receives shadows from the world but never
+// from its own parts. The main sun still includes the robot so its cast shadow lands on the ground.
 export function createRobotShadowSun(mainSun: SunLight, preset: ShadowPreset): SunLight {
     const sun = new SunLight(0x000000, 0);
     sun.name = 'robot-shadow-sun';
     sun.position.copy(mainSun.position);
     sun.castShadow = true;
-    sun.shadow = new CascadedSunLightShadow(preset.cascades, preset.fractions);
+    // Keep the same cascade count as the main sun: three.js packs all sun-shadow uniforms at a
+    // fixed SUN_LIGHT_CASCADES stride, so a smaller viewport count leaves undefined uniform slots.
+    // Instead, make the first cascade cover the full close range and give the remaining cascades
+    // no layers, so they still exist for the shader but render zero casters.
+    const fractions = new Array<number>(Math.max(0, preset.cascades - 1)).fill(1);
+    sun.shadow = new CascadedSunLightShadow(preset.cascades, fractions);
     sun.shadow.mapSize.set(preset.mapSize, preset.mapSize);
-    sun.shadow.camera.far = mainSun.shadow.camera.far;
+    sun.shadow.camera.far = Math.min(mainSun.shadow.camera.far, ROBOT_SHADOW_DISTANCE);
     sun.shadow.bias = mainSun.shadow.bias;
     sun.shadow.normalBias = mainSun.shadow.normalBias;
     sun.shadow.intensity = mainSun.shadow.intensity;
 
-    for (let index = 0; index < sun.shadow.getViewportCount(); index++) {
-        sun.shadow.getCamera(index).layers.enable(MEGASTRUCTURE_LAYER);
+    // Cascade 0 covers the whole close range; the empty far cascades only contribute the fade
+    // band at the very edge of ROBOT_SHADOW_DISTANCE.
+    sun.shadow.getCamera(0).layers.enable(MEGASTRUCTURE_LAYER);
+    for (let index = 1; index < sun.shadow.getViewportCount(); index++) {
+        sun.shadow.getCamera(index).layers.disableAll();
     }
 
     return sun;

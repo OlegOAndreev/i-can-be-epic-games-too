@@ -334,6 +334,28 @@ describe('Player model merging', () => {
     });
 });
 
+describe('Player shadow casters', () => {
+    it('casts shadows from the detailed body meshes', () => {
+        const model = buildPlayerModel();
+        expect(model.visual.getObjectByName('shadow-proxy')).toBeUndefined();
+
+        // Thruster halos are additive light, not solid geometry, and stay out of the shadow map.
+        const halos = new Set(model.thrusterHalos);
+        const pivots = [model.upperBody, model.leftArm, model.rightArm, model.leftLeg, model.rightLeg, model.wrench];
+        let detailedMeshes = 0;
+        for (const pivot of pivots) {
+            pivot.traverse((child) => {
+                if (child instanceof Mesh && !halos.has(child)) {
+                    detailedMeshes++;
+                    expect(child.castShadow).toBe(true);
+                    expect(child.receiveShadow).toBe(true);
+                }
+            });
+        }
+        expect(detailedMeshes).toBeGreaterThan(0);
+    });
+});
+
 describe('Player opacity', () => {
     it('fades between full and 10% opacity', () => {
         const terrain = testTerrain();

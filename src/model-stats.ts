@@ -16,7 +16,7 @@ export function collectEntityPolygons(scene: Scene): EntityPolygonRow[] {
     const rows = new Map<string, EntityPolygonRow>();
 
     scene.traverse((object) => {
-        if (!(object instanceof Mesh) || object.name === 'shadow-proxy') {
+        if (!(object instanceof Mesh)) {
             return;
         }
 

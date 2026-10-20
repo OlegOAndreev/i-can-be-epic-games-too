@@ -152,7 +152,7 @@ describe('robot animals', () => {
         animals.dispose();
     });
 
-    it('wags wolf tails while the pack watches the player', () => {
+    it('wags wolf tails around the nose-tail axis while the pack watches the player', () => {
         const terrain = testTerrain(20260419, { meshes: false });
         const animals = new RobotAnimals(terrain);
         const groups = animalGroups(animals);
@@ -162,14 +162,18 @@ describe('robot animals', () => {
         expect(tail).toBeDefined();
 
         let maxWag = 0;
+        let maxYaw = 0;
         for (let step = 0; step < 60; step++) {
             animals.update(0.05, player);
             if (tail) {
-                maxWag = Math.max(maxWag, Math.abs(tail.rotation.y));
+                // The wolf's nose-tail axis is its local Z, so the wag is a roll instead of a yaw.
+                maxWag = Math.max(maxWag, Math.abs(tail.rotation.z));
+                maxYaw = Math.max(maxYaw, Math.abs(tail.rotation.y));
             }
         }
 
         expect(maxWag).toBeGreaterThan(0.4);
+        expect(maxYaw).toBe(0);
 
         animals.dispose();
     });

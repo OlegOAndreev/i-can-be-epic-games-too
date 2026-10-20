@@ -161,6 +161,17 @@ describe('rock damage', () => {
             return;
         }
 
+        const sparkles = mineral.children.filter(
+            (child): child is Sprite => child instanceof Sprite && child.name === 'emerald-mineral-sparkle',
+        );
+        expect(sparkles.length).toBeGreaterThan(0);
+        expect(sparkles.every((sparkle) => sparkle.visible && sparkle.material.opacity > 0)).toBe(true);
+        const initialOpacities = sparkles.map((sparkle) => sparkle.material.opacity);
+        terrain.update(0.1, mineral.position.clone().add(new Vector3(100, 0, 0)));
+        sparkles.forEach((sparkle, index) => {
+            expect(sparkle.material.opacity).toBeLessThan(initialOpacities[index]);
+        });
+
         let collected = 0;
         terrain.onMineralCollected = (count) => {
             collected = count;

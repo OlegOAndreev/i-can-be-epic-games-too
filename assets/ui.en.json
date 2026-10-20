@@ -113,7 +113,7 @@
   "gui.renderReportCopied": "Copied render report",
   "gui.renderReportFailed": "Copy failed — report logged",
   "gui.isolation": "Cross-origin isolated",
-  "gui.isolation.yes": "yes — high-resolution timer",
-  "gui.isolation.no": "no — reduced-resolution timer",
+  "gui.isolation.yes": "yes",
+  "gui.isolation.no": "no",
   "gui.resetToDefaults": "Reset to defaults"
 }

@@ -69,7 +69,12 @@ import type { Profiler } from './profiler';
 import type { RenderAudit } from './render-audit';
 import { RobotAnimals } from './robot-animals';
 import { RobotRemains } from './robot-remains';
-import { applyRobotWorldOnlyShadows, createRobotShadowSun, sunShadowIndex } from './robot-shadow';
+import {
+    applyRobotWorldOnlyShadows,
+    createRobotShadowSun,
+    ROBOT_SHADOW_DISTANCE,
+    sunShadowIndex,
+} from './robot-shadow';
 import { ScreenOverlay } from './screen-overlay';
 import { readSharedPlayerState, readSharedSeed, writeSharedPlayerState } from './share-state';
 import { ShoreFoam } from './shore-foam';
@@ -900,7 +905,13 @@ async function init(): Promise<void> {
 
     player = new Player(terrain, playerSettings);
     playerHealth = new PlayerHealth(gameSettings.difficulty);
-    player.onWrenchSwingEnd = (charged) => strikeEnemiesWithWrench(charged);
+    // A regular swing checks enemies only when it starts; the charged spin checks them again as
+    // it finishes, catching robots that drifted into reach during the longer animation.
+    player.onWrenchSwingEnd = (charged) => {
+        if (charged) {
+            strikeEnemiesWithWrench(true);
+        }
+    };
     player.onJump = (doubleJump) => gameAudio.playJump(doubleJump);
     player.onDoubleJump = (position) => {
         if (!isFullySubmerged(position)) {
@@ -2215,7 +2226,7 @@ function rebuildWorld(seed: number): void {
 function setShadowDistance(distance: number): void {
     renderSettings.shadowDistance = distance;
     sun.shadow.camera.far = distance;
-    robotShadowSun.shadow.camera.far = distance;
+    robotShadowSun.shadow.camera.far = Math.min(distance, ROBOT_SHADOW_DISTANCE);
 }
 
 function setShadowQuality(quality: ShadowQuality): void {
@@ -2653,9 +2664,9 @@ function strikeWithWrench(charged: boolean): void {
     }
 }
 
-// The swing hits enemies twice: once when it starts and again when the animation ends. The second
-// pass catches robots that moved into reach mid-swing; wrenchStrike skips anyone still immune from
-// the first pass, so a robot in range for both checks only takes one hit.
+// Only the charged strike hits enemies twice: once when it starts and again when the animation
+// ends. The second pass catches robots that moved into reach mid-spin; wrenchStrike skips anyone
+// still immune from the first pass, so a robot in range for both checks only takes one hit.
 function strikeEnemiesWithWrench(charged = false): void {
     const damage = charged ? WRENCH_CHARGED_DAMAGE : 1;
     const enemyHits = enemyRobots.wrenchStrike(player.group.position, damage);
