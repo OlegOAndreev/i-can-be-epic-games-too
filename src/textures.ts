@@ -4,6 +4,7 @@ import {
     DataTexture,
     LinearFilter,
     LinearMipmapLinearFilter,
+    LoadingManager,
     MeshStandardMaterial,
     NoColorSpace,
     RepeatWrapping,
@@ -95,7 +96,10 @@ export function getSurfaceTextures(): SurfaceTextures {
 }
 
 // Await all asset loads before the scene is built, so the first rendered frame already has maps.
-export async function preloadSurfaceTextures(renderer: WebGLRenderer): Promise<SurfaceTextures> {
+export async function preloadSurfaceTextures(
+    renderer: WebGLRenderer,
+    onProgress?: (loaded: number, total: number) => void,
+): Promise<SurfaceTextures> {
     if (cachedTextures) {
         return cachedTextures;
     }
@@ -105,8 +109,10 @@ export async function preloadSurfaceTextures(renderer: WebGLRenderer): Promise<S
         return cachedTextures;
     }
 
-    const textureLoader = new TextureLoader();
-    const ktx2Loader = new KTX2Loader()
+    const manager = new LoadingManager();
+    manager.onProgress = (_url, loaded, total) => onProgress?.(loaded, total);
+    const textureLoader = new TextureLoader(manager);
+    const ktx2Loader = new KTX2Loader(manager)
         .setTranscoderPath(`${import.meta.env.BASE_URL}basis/`)
         .detectSupport(renderer);
 

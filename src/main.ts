@@ -41,7 +41,7 @@ import {
     installStaticSunShadowShaderChunks,
 } from './static-sun-shadow';
 
-import { GameAudio } from './audio';
+import { GameAudio, preloadAudioEffects } from './audio';
 import { getById, reportError, setupWindowOnError } from './common-utils';
 import { DamageVignette } from './damage-vignette';
 import { DustPuffs } from './dust';
@@ -718,6 +718,12 @@ let clock: Clock;
 let overlay: HTMLDivElement;
 let playButton: HTMLButtonElement;
 let statusLine: HTMLParagraphElement;
+let loadingScreen: HTMLDivElement;
+let loadingStatus: HTMLSpanElement;
+let loadingPercent: HTMLSpanElement;
+let loadingBar: HTMLDivElement;
+let loadingFill: HTMLDivElement;
+let loadingProgress = 0;
 let seedValue: HTMLSpanElement;
 let speedometer: HTMLDivElement;
 let speedValue: HTMLSpanElement;
@@ -793,9 +799,20 @@ async function init(): Promise<void> {
     await initI18n();
     canvas = getById<HTMLCanvasElement>('threejs');
     view = new View(canvas);
+    loadingScreen = getById<HTMLDivElement>('loading-screen');
+    loadingStatus = getById<HTMLSpanElement>('loading-status');
+    loadingPercent = getById<HTMLSpanElement>('loading-percent');
+    loadingBar = getById<HTMLDivElement>('loading-bar');
+    loadingFill = getById<HTMLDivElement>('loading-fill');
+    setLoadingProgress(0.05);
     // Start the largest download before the synchronous dialogue setup, so the network wait
     // overlaps with work that does not need the textures.
-    const texturesPromise = preloadSurfaceTextures(view.renderer);
+    const texturesPromise = preloadSurfaceTextures(view.renderer, (loaded, total) => {
+        setLoadingProgress(
+            0.05 + 0.45 * (loaded / total),
+            `${t('loading.textures', 'Loading textures…')} ${loaded} / ${total}`,
+        );
+    });
 
     speedFormatter = new Intl.NumberFormat(locale(), {
         minimumFractionDigits: 1,
@@ -805,13 +822,25 @@ async function init(): Promise<void> {
     statusLine = getById<HTMLParagraphElement>('overlay-status');
     playButton = getById<HTMLButtonElement>('play-button');
     const newWorldButton = getById<HTMLButtonElement>('new-world-button');
-    statusLine.textContent = t('overlay.loading', 'Loading world…');
     robotStory = loadRobotStory();
 
     try {
         await texturesPromise;
     } catch (error) {
         throw new Error('Failed to load the surface textures.', { cause: error });
+    }
+
+    // Audio is fetched before the first gesture but not decoded; the browser only allows an
+    // AudioContext after a click. A failed prefetch is harmless because load() retries it.
+    try {
+        await preloadAudioEffects((loaded, total) => {
+            setLoadingProgress(
+                0.5 + 0.12 * (loaded / total),
+                `${t('loading.audio', 'Loading audio…')} ${loaded} / ${total}`,
+            );
+        });
+    } catch (error) {
+        console.warn('Audio prefetch failed; sounds will load on demand.', error);
     }
 
     underwater = new UnderwaterEffect(view.renderer, view.fog);
@@ -865,11 +894,15 @@ async function init(): Promise<void> {
     createSky();
     createLights();
 
-    statusLine.textContent = t('overlay.building', 'Building the island…');
+    const buildingMessage = t('overlay.building', 'Building the island…');
+    setLoadingProgress(0.64, buildingMessage);
     // Terrain construction is synchronous (roughly 0.5–1 s on desktop). Yield one frame so the
     // loading message above is painted before the main thread disappears into world generation.
     await nextFrame();
+    console.info(`[loading] ${buildingMessage} (seed ${worldSettings.seed})`);
+    const terrainStart = performance.now();
     terrain = new Terrain(worldSettings.seed);
+    const terrainSeconds = (performance.now() - terrainStart) / 1000;
     terrain.onMineralCollected = (collected) => {
         mineralsCollected = collected;
         gameAudio.playRingPassed();
@@ -880,6 +913,15 @@ async function init(): Promise<void> {
         staticSunShadow?.invalidateAround(x, y, z, radius);
     };
     view.scene.add(terrain.group);
+
+    const terrainReadyMessage = t(
+        'loading.terrainReady',
+        'Island generated. Placing robots and wreckage…',
+    );
+    setLoadingProgress(0.75, terrainReadyMessage);
+    console.info(`[loading] ${terrainReadyMessage} (${terrainSeconds.toFixed(2)} s)`);
+    // Terrain generation blocks the main thread, so paint the milestone before building actors.
+    await nextFrame();
 
     shoreFoam = new ShoreFoam(view.scene, terrain);
 
@@ -1137,12 +1179,15 @@ async function init(): Promise<void> {
         }
     });
 
-    statusLine.textContent = t('overlay.preparing', 'Preparing graphics…');
+    setLoadingProgress(0.9, t('overlay.preparing', 'Preparing graphics…'));
     await warmUpRenderer();
     worldReady = true;
     playButton.disabled = false;
     newWorldButton.disabled = false;
     statusLine.textContent = t('overlay.status');
+    setLoadingProgress(1, t('loading.ready', 'Ready.'));
+    await nextFrame();
+    loadingScreen.classList.add('is-hidden');
 
     idleManager = new IdleManager(document, {
         onStartIdle: () => {
@@ -1259,6 +1304,14 @@ void init().catch((error: unknown) => {
     const status = document.getElementById('overlay-status');
     if (status) {
         status.textContent = t(
+            'status.startupFailed',
+            'The world failed to load. See the error below.',
+        );
+    }
+    // The loading screen covers the menu, so surface the failure there too.
+    const loading = document.getElementById('loading-status');
+    if (loading) {
+        loading.textContent = t(
             'status.startupFailed',
             'The world failed to load. See the error below.',
         );
@@ -1450,12 +1503,15 @@ async function warmUpRenderer(): Promise<void> {
     renderFrame();
 }
 
+// Resolve on a timer *after* the animation frame, not from inside the frame callback: a promise
+// continuation resumes in a microtask before the browser paints, which would let the next
+// synchronous build step swallow the message we just set.
 function nextFrame(): Promise<void> {
     return new Promise((resolve) => {
         const timeout = window.setTimeout(resolve, 100);
         requestAnimationFrame(() => {
             window.clearTimeout(timeout);
-            resolve();
+            window.setTimeout(resolve, 0);
         });
     });
 }
@@ -1473,6 +1529,19 @@ function resumeWalking(): void {
     }
     gameAudio.start();
     input.requestPointerLock();
+}
+
+// Phases are weighted by how long they actually take, and progress is clamped so the bar never
+// moves backwards while the texture manager's total grows.
+function setLoadingProgress(progress: number, message?: string): void {
+    loadingProgress = Math.max(loadingProgress, progress);
+    const percent = Math.round(loadingProgress * 100);
+    loadingFill.style.width = `${percent}%`;
+    loadingBar.setAttribute('aria-valuenow', String(percent));
+    loadingPercent.textContent = `${percent}%`;
+    if (message !== undefined) {
+        loadingStatus.textContent = message;
+    }
 }
 
 function formatVolume(volume: number): string {

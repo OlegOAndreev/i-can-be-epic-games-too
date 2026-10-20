@@ -245,6 +245,48 @@ const STRUCTURE_BUZZ_URL = effectUrl(structureBuzzWavUrl, structureBuzzOpusUrl);
 const SHIP_ENGINE_URL = effectUrl(shipEngineWavUrl, shipEngineOpusUrl);
 const FALL_WIND_URL = effectUrl(fallWindWavUrl, fallWindOpusUrl);
 const WRENCH_SWING_URL = effectUrl(wrenchSwingWavUrl, wrenchSwingOpusUrl);
+
+// The exact set GameAudio.load() decodes, shared with the boot-time prefetch.
+const EFFECT_URLS = [
+    ...FOOTSTEP_URLS,
+    ...METAL_FOOTSTEP_URLS,
+    ...LASER_URLS,
+    ...PLAYER_HIT_URLS,
+    ...ENEMY_HIT_URLS,
+    ...SWITCH_CLICK_URLS,
+    ...JUMP_BOP_URLS,
+    ...PART_RECOVERED_URLS,
+    ...RING_PASSED_URLS,
+    ...POWER_DOWN_URLS,
+    ...LIGHTNING_STRIKE_URLS,
+    STRUCTURE_BUZZ_URL,
+    SHIP_ENGINE_URL,
+    FALL_WIND_URL,
+    WRENCH_SWING_URL,
+];
+
+async function fetchAudio(url: string): Promise<ArrayBuffer> {
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`Could not load ${url}: ${response.status} ${response.statusText}`);
+    }
+    return response.arrayBuffer();
+}
+
+// Warm the HTTP cache while the loading screen is visible. No AudioContext is created here:
+// browsers only allow that after a user gesture, so decoding still happens on the first click.
+export async function preloadAudioEffects(
+    onProgress?: (loaded: number, total: number) => void,
+): Promise<void> {
+    let loaded = 0;
+    await Promise.all(
+        EFFECT_URLS.map(async (url) => {
+            await fetchAudio(url);
+            loaded += 1;
+            onProgress?.(loaded, EFFECT_URLS.length);
+        }),
+    );
+}
 const MUSIC_LEVEL = 0.2;
 // The finale fanfare is a full ensemble instead of a sparse drone, so it sits a little louder.
 const ENDING_MUSIC_LEVEL = 0.24;
@@ -1358,33 +1400,9 @@ export class GameAudio {
     }
 
     private async load(context: AudioContext): Promise<void> {
-        const urls = [
-            ...FOOTSTEP_URLS,
-            ...METAL_FOOTSTEP_URLS,
-            ...LASER_URLS,
-            ...PLAYER_HIT_URLS,
-            ...ENEMY_HIT_URLS,
-            ...SWITCH_CLICK_URLS,
-            ...JUMP_BOP_URLS,
-            ...PART_RECOVERED_URLS,
-            ...RING_PASSED_URLS,
-            ...POWER_DOWN_URLS,
-            ...LIGHTNING_STRIKE_URLS,
-            STRUCTURE_BUZZ_URL,
-            SHIP_ENGINE_URL,
-            FALL_WIND_URL,
-            WRENCH_SWING_URL,
-        ];
-
         try {
             const effects = await Promise.all(
-                urls.map(async (url) => {
-                    const response = await fetch(url);
-                    if (!response.ok) {
-                        throw new Error(`Could not load ${url}: ${response.status} ${response.statusText}`);
-                    }
-                    return context.decodeAudioData(await response.arrayBuffer());
-                }),
+                EFFECT_URLS.map(async (url) => context.decodeAudioData(await fetchAudio(url))),
             );
 
             if (this.context !== context) {

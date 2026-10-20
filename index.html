@@ -16,6 +16,29 @@
   <body>
     <canvas id="threejs" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
 
+    <div id="loading-screen">
+      <div class="loading-panel">
+        <p class="loading-eyebrow" data-i18n="overlay.eyebrow">A quiet walk</p>
+        <p class="loading-title" data-i18n="overlay.title">Wanderer</p>
+        <div
+          id="loading-bar"
+          class="loading-bar"
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="0"
+          aria-label="Loading progress"
+          data-i18n-aria-label="loading.progress"
+        >
+          <div id="loading-fill" class="loading-fill"></div>
+        </div>
+        <p class="loading-line">
+          <span id="loading-status" role="status" aria-live="polite" aria-atomic="true" data-i18n="overlay.loading">Loading world…</span>
+          <span id="loading-percent" aria-hidden="true">0%</span>
+        </p>
+      </div>
+    </div>
+
     <div id="speedometer" aria-label="Current speed" data-i18n-aria-label="hud.speedLabel">
       <span id="speed-value">0.0</span>
       <span class="speed-unit" data-i18n="hud.speedUnit">m/s</span>
