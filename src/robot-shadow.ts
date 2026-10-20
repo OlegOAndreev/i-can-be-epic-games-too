@@ -41,6 +41,7 @@ export function createRobotShadowSun(mainSun: SunLight, preset: ShadowPreset): S
     shadow.bias = mainSun.shadow.bias;
     shadow.normalBias = mainSun.shadow.normalBias;
     shadow.intensity = mainSun.shadow.intensity;
+    shadow.radius = mainSun.shadow.radius;
 
     // Cascade 0 covers the whole close range; the empty far cascades only contribute the fade
     // band at the very edge of ROBOT_SHADOW_DISTANCE.

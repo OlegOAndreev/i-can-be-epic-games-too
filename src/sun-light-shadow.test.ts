@@ -1,4 +1,5 @@
-import { ShaderChunk, Sphere, Vector3 } from 'three';
+import { PerspectiveCamera, ShaderChunk, Sphere, Vector3 } from 'three';
+import { SunLight } from 'three/addons/lights/SunLight.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { CascadedSunLightShadow, SHADOW_PRESETS, configureSunShadowCascades } from './sun-light-shadow';
@@ -51,6 +52,37 @@ describe('shadow presets', () => {
         expect(shadow.getFrustum(1)).not.toBe(fitted);
         expect(shadow.getFrustum(1).intersectsSphere(new Sphere(new Vector3(), 1e6))).toBe(false);
         expect(() => shadow.disableCascadeRendering(3)).toThrow();
+    });
+
+    it('fits the cascades to a stable FOV when requested', () => {
+        const light = new SunLight();
+        light.position.set(100, 200, 100);
+        light.updateMatrixWorld();
+
+        const camera = new PerspectiveCamera(62, 16 / 9, 0.1, 6000);
+        camera.position.set(0, 10, 0);
+        camera.lookAt(0, 0, 0);
+        camera.updateMatrixWorld();
+
+        const shadow = new CascadedSunLightShadow(1, []);
+        shadow.camera.far = 120;
+        shadow.mapSize.set(2048, 2048);
+
+        const radiusAt = (fov: number, fitFov: number | null): number => {
+            camera.fov = fov;
+            camera.updateProjectionMatrix();
+            shadow.fitFov = fitFov;
+            shadow.updateMatrices(light, camera);
+            return shadow.getCamera(0).right;
+        };
+
+        const looseAtBase = radiusAt(62, null);
+        const looseAtBoost = radiusAt(72, null);
+        expect(looseAtBoost).toBeGreaterThan(looseAtBase);
+
+        const stableAtBase = radiusAt(62, 72);
+        const stableAtBoost = radiusAt(72, 72);
+        expect(stableAtBoost).toBeCloseTo(stableAtBase, 6);
     });
 
     it('patches the shader cascade constant', () => {

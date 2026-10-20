@@ -27,6 +27,7 @@ describe('robot shadows', () => {
         main.shadow = new CascadedSunLightShadow(PRESET.cascades, PRESET.fractions);
         main.shadow.mapSize.set(PRESET.mapSize, PRESET.mapSize);
         main.shadow.camera.far = 620;
+        main.shadow.radius = 2.5;
 
         const helper = createRobotShadowSun(main, PRESET);
 
@@ -36,6 +37,7 @@ describe('robot shadows', () => {
         expect(helper.shadow).toBeInstanceOf(CascadedSunLightShadow);
         expect(helper.shadow.getViewportCount()).toBe(PRESET.cascades);
         expect(helper.shadow.mapSize.toArray()).toEqual([PRESET.mapSize, PRESET.mapSize]);
+        expect(helper.shadow.radius).toBe(main.shadow.radius);
         expect(helper.shadow.camera.far).toBe(ROBOT_SHADOW_DISTANCE);
         // The first cascade is fitted to the close range and keeps its real frustum.
         expect(helper.shadow.getFrustum(0).intersectsSphere(new Sphere(new Vector3(), 1))).toBe(true);

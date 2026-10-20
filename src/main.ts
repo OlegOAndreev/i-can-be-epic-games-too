@@ -93,11 +93,11 @@ import { WRENCH_WIND_TRAIL_ARC, WrenchWindTrail } from './wrench-wind-trail';
 import { WreckMap } from './wreck-map';
 
 const FOV = 62;
-// Running above the start speed adds up to a few degrees of FOV on top of the configured view,
+// Running above the start speed adds up to 10 degrees of FOV on top of the configured view,
 // which makes the robot feel faster without permanently widening the lens.
 const SPEED_FOV_START = 13;
 const SPEED_FOV_FULL = 18;
-const MAX_SPEED_FOV_BOOST = 15;
+const MAX_SPEED_FOV_BOOST = 10;
 const SPEED_FOV_RAMP_RATE = 5;
 const NEAR_Z = 0.1;
 const FAR_Z = 6000;
@@ -184,6 +184,7 @@ const DEFAULT_SETTINGS = {
     antialias: false,
     shadowQuality: 'high' as ShadowQuality,
     shadowMode: 'baked' as ShadowMode,
+    shadowSoftness: 1,
     grassRadius: DEFAULT_GRASS_RADIUS,
     difficulty: 'medium' as const,
     volume: 0.8,
@@ -431,6 +432,7 @@ function storeSettings(): void {
             shadowQuality: renderSettings.shadowQuality,
             shadowMode: renderSettings.shadowMode,
             shadowDistance: renderSettings.shadowDistance,
+            shadowSoftness: renderSettings.shadowSoftness,
             grassRadius: renderSettings.grassRadius,
             difficulty: gameSettings.difficulty,
             volume: gameAudio.settings.volume,
@@ -485,6 +487,7 @@ const renderSettings = {
     shadowQuality,
     shadowMode: storedShadowMode(storedSettings, DEFAULT_SETTINGS.shadowMode),
     shadowDistance: storedNumber(storedSettings, 'shadowDistance', 100, shadowPreset.distance, shadowPreset.distance),
+    shadowSoftness: storedNumber(storedSettings, 'shadowSoftness', 1, 3, DEFAULT_SETTINGS.shadowSoftness),
     grassRadius: storedNumber(storedSettings, 'grassRadius', 25, 140, DEFAULT_SETTINGS.grassRadius),
 };
 
@@ -1408,6 +1411,7 @@ function createLights(): void {
     sun.shadow.camera.far = liveDistance;
     sun.shadow.bias = -0.0001;
     sun.shadow.normalBias = 0.03;
+    sun.shadow.radius = renderSettings.shadowSoftness;
     // Be explicit about the shadow-caster layers so the structures are included even if the
     // renderer tests the cascade cameras' layers instead of the main camera's.
     for (let index = 0; index < sun.shadow.getViewportCount(); index++) {
@@ -1434,6 +1438,7 @@ function createLights(): void {
             maxTextureSize: view.renderer.capabilities.maxTextureSize,
             bias: -0.0004,
             normalBias: 0.06,
+            softness: renderSettings.shadowSoftness,
             prepareTile: (x, z) => terrain.updateTreeLod(x, z, true),
             finishTileBake: () => {
                 terrain.updateTreeLod(player.group.position.x, player.group.position.z, true);
@@ -1613,6 +1618,7 @@ function resetSettingsToDefaults(): void {
     renderSettings.shadowQuality = DEFAULT_SETTINGS.shadowQuality;
     renderSettings.shadowMode = DEFAULT_SETTINGS.shadowMode;
     setShadowDistance(SHADOW_PRESETS[DEFAULT_SETTINGS.shadowQuality].distance);
+    applyShadowSoftness(DEFAULT_SETTINGS.shadowSoftness);
     renderSettings.grassRadius = DEFAULT_SETTINGS.grassRadius;
     grassField.setRadius(DEFAULT_SETTINGS.grassRadius);
 
@@ -1637,7 +1643,7 @@ function resetSettingsToDefaults(): void {
 }
 
 function createGui(GuiConstructor: typeof GUI): GUI {
-    const guiInstance = new GuiConstructor({ title: t('overlay.title', 'Wanderer') });
+    const guiInstance = new GuiConstructor({ title: t('overlay.title', 'Advanced Settings') });
     guiInstance.open();
     guiInstance.onFinishChange(() => storeSettings());
 
@@ -1698,6 +1704,13 @@ function createGui(GuiConstructor: typeof GUI): GUI {
         .add(renderSettings, 'shadowDistance', 100, SHADOW_PRESETS[renderSettings.shadowQuality].distance, 10)
         .name(t('gui.shadowDistance', 'Shadow distance (m)'))
         .onChange((value: number) => setShadowDistance(value));
+    graphicsFolder
+        .add(renderSettings, 'shadowSoftness', 1, 3, 0.25)
+        .name(t('gui.shadowSoftness', 'Shadow softness'))
+        .onChange((value: number) => {
+            applyShadowSoftness(value);
+            storeSettings();
+        });
     graphicsFolder
         .add(renderSettings, 'grassRadius', 25, 140, 5)
         .name(t('gui.grassRadius', 'Grass radius (m)'))
@@ -2275,6 +2288,13 @@ function setShadowDistance(distance: number): void {
     robotShadowSun.shadow.camera.far = Math.min(distance, ROBOT_SHADOW_DISTANCE);
 }
 
+function applyShadowSoftness(value: number): void {
+    renderSettings.shadowSoftness = value;
+    sun.shadow.radius = value;
+    robotShadowSun.shadow.radius = value;
+    staticSunShadow?.setSoftness(value);
+}
+
 function setShadowQuality(quality: ShadowQuality): void {
     const preset = SHADOW_PRESETS[quality];
     renderSettings.shadowQuality = quality;
@@ -2372,6 +2392,11 @@ function applyDebugSettings(): void {
 function applyCameraFov(): void {
     const baseFov = viewSettings.firstPerson ? viewSettings.firstPersonFov : viewSettings.thirdPersonFov;
     const fov = baseFov + speedFovBoost;
+    // Fit the live cascades to the widest lens this camera can reach, so easing the speed boost
+    // cannot continuously resample the shadow maps and make their edges crawl.
+    const stableFitFov = baseFov + MAX_SPEED_FOV_BOOST;
+    (sun.shadow as CascadedSunLightShadow).fitFov = stableFitFov;
+    (robotShadowSun.shadow as CascadedSunLightShadow).fitFov = stableFitFov;
     // Widen the lens and dolly in by the matching amount, keeping the robot the same size on
     // screen while the background gains the extra parallax that sells the speed.
     cameraController.distance =

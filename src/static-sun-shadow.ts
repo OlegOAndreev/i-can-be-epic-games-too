@@ -42,6 +42,34 @@ uniform float staticSunShadowTiles;
 uniform float staticSunShadowBias;
 uniform float staticSunShadowNormalBias;
 uniform float staticSunShadowIntensity;
+uniform float staticSunShadowSoftness;
+
+float staticSunShadowNoise( vec2 position ) {
+
+    return fract( 52.9829189 * fract( dot( position, vec2( 0.06711056, 0.00583715 ) ) ) );
+
+}
+
+vec2 staticSunShadowDiskSample( int sampleIndex, float phi ) {
+
+    const float goldenAngle = 2.399963229728653;
+    float radius = sqrt( ( float( sampleIndex ) + 0.5 ) / 5.0 );
+    float theta = float( sampleIndex ) * goldenAngle + phi;
+    return vec2( cos( theta ), sin( theta ) ) * radius;
+
+}
+
+float sampleStaticSunShadowTap( vec2 local, vec2 tile, float inset, float reference, float radius, int index, float phi ) {
+
+    vec2 tap = clamp(
+        local + staticSunShadowDiskSample( index, phi ) * radius,
+        vec2( inset ),
+        vec2( 1.0 - inset )
+    );
+    vec2 uv = ( tile + tap ) / staticSunShadowTiles;
+    return texture( staticSunShadowMap, vec3( uv, reference ) );
+
+}
 
 float getStaticSunShadow() {
 
@@ -66,25 +94,17 @@ float getStaticSunShadow() {
     vec2 staticLocal = fract( staticTileCoord );
     float staticTexel = 1.0 / staticSunShadowTileSize;
     float staticInset = 0.5 * staticTexel;
+    float staticRadius = staticSunShadowSoftness * staticTexel;
     float staticReference = clamp( staticShadowCoord.z + staticSunShadowBias, 0.0, 1.0 );
-    float staticShadow = 0.0;
+    float staticPhi = staticSunShadowNoise( gl_FragCoord.xy ) * 6.283185307179586;
+    float staticShadow =
+        sampleStaticSunShadowTap( staticLocal, staticTile, staticInset, staticReference, staticRadius, 0, staticPhi ) +
+        sampleStaticSunShadowTap( staticLocal, staticTile, staticInset, staticReference, staticRadius, 1, staticPhi ) +
+        sampleStaticSunShadowTap( staticLocal, staticTile, staticInset, staticReference, staticRadius, 2, staticPhi ) +
+        sampleStaticSunShadowTap( staticLocal, staticTile, staticInset, staticReference, staticRadius, 3, staticPhi ) +
+        sampleStaticSunShadowTap( staticLocal, staticTile, staticInset, staticReference, staticRadius, 4, staticPhi );
 
-    for ( int y = -1; y <= 1; y ++ ) {
-        for ( int x = -1; x <= 1; x ++ ) {
-            vec2 staticTap = clamp(
-                staticLocal + vec2( float( x ), float( y ) ) * staticTexel,
-                vec2( staticInset ),
-                vec2( 1.0 - staticInset )
-            );
-            vec2 staticUv = ( staticTile + staticTap ) / staticSunShadowTiles;
-            staticShadow += texture(
-                staticSunShadowMap,
-                vec3( staticUv, staticReference )
-            );
-        }
-    }
-
-    staticShadow /= 9.0;
+    staticShadow *= 0.2;
     return mix( 1.0, staticShadow, staticSunShadowIntensity );
 
 #else
@@ -131,6 +151,8 @@ export interface StaticSunShadowOptions {
     maxTextureSize: number;
     bias?: number;
     normalBias?: number;
+    // PCF kernel radius in atlas texels. 1 matches the old 3x3 box; higher values soften edges.
+    softness?: number;
     // Called before each tile is baked so terrain LOD can be centred on that tile. The bake sees
     // every caster inside the tile, even when it is far from the player.
     prepareTile?: (x: number, z: number) => void;
@@ -146,6 +168,7 @@ interface StaticShadowUniforms {
     staticSunShadowBias: IUniform<number>;
     staticSunShadowNormalBias: IUniform<number>;
     staticSunShadowIntensity: IUniform<number>;
+    staticSunShadowSoftness: IUniform<number>;
 }
 
 // A camera-independent shadow atlas for static geometry. The world is projected once from the sun
@@ -310,6 +333,7 @@ export class StaticSunShadow {
             staticSunShadowBias: { value: options.bias ?? -0.0004 },
             staticSunShadowNormalBias: { value: options.normalBias ?? 0.06 },
             staticSunShadowIntensity: { value: 1 },
+            staticSunShadowSoftness: { value: Math.max(0.1, options.softness ?? 1) },
         };
     }
 
@@ -349,6 +373,10 @@ export class StaticSunShadow {
 
     isBaked(): boolean {
         return this.baked;
+    }
+
+    setSoftness(softness: number): void {
+        this.uniforms.staticSunShadowSoftness.value = Math.max(0.1, softness);
     }
 
     // Re-bakes the tiles touched by a removed caster. The shadow footprint of a directional light

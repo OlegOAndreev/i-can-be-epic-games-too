@@ -4,6 +4,7 @@ import {
     Light,
     Matrix4,
     OrthographicCamera,
+    PerspectiveCamera,
     Plane,
     ShaderChunk,
     Vector2,
@@ -116,6 +117,9 @@ export function configureSunShadowCascades(cascadeCount: number): void {
 
 export class CascadedSunLightShadow extends SunLightShadow {
     readonly _cascadeData: Vector4[] = [];
+    // When set, the cascades are fitted to at least this FOV. The speed effect can then animate the
+    // rendered lens without changing the shadow projection every frame.
+    fitFov: number | null = null;
 
     private readonly cascadeCount: number;
     private readonly cascadeFractions: readonly number[];
@@ -125,6 +129,7 @@ export class CascadedSunLightShadow extends SunLightShadow {
     private readonly cascadeSplits: number[];
     private readonly cascadeViewports: Vector4[] = [];
     private readonly cascadeFrameExtents: Vector2;
+    private readonly fitCamera = new PerspectiveCamera();
     private readonly disabledCascades = new Set<number>();
     // Every plane rejects every point in the scene, so the shadow renderer culls all objects.
     private readonly emptyFrustum = new Frustum(
@@ -238,7 +243,7 @@ export class CascadedSunLightShadow extends SunLightShadow {
         // View-frustum corners in light space. The rotation preserves distances, so the cascades
         // can be fitted and snapped directly in this space.
         const zNear = viewCamera.reversedDepth ? 1 : viewCamera.coordinateSystem === WebGPUCoordinateSystem ? 0 : -1;
-        const inverseProjectionMatrix = viewCamera.projectionMatrixInverse;
+        const inverseProjectionMatrix = this.fitProjectionInverse(viewCamera);
 
         let globalMaxZ = -Infinity;
 
@@ -332,6 +337,33 @@ export class CascadedSunLightShadow extends SunLightShadow {
                 this.cascadeViewports[index],
             );
         }
+    }
+
+    // Uses the stable fit FOV when it is wider than the rendered lens. The actual camera keeps its
+    // animated FOV; only the cascade fitting sees the fixed one.
+    private fitProjectionInverse(view: Camera): Matrix4 {
+        if (this.fitFov === null) {
+            return view.projectionMatrixInverse;
+        }
+        const perspective = view as PerspectiveCamera;
+        if (perspective.isPerspectiveCamera !== true) {
+            return view.projectionMatrixInverse;
+        }
+        const fov = Math.max(this.fitFov, perspective.fov);
+        if (fov === perspective.fov) {
+            return view.projectionMatrixInverse;
+        }
+
+        const fit = this.fitCamera;
+        fit.fov = fov;
+        fit.aspect = perspective.aspect;
+        fit.near = perspective.near;
+        fit.far = perspective.far;
+        fit.zoom = perspective.zoom;
+        fit.coordinateSystem = perspective.coordinateSystem;
+        (fit as unknown as { _reversedDepth: boolean })._reversedDepth = perspective.reversedDepth;
+        fit.updateProjectionMatrix();
+        return fit.projectionMatrixInverse;
     }
 
     private updateCascadeMatrix(
