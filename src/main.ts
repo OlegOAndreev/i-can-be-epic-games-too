@@ -9,7 +9,9 @@ import {
     Clock,
     Color,
     Fog,
+    Group,
     HemisphereLight,
+    Light,
     Mesh,
     MeshBasicMaterial,
     Object3D,
@@ -25,6 +27,8 @@ import {
 } from 'three';
 import { SunLight } from 'three/addons/lights/SunLight.js';
 
+import enemyDialogueEn from '../assets/enemy-dialogue.en.json';
+import enemyDialogueRu from '../assets/enemy-dialogue.ru.json';
 import robotDialogueEn from '../assets/robot-dialogue.en.json';
 import robotDialogueRu from '../assets/robot-dialogue.ru.json';
 
@@ -37,12 +41,17 @@ import { getById, reportError, setupWindowOnError } from './common-utils';
 import { DamageVignette } from './damage-vignette';
 import { DustPuffs } from './dust';
 import { EnemyDebris } from './enemy-debris';
-import { EnemyRobots } from './enemies';
+import { EnemyRobots, parseEnemyDialogue } from './enemies';
+import type { Difficulty, EnemyDialogue } from './enemies';
 import { Finale } from './finale';
 import type { FinaleUi } from './finale';
+import {
+    FIRST_PERSON_SWING_RECOVERY_PORTION,
+    FIRST_PERSON_TRAIL_THINNING,
+    FirstPersonWrench,
+} from './first-person-wrench';
 import { Footprints } from './footprints';
 import { glowSpriteMaterial } from './glow';
-import type { Difficulty } from './enemies';
 import { DEFAULT_GRASS_RADIUS, GrassField } from './grass';
 import { GroundDents } from './ground-dent';
 import { initI18n, locale, t } from './i18n';
@@ -527,6 +536,11 @@ const cameraForward = new Vector3();
 class View {
     renderer: WebGLRenderer;
     scene = new Scene();
+    // A miniature scene holding only the first-person wrench. Its root is moved to the camera
+    // transform for each overlay render, so the wrench keeps its camera-space pose without pulling
+    // the rest of the world through a second scene-graph walk.
+    viewmodelScene = new Scene();
+    viewmodelRoot = new Group();
     fog = new Fog(SKY_COLOR, 90, MAX_SHADOW_DISTANCE);
     camera = new PerspectiveCamera(FOV, 1, NEAR_Z, FAR_Z);
     viewSize = {
@@ -553,6 +567,7 @@ class View {
 
         this.scene.background = new Color(SKY_COLOR);
         this.scene.fog = this.fog;
+        this.viewmodelScene.add(this.viewmodelRoot);
         // Megastructures live on their own layer; the main camera renders that layer too.
         this.camera.layers.enable(MEGASTRUCTURE_LAYER);
         this.observeCanvasSize(canvas);
@@ -646,6 +661,7 @@ let groundDents: GroundDents;
 let windTrails: WindTrails;
 let wrenchTrails: WrenchTrail[];
 let wrenchHitTrail: WrenchWindTrail;
+let firstPersonWrench: FirstPersonWrench;
 let waterSplash: WaterSplash;
 let shoreFoam: ShoreFoam;
 let cameraController: ThirdPersonCamera;
@@ -664,6 +680,8 @@ let sun: SunLight;
 let robotShadowSun: SunLight;
 let staticSunShadow: StaticSunShadow | null = null;
 let interiorFillLight: AmbientLight;
+// Lights temporarily moved into the viewmodel scene for the wrench overlay pass.
+const viewmodelLights: Light[] = [];
 let sky: Mesh;
 let nightSky: NightSky;
 let clock: Clock;
@@ -736,6 +754,11 @@ const ROBOT_STORIES: Record<Locale, unknown> = {
     ru: robotDialogueRu,
 };
 
+const ENEMY_DIALOGUES: Record<Locale, unknown> = {
+    en: enemyDialogueEn,
+    ru: enemyDialogueRu,
+};
+
 // Bundled for the same reason as the UI strings: no startup fetch, and a missing or malformed
 // translation is caught by the build instead of leaving the caretakers silent.
 function loadRobotStory(): RobotDialogue {
@@ -743,6 +766,13 @@ function loadRobotStory(): RobotDialogue {
     return story.intro.length > 0 || story.outro.length > 0 || locale() === 'en'
         ? story
         : parseRobotDialogue(ROBOT_STORIES.en);
+}
+
+function loadEnemyDialogue(): EnemyDialogue {
+    const dialogue = parseEnemyDialogue(ENEMY_DIALOGUES[locale()]);
+    return dialogue.madness.length > 0 || dialogue.anger.length > 0 || locale() === 'en'
+        ? dialogue
+        : parseEnemyDialogue(ENEMY_DIALOGUES.en);
 }
 
 function wireTerrainCallbacks(terrain: Terrain): void {
@@ -763,7 +793,7 @@ function createWorldActors(terrain: Terrain): void {
     npcRobots.setDifficulty(gameSettings.difficulty);
     view.scene.add(npcRobots.group);
 
-    enemyRobots = new EnemyRobots(terrain, playerSettings, gameSettings.difficulty);
+    enemyRobots = new EnemyRobots(terrain, playerSettings, gameSettings.difficulty, loadEnemyDialogue(), gameAudio);
     view.scene.add(enemyRobots.group);
     enemyRobots.onLaserVolley = (position) => gameAudio.playLaser(position);
 
@@ -885,6 +915,8 @@ async function init(): Promise<void> {
         new WrenchTrail(view.scene, WRENCH_TRAIL_LONG_ARC),
     ];
     wrenchHitTrail = new WrenchWindTrail(view.scene, WRENCH_WIND_TRAIL_ARC);
+    firstPersonWrench = new FirstPersonWrench(getSurfaceTextures().wrenchWear);
+    view.viewmodelRoot.add(firstPersonWrench.attachment);
     waterSplash = new WaterSplash(view.scene);
 
     createSky();
@@ -930,6 +962,7 @@ async function init(): Promise<void> {
         doubleJumpTrailTimer = DOUBLE_JUMP_TRAIL_INTERVAL;
     };
     player.onLanded = (position, impactSpeed) => {
+        firstPersonWrench.land(impactSpeed);
         const inWater = position.y < WATER_LEVEL - 0.02;
         const onMetal = !inWater && terrain.isOnStructure(position.x, position.z, position.y);
         const insideStructure = terrain.megastructures.isInside(position.x, position.y, position.z);
@@ -969,6 +1002,7 @@ async function init(): Promise<void> {
     // A jump accepted just before touchdown still leaves the ground contact behind: the same
     // footprint, impact-scaled dust, and footstep sound as a landing, plus the jump sound.
     player.onLandingGrace = (position, impactSpeed) => {
+        firstPersonWrench.land(impactSpeed);
         const inWater = position.y < WATER_LEVEL - 0.02;
         const onMetal = !inWater && terrain.isOnStructure(position.x, position.z, position.y);
         const insideStructure = terrain.megastructures.isInside(position.x, position.y, position.z);
@@ -1412,6 +1446,10 @@ function createLights(): void {
     sun.shadow.bias = -0.0001;
     sun.shadow.normalBias = 0.03;
     sun.shadow.radius = renderSettings.shadowSoftness;
+    // The shadow maps are explicitly refreshed once per frame in renderFrame. The viewmodel pass
+    // moves this light into its mini-scene and reuses those maps, so letting the shadow map
+    // auto-update would render the cascades a second time.
+    sun.shadow.autoUpdate = false;
     // Be explicit about the shadow-caster layers so the structures are included even if the
     // renderer tests the cascade cameras' layers instead of the main camera's.
     for (let index = 0; index < sun.shadow.getViewportCount(); index++) {
@@ -1422,7 +1460,9 @@ function createLights(): void {
     // This zero-intensity sun renders an identical cascade set without the player robot. The
     // robot samples it for its own shading, giving it world shadows without self-shadowing.
     robotShadowSun = createRobotShadowSun(sun, { ...preset, cascades: cascadeCount, mapSize: liveMapSize });
+    robotShadowSun.shadow.autoUpdate = false;
     view.scene.add(robotShadowSun);
+    viewmodelLights.push(hemisphere, interiorFillLight, sun, robotShadowSun);
 
     if (baked) {
         // Static geometry is baked into a world-space tiled atlas once per world build. The single
@@ -1466,6 +1506,9 @@ function refreshStaticShadows(): void {
     }
     staticSunShadow.addStaticRoot(terrain.group, isStaticShadowExcluded);
     staticSunShadow.patchScene(view.scene);
+    // The wrench lives in its own scene, so patch its material there as well. The atlas uniforms
+    // are shared, which keeps the baked structure shadows on the viewmodel.
+    staticSunShadow.patchScene(view.viewmodelScene);
     staticSunShadow.bake(view.renderer, view.scene);
 }
 
@@ -2018,6 +2061,7 @@ function startFinale(): void {
     // Enemy updates stop for the duration of the finale, so expire their visual effects here.
     enemyRobots.clearTransientEffects();
     hideDialogueLine();
+    firstPersonWrench.hide();
     wreckMap.setVisible(false);
     damageVignette.reset();
     playerHealth.reset();
@@ -2304,13 +2348,43 @@ function setShadowQuality(quality: ShadowQuality): void {
     window.location.reload();
 }
 
+// Draws only the first-person wrench over the finished world frame. UnderwaterEffect has already
+// cleared the depth buffer and disabled auto-clear, so this lands on top of every world object.
+// The world lights are moved into the mini-scene for the draw and returned immediately after, which
+// keeps the wrench lit and baked-shadowed without walking the whole world scene again.
+function renderFirstPersonWrenchOverlay(): void {
+    if (!firstPersonWrench.group.visible) {
+        return;
+    }
+    // The root mirrors the parentless camera, so the wrench keeps its camera-space pose.
+    view.viewmodelRoot.position.copy(view.camera.position);
+    view.viewmodelRoot.quaternion.copy(view.camera.quaternion);
+    try {
+        for (const light of viewmodelLights) {
+            view.viewmodelScene.attach(light);
+        }
+        view.renderer.render(view.viewmodelScene, view.camera);
+    } finally {
+        for (const light of viewmodelLights) {
+            view.scene.attach(light);
+        }
+    }
+}
+
 function renderFrame(): void {
     if (webglContextLost) {
         return;
     }
     view.renderer.info.reset();
     renderAudit?.beginFrame();
-    underwater.render(view.scene, view.camera);
+    // The live shadow maps are refreshed once per frame here. The viewmodel overlay pass reuses
+    // them instead of rendering the cascades a second time.
+    sun.shadow.needsUpdate = true;
+    robotShadowSun.shadow.needsUpdate = true;
+    // Skip the foreground pass entirely when the wrench is not on screen (third person, no wrench,
+    // cinematics), so those frames pay nothing for it.
+    const wrenchOverlay = firstPersonWrench.group.visible ? renderFirstPersonWrenchOverlay : null;
+    underwater.render(view.scene, view.camera, wrenchOverlay);
     damageVignette.render();
     deathFade.render();
     finaleFade.render();
@@ -2391,17 +2465,19 @@ function applyDebugSettings(): void {
 
 function applyCameraFov(): void {
     const baseFov = viewSettings.firstPerson ? viewSettings.firstPersonFov : viewSettings.thirdPersonFov;
-    const fov = baseFov + speedFovBoost;
+    // The speed boost is a third-person effect; the first-person lens stays fixed.
+    const speedBoost = viewSettings.firstPerson ? 0 : speedFovBoost;
+    const fov = baseFov + speedBoost;
     // Fit the live cascades to the widest lens this camera can reach, so easing the speed boost
     // cannot continuously resample the shadow maps and make their edges crawl.
-    const stableFitFov = baseFov + MAX_SPEED_FOV_BOOST;
+    const stableFitFov = baseFov + (viewSettings.firstPerson ? 0 : MAX_SPEED_FOV_BOOST);
     (sun.shadow as CascadedSunLightShadow).fitFov = stableFitFov;
     (robotShadowSun.shadow as CascadedSunLightShadow).fitFov = stableFitFov;
     // Widen the lens and dolly in by the matching amount, keeping the robot the same size on
     // screen while the background gains the extra parallax that sells the speed.
     cameraController.distance =
         (THIRD_PERSON_DISTANCE * Math.tan((viewSettings.thirdPersonFov * Math.PI) / 360)) /
-        Math.tan(((viewSettings.thirdPersonFov + speedFovBoost) * Math.PI) / 360);
+        Math.tan(((viewSettings.thirdPersonFov + speedBoost) * Math.PI) / 360);
     if (view.camera.fov === fov) {
         return;
     }
@@ -2410,6 +2486,11 @@ function applyCameraFov(): void {
 }
 
 function updateSpeedFov(dt: number, speed: number): void {
+    // First person keeps the configured FOV constant regardless of speed.
+    if (viewSettings.firstPerson) {
+        speedFovBoost = 0;
+        return;
+    }
     const intensity = clamp((speed - SPEED_FOV_START) / (SPEED_FOV_FULL - SPEED_FOV_START), 0, 1);
     const target = intensity * MAX_SPEED_FOV_BOOST;
     speedFovBoost = damp(speedFovBoost, target, SPEED_FOV_RAMP_RATE, dt);
@@ -2422,6 +2503,11 @@ function updateSpeedFov(dt: number, speed: number): void {
 function setFirstPerson(firstPerson: boolean): void {
     viewSettings.firstPerson = firstPerson;
     cameraController.setFirstPerson(firstPerson);
+    if (firstPerson) {
+        // First person puts the camera inside the robot, so the wake streaks would sometimes
+        // pop across the lens. Drop any live ones and stop emitting while the view is inside.
+        windTrails.clear();
+    }
     updatePlayerAppearance();
     applyCameraFov();
 }
@@ -2956,18 +3042,6 @@ function animate(): void {
     const chargedSwing = player.isWrenchSwingCharged;
     const regularSwing = player.isWrenchSwinging && !chargedSwing;
     const swingAngle = chargedSwing || regularSwing ? player.wrenchSwingAngle : 0;
-    for (let index = 0; index < wrenchTrails.length; index++) {
-        wrenchTrails[index].update(
-            dt,
-            chargedSwing ? player.getWrenchTipWorldPosition(index, wrenchTrailPoints[index]) : null,
-            swingAngle,
-        );
-    }
-    wrenchHitTrail.update(
-        dt,
-        regularSwing ? player.getWrenchJawCenterWorldPosition(wrenchHitTrailPoint) : null,
-        swingAngle,
-    );
     npcRobots.update(dt, player.group.position);
     player.setWrenchEquipped(npcRobots.wrenchReady);
     const laserHits = enemyRobots.update(dt, player.group.position);
@@ -3011,6 +3085,62 @@ function animate(): void {
     gameAudio.setListener(view.camera.position, cameraForward);
     gameAudio.setUnderwater(view.camera.position.y < WATER_LEVEL);
     updatePlayerAppearance();
+    const firstPersonWrenchActive =
+        cameraController.firstPerson && player.isWrenchEquipped && playerDestroyedRemaining === 0 && !cinematicActive;
+    // Keep the viewmodel frame current before sampling the first-person trail.
+    view.viewmodelRoot.position.copy(view.camera.position);
+    view.viewmodelRoot.quaternion.copy(view.camera.quaternion);
+    firstPersonWrench.update(dt, {
+        visible: firstPersonWrenchActive,
+        speed: player.horizontalSpeed,
+        moveSpeed: playerSettings.moveSpeed,
+        walkPhase: player.walkAnimationPhase,
+        swinging: player.isWrenchSwinging,
+        chargedSwing: player.isWrenchSwingCharged,
+        swingAngle: player.wrenchSwingAngle,
+        bodyYawOffset: player.group.rotation.y - cameraController.yaw - Math.PI,
+        cameraPitch: cameraController.pitch,
+        chargeProgress: player.wrenchChargeProgress,
+        knockdownProgress: player.knockdownProgress,
+    });
+    // The trails must follow the visible wrench. In first person that is the camera-mounted
+    // viewmodel; the third-person arm is hidden, so sampling it would leave the wind behind the
+    // player's head. The viewmodel pose was updated above so its points are current this frame.
+    const trailRadiusScale = firstPersonWrenchActive ? 1 / FIRST_PERSON_TRAIL_THINNING : 1;
+    const trailDetail = firstPersonWrenchActive ? 2 : 1;
+    const trailFrame = firstPersonWrenchActive ? view.viewmodelRoot : player.group;
+    for (let index = 0; index < wrenchTrails.length; index++) {
+        wrenchTrails[index].setFrame(trailFrame);
+        let head: Vector3 | null = null;
+        if (chargedSwing) {
+            if (firstPersonWrenchActive) {
+                firstPersonWrench.getTipWorldPosition(index, wrenchTrailPoints[index]);
+                head = view.viewmodelRoot.worldToLocal(wrenchTrailPoints[index]);
+            } else {
+                player.getWrenchTipWorldPosition(index, wrenchTrailPoints[index]);
+                head = player.group.worldToLocal(wrenchTrailPoints[index]);
+            }
+        }
+        wrenchTrails[index].update(dt, head, swingAngle, trailRadiusScale, trailDetail);
+    }
+    let hitHead: Vector3 | null = null;
+    const regularSwingRecovering = regularSwing && swingAngle >= FIRST_PERSON_SWING_RECOVERY_PORTION * Math.PI * 2;
+    wrenchHitTrail.setFrame(trailFrame);
+    if (regularSwing && !regularSwingRecovering) {
+        if (firstPersonWrenchActive) {
+            firstPersonWrench.getJawCenterWorldPosition(wrenchHitTrailPoint);
+            hitHead = view.viewmodelRoot.worldToLocal(wrenchHitTrailPoint);
+        } else {
+            player.getWrenchJawCenterWorldPosition(wrenchHitTrailPoint);
+            hitHead = player.group.worldToLocal(wrenchHitTrailPoint);
+        }
+    }
+    if (regularSwingRecovering) {
+        // The wrench is on its way back up; drop the wisp instead of dragging it through recovery.
+        wrenchHitTrail.clear();
+    } else {
+        wrenchHitTrail.update(dt, hitHead, swingAngle);
+    }
     grassField.update(player.group.position);
     dustPuffs.update(dt);
     footprints.update(dt);
@@ -3020,14 +3150,16 @@ function animate(): void {
     terrain.update(dt, player.group.position);
     terrain.updateTreeLod(player.group.position.x, player.group.position.z);
     player.getMovementDirection(windDirection);
-    windTrails.update(
-        dt,
-        player.group.position,
-        windDirection,
-        player.horizontalSpeed,
-        player.verticalSpeed,
-        view.camera.position,
-    );
+    if (!cameraController.firstPerson) {
+        windTrails.update(
+            dt,
+            player.group.position,
+            windDirection,
+            player.horizontalSpeed,
+            player.verticalSpeed,
+            view.camera.position,
+        );
+    }
     // verticalSpeed is negative while falling, so flip it into the positive fall speed the wind
     // loop expects. The loop stays silent until the drop is steep enough to matter.
     gameAudio.setFallWindSpeed(-player.verticalSpeed);

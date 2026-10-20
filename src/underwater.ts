@@ -158,12 +158,30 @@ export class UnderwaterEffect {
         this.fog.far = lerp(this.baseFogFar, UNDERWATER_FOG_FAR, this.strength);
     }
 
-    render(scene: Scene, camera: Camera): void {
+    // Renders the scene, then an optional foreground pass on top of it with a fresh depth buffer.
+    // The overlay is composited before the underwater pass, so the water tint and warp still apply
+    // to it while it stays clear of all world geometry.
+    render(scene: Scene, camera: Camera, overlay?: (() => void) | null): void {
         const renderer = this.renderer;
+        // The camera is parented to the scene, so the renderer's automatic camera update does not
+        // run during the world pass.
+        camera.updateMatrixWorld();
+
+        const renderOverlay = (): void => {
+            if (!overlay) {
+                return;
+            }
+            renderer.clearDepth();
+            const autoClear = renderer.autoClear;
+            renderer.autoClear = false;
+            overlay();
+            renderer.autoClear = autoClear;
+        };
 
         if (this.strength === 0) {
             renderer.setRenderTarget(null);
             renderer.render(scene, camera);
+            renderOverlay();
             return;
         }
 
@@ -184,6 +202,7 @@ export class UnderwaterEffect {
 
         renderer.setRenderTarget(this.target);
         renderer.render(scene, camera);
+        renderOverlay();
         renderer.setRenderTarget(null);
         renderer.render(this.passScene, this.passCamera);
     }

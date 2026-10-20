@@ -1,9 +1,12 @@
 import {
+    CanvasTexture,
     Group,
     InstancedMesh,
     Matrix4,
     Mesh,
     MeshStandardMaterial,
+    Sprite,
+    SpriteMaterial,
     Vector2,
     Vector3,
     type Object3D,
@@ -18,18 +21,21 @@ import {
     EnemyRobots,
     FLOOR_HIT_CHANCE,
     HIT_IMMUNITY_SECONDS,
+    parseEnemyDialogue,
     playerInAttackZone,
     rampFootPoint,
     rollLaserAim,
 } from './enemies';
-import type { Difficulty } from './enemies';
+import type { Difficulty, EnemyDialogue } from './enemies';
 import type { MegastructureTower, Ramp, StructureBox } from './megastructures';
 import { ENEMY_EYE_COLOR } from './npc-robots';
 import { mulberry32 } from './noise';
 import { PLAYER_RADIUS } from './player';
 import { PlayerHealth } from './player-health';
-import { fakeTerrain, testTerrain, visibleMeshes } from './test-helpers';
+import { fakeTerrain, installCanvasDocument, stubAudio, testTerrain, visibleMeshes } from './test-helpers';
 import type { Terrain } from './terrain';
+
+installCanvasDocument(1024, 440);
 
 function sequence(values: number[]): () => number {
     let index = 0;
@@ -104,6 +110,103 @@ function singleEnemyLevel(
     expect(enemy).toBeDefined();
     return { enemies, enemy: enemy!, storeyBaseY: storeys[1].baseY, terrain };
 }
+
+function lowerAndUpperFloors(dialogue: EnemyDialogue): {
+    enemies: EnemyRobots;
+    lower: Group;
+    upper: Group;
+    upperBaseY: number;
+} {
+    const storeys = [
+        { minX: -20, maxX: 20, minZ: -20, maxZ: 20, baseY: 0, topY: 10 },
+        { minX: -20, maxX: 20, minZ: -20, maxZ: 20, baseY: 10, topY: 24 },
+        { minX: -20, maxX: 20, minZ: -20, maxZ: 20, baseY: 24, topY: 38 },
+    ];
+    const tower: MegastructureTower = {
+        minX: -20,
+        maxX: 20,
+        minZ: -20,
+        maxZ: 20,
+        baseY: 0,
+        firstFloorY: 10,
+        topY: 38,
+        levelCount: 3,
+        levelHeight: 14,
+        entranceSide: 0,
+        storeys,
+    };
+    const terrain = fakeTerrain({
+        seed: 1,
+        megastructures: { towers: [tower], ramps: [], boxes: [] },
+        walkSurfaceAt: (_x: number, _z: number, feetY: number) => feetY - 0.4,
+    });
+    const enemies = new EnemyRobots(
+        terrain,
+        { moveSpeed: 10, jumpSpeed: 7, gravity: 20 },
+        'easy',
+        dialogue,
+        stubAudio(),
+    );
+    const byLevel = (level: number): Group => {
+        const group = enemies.group.children.find(
+            (child): child is Group =>
+                child instanceof Group && child.userData.enemy === true && child.userData.level === level,
+        );
+        expect(group).toBeDefined();
+        return group!;
+    };
+
+    return { enemies, lower: byLevel(1), upper: byLevel(2), upperBaseY: storeys[2].baseY };
+}
+
+describe('enemy speech', () => {
+    it('drops malformed utterances from the dialogue file', () => {
+        expect(
+            parseEnemyDialogue({
+                madness: [
+                    { kind: 'matron', text: 'I still water the dark.' },
+                    { kind: 'toaster', text: 'Not a caretaker.' },
+                    { kind: 'probe', text: '   ' },
+                    { kind: 'walle' },
+                ],
+                anger: [{ kind: 'probe', text: 'You took my counting away.' }],
+            }),
+        ).toEqual({
+            madness: [{ kind: 'matron', text: 'I still water the dark.' }],
+            anger: [{ kind: 'probe', text: 'You took my counting away.' }],
+        });
+    });
+
+    it('bakes a head line and gets angry when the floor below is dead', () => {
+        const { enemies, lower, upper, upperBaseY } = lowerAndUpperFloors({
+            madness: [
+                { kind: 'matron', text: 'MADNESS MATRON' },
+                { kind: 'walle', text: 'MADNESS WALLE' },
+                { kind: 'probe', text: 'MADNESS PROBE' },
+            ],
+            anger: [
+                { kind: 'matron', text: 'ANGER MATRON' },
+                { kind: 'walle', text: 'ANGER WALLE' },
+                { kind: 'probe', text: 'ANGER PROBE' },
+            ],
+        });
+
+        expect(enemies.wrenchStrike(lower.position.clone(), 99)).toHaveLength(1);
+
+        const player = new Vector3(0, upperBaseY, 0);
+        let label: Object3D | undefined;
+        for (let frame = 0; frame < 60 && !label?.visible; frame++) {
+            enemies.update(0.1, player);
+            label = upper.getObjectByName('speech-label');
+        }
+
+        expect(label).toBeInstanceOf(Sprite);
+        expect(label?.visible).toBe(true);
+        expect(label?.userData.text).toBe('ANGER PROBE');
+        expect(((label as Sprite).material as SpriteMaterial).map).toBeInstanceOf(CanvasTexture);
+        enemies.dispose();
+    });
+});
 
 describe('enemy robots', () => {
     it('exposes the difficulty tuning', () => {

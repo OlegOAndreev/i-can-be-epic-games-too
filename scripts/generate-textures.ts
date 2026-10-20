@@ -8,8 +8,8 @@ import { fileURLToPath } from 'node:url';
 
 import { createCanvas } from '@napi-rs/canvas';
 
-import { hash2, smoothstep } from '../src/math-utils.ts';
-import { mulberry32 } from '../src/noise.ts';
+import { clamp, hash2, smoothstep } from '../src/math-utils.ts';
+import { Noise2D, mulberry32 } from '../src/noise.ts';
 import { createKtx2, ensureKtx } from './ktx.ts';
 import { writeFileAtomic } from './write-file.ts';
 
@@ -19,6 +19,8 @@ const STONE_SIZE = 512;
 const METAL_SIZE = 512;
 const DENT_SIZE = 512;
 const FOOTPRINT_SIZE = 128;
+// Keep in sync with WRENCH_WEAR_ATLAS_SIZE in src/first-person-wrench.ts.
+const WRENCH_WEAR_SIZE = 256;
 const WATER_SIZE = 1024;
 const MACRO_SIZE = 256;
 const TAU = Math.PI * 2;
@@ -681,6 +683,7 @@ const waterFiles = WATER_STYLES.map((style, index) =>
 renderTexture('macro', paintMacro, MACRO_SIZE);
 renderTexture('dent', paintDent, DENT_SIZE);
 renderTexture('footprint', paintFootprint, FOOTPRINT_SIZE);
+renderTexture('wrench-metal-wear', paintWrenchWear, WRENCH_WEAR_SIZE);
 
 // Single maps stay PNG; the KTX2 win is in the layered biome arrays.
 createKtx2(join(OUTPUT_DIRECTORY, 'grass.ktx2'), grassFiles, 'srgb', 'wrap');
@@ -1253,15 +1256,7 @@ function paintFootprintShape(context: CanvasRenderingContext2D, size: number): v
         const jitterY = (rng() * 2 - 1) * size * 0.014;
         context.fillStyle = rgba('#ad9a79', 0.045);
         context.beginPath();
-        context.ellipse(
-            centreX + jitterX,
-            centreY + jitterY,
-            radiusX * spread,
-            radiusY * spread,
-            rng() * TAU,
-            0,
-            TAU,
-        );
+        context.ellipse(centreX + jitterX, centreY + jitterY, radiusX * spread, radiusY * spread, rng() * TAU, 0, TAU);
         context.fill();
     }
 
@@ -1280,15 +1275,7 @@ function paintFootprintShape(context: CanvasRenderingContext2D, size: number): v
 
         context.fillStyle = rgbaRgb(color, 0.02 + t * 0.045);
         context.beginPath();
-        context.ellipse(
-            centreX + jitterX,
-            centreY + jitterY,
-            radiusX * shrink,
-            radiusY * shrink,
-            0,
-            0,
-            TAU,
-        );
+        context.ellipse(centreX + jitterX, centreY + jitterY, radiusX * shrink, radiusY * shrink, 0, 0, TAU);
         context.fill();
     }
 
@@ -1640,6 +1627,92 @@ function forWrappedPosition(
             }
 
             draw(wrappedX, wrappedY);
+        }
+    }
+}
+
+// One packed wear atlas for the wrench: red is bump height and green is roughness. Each quadrant
+// gets its own pattern so the two jaws and the other steel parts do not repeat. Rows are flipped
+// when written because image textures load with flipY enabled.
+function paintWrenchWear(context: CanvasRenderingContext2D, size: number): void {
+    const data = new Uint8Array(size * size * 4);
+    const quadrantSize = size / 2;
+    for (let quadrantY = 0; quadrantY < 2; quadrantY++) {
+        for (let quadrantX = 0; quadrantX < 2; quadrantX++) {
+            const seed = (0x51ed270b + (quadrantX + quadrantY * 2) * 0x9e3779b9) >>> 0;
+            paintWrenchWearQuadrant(data, size, quadrantX * quadrantSize, quadrantY * quadrantSize, seed);
+        }
+    }
+
+    const image = context.createImageData(size, size);
+    for (let y = 0; y < size; y++) {
+        const source = (size - 1 - y) * size * 4;
+        image.data.set(data.subarray(source, source + size * 4), y * size * 4);
+    }
+    context.putImageData(image, 0, 0);
+}
+
+function paintWrenchWearQuadrant(
+    data: Uint8Array,
+    atlasSize: number,
+    originX: number,
+    originY: number,
+    seed: number,
+): void {
+    const size = atlasSize / 2;
+    const noise = new Noise2D(seed);
+    const rng = mulberry32(seed ^ 0x85ebca6b);
+    const scratches = Array.from({ length: 7 }, () => {
+        const angle = rng() * Math.PI;
+        return {
+            x: rng() * size,
+            y: rng() * size,
+            dx: Math.cos(angle),
+            dy: Math.sin(angle),
+            halfLength: (14 + rng() * 38) / 2,
+            strength: 20 + rng() * 30,
+        };
+    });
+    const pits = Array.from({ length: 18 }, () => ({
+        x: rng() * size,
+        y: rng() * size,
+        radius: 0.8 + rng() * 1.8,
+        strength: 24 + rng() * 36,
+    }));
+
+    for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+            const base = 186 + noise.fbm(x * 0.045, y * 0.045, 4) * 32 + (rng() * 2 - 1) * 10;
+            let wear = base;
+            let roughness = base;
+
+            // Scratches polish the steel, so they lower roughness; pits roughen it. The roughness
+            // drop is several times the groove depth so the sun highlight follows the scratches.
+            for (const scratch of scratches) {
+                const px = x - scratch.x;
+                const py = y - scratch.y;
+                const along = clamp(px * scratch.dx + py * scratch.dy, -scratch.halfLength, scratch.halfLength);
+                const distance = Math.hypot(px - scratch.dx * along, py - scratch.dy * along);
+                if (distance < 1.1) {
+                    const fade = 1 - distance / 1.1;
+                    wear -= scratch.strength * fade;
+                    roughness -= scratch.strength * 3 * fade;
+                }
+            }
+            for (const pit of pits) {
+                const distance = Math.hypot(x - pit.x, y - pit.y);
+                if (distance < pit.radius) {
+                    const fade = 1 - distance / pit.radius;
+                    wear += pit.strength * fade;
+                    roughness += pit.strength * fade;
+                }
+            }
+
+            const offset = ((originY + y) * atlasSize + originX + x) * 4;
+            data[offset] = Math.round(clamp(wear, 0, 255));
+            data[offset + 1] = Math.round(clamp(roughness, 0, 255));
+            data[offset + 2] = 0;
+            data[offset + 3] = 255;
         }
     }
 }

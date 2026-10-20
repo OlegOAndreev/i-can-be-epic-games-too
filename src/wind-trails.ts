@@ -1,99 +1,59 @@
-import { CatmullRomCurve3, Mesh, MeshBasicMaterial, Scene, TubeGeometry, Vector3 } from 'three';
+import { CylinderGeometry, Mesh, MeshBasicMaterial, Scene, Vector3 } from 'three';
 
 const POOL_SIZE = 16;
 const TRAIL_START_SPEED = 13;
 const TRAIL_FULL_SPEED = 18;
 // A normal jump comes back down at roughly 12 m/s, so the fall threshold sits well above that:
-// only drops from real heights should tear the air into wisps.
+// only drops from real heights should tear the air into streaks.
 const FALL_TRAIL_START_SPEED = 20;
 const FALL_TRAIL_FULL_SPEED = 34;
-const GUST_SEGMENTS = 18;
-const GUST_RADIAL_SEGMENTS = 5;
-const GUST_RADIUS = 0.024;
+const TRAIL_LENGTHS = [1.5, 1.9, 2.3, 1.7, 2.1, 2.5];
+// Streaks are deliberately brief, so a burst reads as a quick gust rather than a long streamer
+// hanging behind the robot.
+const TRAIL_LENGTH_SCALE = 0.65;
+// World-space diameter of each streak, independent of its length.
+const TRAIL_WIDTH = 0.03;
+const TRAIL_MIN_LIFETIME = 0.11;
+const TRAIL_LIFETIME_VARIATION = 0.09;
+// Each streak is anchored somewhere in a wide cone of air behind the robot. The cone reaches past
+// its shoulders on either side, and the height range runs from its ankles to above its antenna,
+// so successive bursts do not line up in a neat pair beside it.
+const SPAWN_FAN_HALF_ANGLE = Math.PI * 0.4;
+const SPAWN_MIN_RADIUS = 0.45;
+const SPAWN_MAX_RADIUS = 1.5;
+const SPAWN_MIN_HEIGHT = 0.1;
+const SPAWN_MAX_HEIGHT = 2.5;
+// The robot's visual centre sits about a metre above its feet, which is what the camera line
+// should be measured from.
+const ROBOT_CENTER_HEIGHT = 1;
+// How strongly the trail direction leans toward the camera rather than the robot's wake. A
+// camera-heavy bias keeps the streaks visible instead of letting them collapse edge-on.
+const CAMERA_DIRECTION_BIAS = 0.8;
 const UP = new Vector3(0, 1, 0);
+const baseTrailDirection = new Vector3();
+const cameraDirection = new Vector3();
 const trailAxis = new Vector3();
 
-interface GustSpec {
-    length: number;
-    amplitude: number;
-    turns: number;
-    phase: number;
-}
+// A unit-long cylinder with a unit diameter, centred on the origin and pointing along local Y.
+// Scaling it per streak gives a straight line whose thickness stays under the control of
+// TRAIL_WIDTH.
+const STREAK_GEOMETRY = new CylinderGeometry(0.5, 0.5, 1, 4, 1, true);
 
-interface GustVariant {
-    geometry: TubeGeometry;
-    length: number;
-}
-
-// Each wisp bulges away from its flow axis and curls part of a turn before converging again,
-// which reads as a gust instead of a straight speed line. Z is squashed so the loop has some
-// depth without becoming a corkscrew.
-const GUST_SPECS: readonly GustSpec[] = [
-    { length: 1.5, amplitude: 0.055, turns: 0.14, phase: 0.3 },
-    { length: 1.9, amplitude: 0.065, turns: 0.18, phase: 1.9 },
-    { length: 2.3, amplitude: 0.07, turns: 0.1, phase: 3.4 },
-    { length: 1.7, amplitude: 0.045, turns: 0.2, phase: 4.8 },
-    { length: 2.1, amplitude: 0.06, turns: 0.09, phase: 2.6 },
-    { length: 2.5, amplitude: 0.05, turns: 0.16, phase: 5.7 },
-];
-
-function createGustVariant(spec: GustSpec): GustVariant {
-    const points: Vector3[] = [];
-    for (let i = 0; i <= GUST_SEGMENTS; i++) {
-        const t = i / GUST_SEGMENTS;
-        const envelope = Math.sin(Math.PI * t);
-        const angle = spec.phase + t * Math.PI * 2 * spec.turns;
-        points.push(
-            new Vector3(
-                Math.sin(angle) * spec.amplitude * envelope,
-                (t - 0.5) * spec.length,
-                Math.cos(angle) * spec.amplitude * envelope * 0.65,
-            ),
-        );
-    }
-
-    const curve = new CatmullRomCurve3(points);
-    const geometry = new TubeGeometry(curve, GUST_SEGMENTS, GUST_RADIUS, GUST_RADIAL_SEGMENTS, false);
-
-    // Shrink the tube toward both tips so each gust thins out like a fading trail of air.
-    const position = geometry.getAttribute('position');
-    const center = new Vector3();
-    const vertex = new Vector3();
-    for (let i = 0; i <= GUST_SEGMENTS; i++) {
-        const t = i / GUST_SEGMENTS;
-        curve.getPointAt(t, center);
-        const taper = Math.min(1, 0.16 + Math.sin(Math.PI * t) * 1.5);
-        for (let j = 0; j <= GUST_RADIAL_SEGMENTS; j++) {
-            const index = i * (GUST_RADIAL_SEGMENTS + 1) + j;
-            vertex.fromBufferAttribute(position, index);
-            vertex.sub(center).multiplyScalar(taper).add(center);
-            position.setXYZ(index, vertex.x, vertex.y, vertex.z);
-        }
-    }
-    position.needsUpdate = true;
-    geometry.computeBoundingSphere();
-
-    return { geometry, length: spec.length };
-}
-
-const gustVariants = GUST_SPECS.map(createGustVariant);
-
-interface WindLine {
-    mesh: Mesh;
+interface WindStreak {
+    object: Mesh;
     material: MeshBasicMaterial;
     active: boolean;
     age: number;
     lifetime: number;
     opacity: number;
-    spin: number;
 }
 
-// Occasional white wisps that curl past the robot's sides. They aim toward the camera rather than
-// lying flat in the horizontal plane, so they read as depth even when the camera looks down at the
-// robot.
+// Short white speed lines that flick past the robot through the air it leaves behind it. Each
+// streak points along the average of the robot's wake and the line to the camera, so it keeps a
+// sense of motion while leaning toward the viewer instead of collapsing edge-on.
 export class WindTrails {
     private scene: Scene;
-    private lines: WindLine[] = [];
+    private streaks: WindStreak[] = [];
     private emissionTimer = 0;
 
     constructor(scene: Scene) {
@@ -107,17 +67,16 @@ export class WindTrails {
                 depthWrite: false,
                 toneMapped: false,
             });
-            const mesh = new Mesh(gustVariants[i % gustVariants.length].geometry, material);
-            mesh.visible = false;
-            this.scene.add(mesh);
-            this.lines.push({
-                mesh,
+            const object = new Mesh(STREAK_GEOMETRY, material);
+            object.visible = false;
+            this.scene.add(object);
+            this.streaks.push({
+                object,
                 material,
                 active: false,
                 age: 0,
                 lifetime: 0,
                 opacity: 0,
-                spin: 0,
             });
         }
     }
@@ -134,7 +93,7 @@ export class WindTrails {
             1,
             Math.max(0, (speed - TRAIL_START_SPEED) / (TRAIL_FULL_SPEED - TRAIL_START_SPEED)),
         );
-        // verticalSpeed is negative while falling; a fast drop trails just like a fast sprint.
+        // verticalSpeed is negative while falling; a fast drop streaks just like a fast sprint.
         const fallIntensity = Math.min(
             1,
             Math.max(0, (-verticalSpeed - FALL_TRAIL_START_SPEED) / (FALL_TRAIL_FULL_SPEED - FALL_TRAIL_START_SPEED)),
@@ -142,12 +101,40 @@ export class WindTrails {
         const intensity = Math.max(horizontalIntensity, fallIntensity);
         this.emissionTimer -= dt;
 
+        // Air flows past the robot opposite its motion, so a sprint streaks rearward and a fast
+        // fall streaks upward. Biasing that wake toward the line from the robot's centre to the
+        // camera keeps the streaks diagonal toward the viewer instead of pointing away from it.
+        baseTrailDirection.set(-direction.x * speed, -verticalSpeed, -direction.z * speed);
+        if (baseTrailDirection.lengthSq() < 0.0001) {
+            baseTrailDirection.set(-direction.x, 0, -direction.z);
+        }
+        baseTrailDirection.normalize();
+        cameraDirection.set(
+            cameraPosition.x - position.x,
+            cameraPosition.y - (position.y + ROBOT_CENTER_HEIGHT),
+            cameraPosition.z - position.z,
+        );
+        if (cameraDirection.lengthSq() > 0.0001) {
+            cameraDirection.normalize();
+            baseTrailDirection
+                .multiplyScalar(1 - CAMERA_DIRECTION_BIAS)
+                .addScaledVector(cameraDirection, CAMERA_DIRECTION_BIAS);
+            // Running straight at the camera can all but cancel the two directions; fall back to
+            // the camera line so the streak still has a defined orientation.
+            if (baseTrailDirection.lengthSq() < 0.01) {
+                baseTrailDirection.copy(cameraDirection);
+            } else {
+                baseTrailDirection.normalize();
+            }
+        }
+
         if (intensity > 0) {
             if (this.emissionTimer <= 0) {
-                const side = Math.random() < 0.5 ? -1 : 1;
-                this.spawnLine(position, direction, cameraPosition, side, intensity);
+                this.spawnStreak(position, direction, intensity);
                 if (Math.random() < 0.25 + intensity * 0.35) {
-                    this.spawnLine(position, direction, cameraPosition, -side, intensity);
+                    // The second streak picks its own spot instead of mirroring the first, so a
+                    // burst can straddle the robot at two unrelated heights and distances.
+                    this.spawnStreak(position, direction, intensity);
                 }
                 this.emissionTimer = (0.55 - intensity * 0.32) * (0.8 + Math.random() * 0.4);
             }
@@ -155,98 +142,82 @@ export class WindTrails {
             this.emissionTimer = Math.min(this.emissionTimer, 0.1);
         }
 
-        for (const line of this.lines) {
-            if (!line.active) {
+        for (const streak of this.streaks) {
+            if (!streak.active) {
                 continue;
             }
 
-            line.age += dt;
-            if (line.age >= line.lifetime) {
-                this.deactivate(line);
+            streak.age += dt;
+            if (streak.age >= streak.lifetime) {
+                this.deactivate(streak);
                 continue;
             }
 
-            const progress = line.age / line.lifetime;
+            const progress = streak.age / streak.lifetime;
             const fade = progress < 0.2 ? progress / 0.2 : 1 - (progress - 0.2) / 0.8;
-            line.material.opacity = line.opacity * Math.max(0, fade);
-            line.mesh.rotateY(line.spin * dt);
+            streak.material.opacity = streak.opacity * Math.max(0, fade);
         }
     }
 
     clear(): void {
-        for (const line of this.lines) {
-            this.deactivate(line);
+        for (const streak of this.streaks) {
+            this.deactivate(streak);
         }
         this.emissionTimer = 0;
     }
 
     dispose(): void {
         this.clear();
-        for (const line of this.lines) {
-            this.scene.remove(line.mesh);
-            line.material.dispose();
+        for (const streak of this.streaks) {
+            this.scene.remove(streak.object);
+            streak.material.dispose();
         }
-        this.lines.length = 0;
+        this.streaks.length = 0;
     }
 
-    private spawnLine(
-        position: Vector3,
-        direction: Vector3,
-        cameraPosition: Vector3,
-        sideSign: number,
-        intensity: number,
-    ): void {
-        const line = this.lines.find((candidate) => !candidate.active);
-        if (!line) {
+    private spawnStreak(position: Vector3, direction: Vector3, intensity: number): void {
+        const streak = this.streaks.find((candidate) => !candidate.active);
+        if (!streak) {
             return;
         }
 
-        const variant = gustVariants[Math.floor(Math.random() * gustVariants.length)];
         const scale = 0.85 + intensity * 0.35 + Math.random() * 0.1;
-        const length = variant.length * scale;
-        const sideX = direction.z;
-        const sideZ = -direction.x;
-        const sideOffset = (0.7 + Math.random() * 0.5) * sideSign;
-        const spawnX = position.x + sideX * sideOffset;
-        const spawnY = position.y + 0.5 + Math.random() * 1.15;
-        const spawnZ = position.z + sideZ * sideOffset;
+        const length = TRAIL_LENGTHS[Math.floor(Math.random() * TRAIL_LENGTHS.length)] * scale * TRAIL_LENGTH_SCALE;
+        const rearAngle = (Math.random() * 2 - 1) * SPAWN_FAN_HALF_ANGLE;
+        const radius = SPAWN_MIN_RADIUS + Math.random() * (SPAWN_MAX_RADIUS - SPAWN_MIN_RADIUS);
+        const behindOffset = Math.cos(rearAngle) * radius;
+        const sideOffset = Math.sin(rearAngle) * radius;
+        const spawnX = position.x - direction.x * behindOffset + direction.z * sideOffset;
+        const spawnY = position.y + SPAWN_MIN_HEIGHT + Math.random() * (SPAWN_MAX_HEIGHT - SPAWN_MIN_HEIGHT);
+        const spawnZ = position.z - direction.z * behindOffset - direction.x * sideOffset;
 
-        // Aim each wisp at the camera so it gains depth instead of sitting flat above the ground.
-        // The small random deflection keeps the bundle from converging on one exact point.
-        trailAxis.set(cameraPosition.x - spawnX, cameraPosition.y - spawnY, cameraPosition.z - spawnZ);
-        if (trailAxis.lengthSq() < 0.01) {
-            // The camera can end up all but on top of a wisp; fall back to the robot's motion.
-            trailAxis.set(direction.x, 0, direction.z);
-        }
-        trailAxis.normalize();
-        trailAxis.x += (Math.random() - 0.5) * 0.08;
-        trailAxis.y += (Math.random() - 0.5) * 0.08;
-        trailAxis.z += (Math.random() - 0.5) * 0.08;
+        // Start from the averaged wake/camera direction and deflect each streak slightly so they
+        // do not all look perfectly parallel; each one still stays straight.
+        trailAxis.copy(baseTrailDirection);
+        trailAxis.x += (Math.random() - 0.5) * 0.05;
+        trailAxis.y += (Math.random() - 0.5) * 0.05;
+        trailAxis.z += (Math.random() - 0.5) * 0.05;
         trailAxis.normalize();
 
-        line.mesh.geometry = variant.geometry;
-        line.mesh.position.set(
+        streak.object.position.set(
             spawnX + trailAxis.x * (length * 0.5),
             spawnY + trailAxis.y * (length * 0.5),
             spawnZ + trailAxis.z * (length * 0.5),
         );
-        line.mesh.quaternion.setFromUnitVectors(UP, trailAxis);
-        // Roll the curl to a random angle, then let it slowly twist while it lives.
-        line.mesh.rotateY(Math.random() * Math.PI * 2);
-        line.mesh.scale.setScalar(scale);
+        streak.object.quaternion.setFromUnitVectors(UP, trailAxis);
+        streak.object.scale.set(TRAIL_WIDTH, length, TRAIL_WIDTH);
 
-        line.material.opacity = 0.5 + intensity * 0.35;
-        line.opacity = line.material.opacity;
-        line.mesh.visible = true;
-        line.active = true;
-        line.age = 0;
-        line.lifetime = 0.22 + Math.random() * 0.18;
-        line.spin = (Math.random() < 0.5 ? -1 : 1) * (1 + Math.random() * 2);
+        streak.material.opacity = 0.5 + intensity * 0.35;
+        streak.opacity = streak.material.opacity;
+        streak.object.visible = true;
+        streak.active = true;
+        streak.age = 0;
+        streak.lifetime = TRAIL_MIN_LIFETIME + Math.random() * TRAIL_LIFETIME_VARIATION;
     }
 
-    private deactivate(line: WindLine): void {
-        line.active = false;
-        line.mesh.visible = false;
-        line.material.opacity = 0;
+    private deactivate(streak: WindStreak): void {
+        streak.active = false;
+        streak.object.visible = false;
+        streak.material.opacity = 0;
     }
 }

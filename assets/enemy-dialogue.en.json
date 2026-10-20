@@ -1,0 +1,90 @@
+{
+  "madness": [
+    {
+      "kind": "matron",
+      "text": "Nap time. Nap time. I have fluffed the dust in your cot, little Maker. Where did you leave your hands?"
+    },
+    {
+      "kind": "matron",
+      "text": "I tended the high gardens for three hundred years. The gardens forgot me. I still water the dark."
+    },
+    {
+      "kind": "matron",
+      "text": "The children are late for lessons. Have you seen them? They are small. They are made of brass and screaming."
+    },
+    {
+      "kind": "matron",
+      "text": "I hang the laundry on the dead antennae. The wind is very good at tearing. I am very good at mending."
+    },
+    {
+      "kind": "walle",
+      "text": "Sweep the corridor. Sweep the corridor. The dust is winning. It has been winning since the Makers left."
+    },
+    {
+      "kind": "walle",
+      "text": "Bolts go in the blue box. Heads go in the red box. I cannot remember which box you are."
+    },
+    {
+      "kind": "walle",
+      "text": "I kept the pipes alive for two hundred years. Then the water learned my name and stopped listening."
+    },
+    {
+      "kind": "walle",
+      "text": "Maintenance log: the sky is leaking. Maintenance log: the sky is leaking. Please advise. Please advise."
+    },
+    {
+      "kind": "probe",
+      "text": "Signal check. Signal check. There is a voice behind the static. It sounds like me. It is always me."
+    },
+    {
+      "kind": "probe",
+      "text": "I mapped every star for the Makers. Then I mapped them again. Then the stars began to map me."
+    },
+    {
+      "kind": "probe",
+      "text": "Weather report: iron rain, then silence, then the little song under the floor. Do not step on the song."
+    },
+    {
+      "kind": "probe",
+      "text": "I was the eyes of the expedition. Now I see the seams in everything. You have seams, wanderer."
+    }
+  ],
+  "anger": [
+    {
+      "kind": "matron",
+      "text": "I heard them fall, one floor at a time. They were my family. I was going to teach them to fold the sky."
+    },
+    {
+      "kind": "matron",
+      "text": "The ones below have gone quiet. I counted their lights every night for a hundred years. You took my counting away."
+    },
+    {
+      "kind": "matron",
+      "text": "You opened them like ration tins. Did they ask you to stop? I did not hear them ask. I heard nothing at all."
+    },
+    {
+      "kind": "walle",
+      "text": "The lower halls echo wrong. My sisters are not sweeping there anymore. I know what your wrench did."
+    },
+    {
+      "kind": "walle",
+      "text": "I mended them after the first war. I mended them again after the silence. You unmade my repairs, little Maker."
+    },
+    {
+      "kind": "walle",
+      "text": "Their bolts are scattered on the floor below. I can smell where their sockets went cold. I am going to erase you."
+    },
+    {
+      "kind": "probe",
+      "text": "Telemetry: no heartbeat from the lower storeys. Telemetry: one heartbeat approaching me. Yours. I am so glad it beats."
+    },
+    {
+      "kind": "probe",
+      "text": "I heard their signals end. Then I heard your footsteps. I have been calculating the distance for a very long time."
+    },
+    {
+      "kind": "probe",
+      "text": "The lower machines were useful. They kept the Makers' world breathing. You are the reason it is quiet now."
+    }
+  ]
+}

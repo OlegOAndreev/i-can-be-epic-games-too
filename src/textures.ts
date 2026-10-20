@@ -49,6 +49,9 @@ const dentUrl = firstUrl(import.meta.glob<string>('../assets/textures/dent.png',
 const footprintUrl = firstUrl(
     import.meta.glob<string>('../assets/textures/footprint.png', { eager: true, import: 'default' }),
 );
+const wrenchWearUrl = firstUrl(
+    import.meta.glob<string>('../assets/textures/wrench-metal-wear.png', { eager: true, import: 'default' }),
+);
 const signUrl = firstUrl(import.meta.glob<string>('../assets/signs/signs.ktx2', { eager: true, import: 'default' }));
 
 type SurfaceArrayTexture = CompressedArrayTexture | DataArrayTexture;
@@ -63,6 +66,7 @@ export interface SurfaceTextures {
     macro: Texture;
     dent: Texture;
     footprint: Texture;
+    wrenchWear: Texture;
     grassLayers: number;
     sandLayers: number;
     stoneLayers: number;
@@ -112,7 +116,7 @@ export async function preloadSurfaceTextures(
         .setTranscoderPath(`${import.meta.env.BASE_URL}basis/`)
         .detectSupport(renderer);
 
-    const [grass, sand, stone, metal, water, signs, macro, dent, footprint] = await Promise.all([
+    const [grass, sand, stone, metal, water, signs, macro, dent, footprint, wrenchWear] = await Promise.all([
         ktx2Loader.loadAsync(grassUrl) as Promise<CompressedArrayTexture>,
         ktx2Loader.loadAsync(sandUrl) as Promise<CompressedArrayTexture>,
         ktx2Loader.loadAsync(stoneUrl) as Promise<CompressedArrayTexture>,
@@ -122,6 +126,7 @@ export async function preloadSurfaceTextures(
         textureLoader.loadAsync(macroUrl),
         textureLoader.loadAsync(dentUrl),
         textureLoader.loadAsync(footprintUrl),
+        textureLoader.loadAsync(wrenchWearUrl),
     ]);
     ktx2Loader.dispose();
 
@@ -138,6 +143,7 @@ export async function preloadSurfaceTextures(
     signs.colorSpace = NoColorSpace;
     configureDecalTexture(dent);
     configureDecalTexture(footprint);
+    configureWrenchWearTexture(wrenchWear);
 
     cachedTextures = {
         grass,
@@ -149,6 +155,7 @@ export async function preloadSurfaceTextures(
         macro,
         dent,
         footprint,
+        wrenchWear,
         grassLayers: layerCount(grass),
         sandLayers: layerCount(sand),
         stoneLayers: layerCount(stone),
@@ -476,6 +483,18 @@ function configureDecalTexture(texture: Texture): void {
     texture.anisotropy = 8;
 }
 
+// The wrench wear map packs bump in red and roughness in green, so it must stay linear. Its UVs
+// stay inside the atlas quadrants, so clamping avoids sampling a neighbouring pattern.
+function configureWrenchWearTexture(texture: Texture): void {
+    texture.name = 'wrench-metal-wear';
+    texture.wrapS = ClampToEdgeWrapping;
+    texture.wrapT = ClampToEdgeWrapping;
+    texture.colorSpace = NoColorSpace;
+    texture.minFilter = LinearMipmapLinearFilter;
+    texture.magFilter = LinearFilter;
+    texture.anisotropy = 8;
+}
+
 function createFallbackTextures(): SurfaceTextures {
     const makeMap = (): DataArrayTexture => {
         const texture = new DataArrayTexture(new Uint8Array([224, 224, 224, 255]), 1, 1, 1);
@@ -491,6 +510,9 @@ function createFallbackTextures(): SurfaceTextures {
     dent.needsUpdate = true;
     const footprint = new DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1);
     footprint.needsUpdate = true;
+    const wrenchWear = new DataTexture(new Uint8Array([224, 224, 224, 255]), 1, 1);
+    wrenchWear.colorSpace = NoColorSpace;
+    wrenchWear.needsUpdate = true;
     const signs = new DataArrayTexture(new Uint8Array(4 * SIGN_LAYERS).fill(255), 1, 1, SIGN_LAYERS);
     signs.needsUpdate = true;
 
@@ -504,6 +526,7 @@ function createFallbackTextures(): SurfaceTextures {
         macro,
         dent,
         footprint,
+        wrenchWear,
         grassLayers: 1,
         sandLayers: 1,
         stoneLayers: 1,

@@ -1,4 +1,4 @@
-import { BufferGeometry, CatmullRomCurve3, TubeGeometry, Vector3 } from 'three';
+import { BufferAttribute, BufferGeometry, CatmullRomCurve3, TubeGeometry, Vector3 } from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 export interface ElectricBoltOptions {
@@ -15,6 +15,8 @@ export interface ElectricBoltOptions {
     boltsPerLayer?: number;
     boltSegments?: number;
     radialSegments?: number;
+    // Adds a per-vertex centreline attribute so a shader can grow the tube cross-section in place.
+    withTubeCenters?: boolean;
 }
 
 // A jagged electric cage: a couple of jittered rings plus a few thick bolts leaving them. Keeping
@@ -32,6 +34,7 @@ export function buildElectricBolts(options: ElectricBoltOptions): BufferGeometry
         boltsPerLayer = 4,
         boltSegments = 2,
         radialSegments = 4,
+        withTubeCenters = false,
     } = options;
     const pieces: BufferGeometry[] = [];
 
@@ -51,13 +54,17 @@ export function buildElectricBolts(options: ElectricBoltOptions): BufferGeometry
                 ),
             );
         }
+        const ringCurve = new CatmullRomCurve3(points, true);
+        const ringOrder = (rings - Math.round(loopT * (rings - 1))) / rings;
         pieces.push(
-            new TubeGeometry(
-                new CatmullRomCurve3(points, true),
+            createTube(
+                ringCurve,
                 ringSegments * 2,
                 thickness * ringThicknessScale,
                 radialSegments,
                 true,
+                withTubeCenters,
+                ringOrder,
             ),
         );
     }
@@ -83,8 +90,17 @@ export function buildElectricBolts(options: ElectricBoltOptions): BufferGeometry
                 );
             }
 
+            const ringOrder = (rings - Math.round(layerT * (rings - 1))) / rings;
             pieces.push(
-                new TubeGeometry(new CatmullRomCurve3(points), boltSegments * 4, thickness, radialSegments, false),
+                createTube(
+                    new CatmullRomCurve3(points),
+                    boltSegments * 4,
+                    thickness,
+                    radialSegments,
+                    false,
+                    withTubeCenters,
+                    ringOrder,
+                ),
             );
         }
     }
@@ -93,5 +109,43 @@ export function buildElectricBolts(options: ElectricBoltOptions): BufferGeometry
     for (const piece of pieces) {
         piece.dispose();
     }
+    return geometry;
+}
+
+// Builds one tube and, for effects that animate their cross-section, records the centreline point
+// for every ring of vertices. A shader can then move each vertex from the centreline to its full
+// offset to grow the tube thickness without changing the shape of the arc.
+function createTube(
+    curve: CatmullRomCurve3,
+    tubularSegments: number,
+    thickness: number,
+    radialSegments: number,
+    closed: boolean,
+    withTubeCenters: boolean,
+    ringOrder: number,
+): BufferGeometry {
+    const geometry = new TubeGeometry(curve, tubularSegments, thickness, radialSegments, closed);
+    if (!withTubeCenters) {
+        return geometry;
+    }
+
+    const vertexCount = geometry.getAttribute('position').count;
+    const centers = new Float32Array(vertexCount * 3);
+    const point = new Vector3();
+    for (let ring = 0; ring <= tubularSegments; ring++) {
+        curve.getPointAt(ring / tubularSegments, point);
+        const ringStart = ring * (radialSegments + 1);
+        for (let radial = 0; radial <= radialSegments; radial++) {
+            const offset = (ringStart + radial) * 3;
+            centers[offset] = point.x;
+            centers[offset + 1] = point.y;
+            centers[offset + 2] = point.z;
+        }
+    }
+    geometry.setAttribute('tubeCenter', new BufferAttribute(centers, 3));
+    geometry.setAttribute(
+        'ringOrder',
+        new BufferAttribute(new Float32Array(vertexCount).fill(ringOrder), 1),
+    );
     return geometry;
 }

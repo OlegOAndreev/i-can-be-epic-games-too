@@ -4,6 +4,7 @@ import {
     InstancedMesh,
     Matrix4,
     MeshBasicMaterial,
+    Object3D,
     Quaternion,
     Scene,
     Vector3,
@@ -17,6 +18,9 @@ export const WRENCH_TRAIL_LONG_ARC = (Math.PI * 3) / 8;
 // Once the swing ends, the remaining arc fades away immediately.
 const AFTER_SWING_FADE = 0.1;
 const MAX_SEGMENTS = 72;
+// First-person charged trails sample twice as densely, so the instance buffer must hold twice as
+// many segments as the third-person path uses.
+const MAX_SEGMENT_DETAIL = 2;
 // Live sparks leave a deliberately broken, jagged line instead of a smooth ribbon.
 const MIN_SEGMENT_LENGTH = 0.04;
 const JITTER = 0.035;
@@ -58,7 +62,7 @@ export class WrenchTrail {
         this.material = glowMaterial({
             color: 0xffffff,
         });
-        this.mesh = new InstancedMesh(geometry, this.material, MAX_SEGMENTS);
+        this.mesh = new InstancedMesh(geometry, this.material, MAX_SEGMENTS * MAX_SEGMENT_DETAIL);
         this.mesh.name = 'wrench-trail';
         this.mesh.instanceMatrix.setUsage(DynamicDrawUsage);
         this.mesh.frustumCulled = false;
@@ -85,16 +89,26 @@ export class WrenchTrail {
         this.material.opacity = 1;
     }
 
+    // Anchors the electric arc to a moving frame. Points passed to update() are expected in that
+    // frame's local space, so player and camera movement no longer stretch the trail in world space.
+    setFrame(frame: Object3D): void {
+        frame.updateWorldMatrix(true, false);
+        this.mesh.matrixAutoUpdate = false;
+        this.mesh.matrix.copy(frame.matrixWorld);
+        this.mesh.matrixWorldNeedsUpdate = true;
+    }
+
     // The head position and swing angle are supplied only while the swing is running. Once it
-    // stops, the remaining arc fades out instead of lingering in the world.
-    update(dt: number, headPosition: Vector3 | null, swingAngle = 0): void {
+    // stops, the remaining arc fades out instead of lingering in the world. The radius scale lets
+    // the first-person view draw a thinner trail without changing the third-person effect.
+    update(dt: number, headPosition: Vector3 | null, swingAngle = 0, radiusScale = 1, segmentDetail = 1): void {
         if (!this.active) {
             return;
         }
 
         if (headPosition) {
             this.fadeRemaining = AFTER_SWING_FADE;
-            this.sample(headPosition, swingAngle);
+            this.sample(headPosition, swingAngle, radiusScale, segmentDetail);
             this.material.opacity = 0.8 + Math.random() * 0.2;
             return;
         }
@@ -107,20 +121,28 @@ export class WrenchTrail {
         this.material.opacity = (this.fadeRemaining / AFTER_SWING_FADE) * (0.8 + Math.random() * 0.2);
     }
 
-    private sample(headPosition: Vector3, swingAngle: number): void {
+    private sample(
+        headPosition: Vector3,
+        swingAngle: number,
+        radiusScale: number,
+        segmentDetail: number,
+    ): void {
         this.currentPoint.set(
             headPosition.x + (Math.random() - 0.5) * JITTER,
             headPosition.y + (Math.random() - 0.5) * JITTER,
             headPosition.z + (Math.random() - 0.5) * JITTER,
         );
 
+        const minSegmentLength = MIN_SEGMENT_LENGTH / segmentDetail;
+        const maxSegments = MAX_SEGMENTS * segmentDetail;
+
         if (!this.hasPrevious) {
             this.previousPoint.copy(this.currentPoint);
             this.hasPrevious = true;
-        } else if (this.previousPoint.distanceTo(this.currentPoint) >= MIN_SEGMENT_LENGTH) {
-            this.spawnSegment(this.previousPoint, this.currentPoint, swingAngle);
+        } else if (this.previousPoint.distanceTo(this.currentPoint) >= minSegmentLength) {
+            this.spawnSegment(this.previousPoint, this.currentPoint, swingAngle, radiusScale, maxSegments);
 
-            if (this.segments.length < MAX_SEGMENTS && Math.random() < 0.22) {
+            if (this.segments.length < maxSegments && Math.random() < 0.22) {
                 // A short fork branching off the arc makes the streak read as electricity.
                 this.randomDirection.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5);
                 if (this.randomDirection.lengthSq() < 1e-4) {
@@ -128,7 +150,7 @@ export class WrenchTrail {
                 }
                 this.randomDirection.normalize();
                 this.forkPoint.copy(this.midpoint).addScaledVector(this.randomDirection, 0.06 + Math.random() * 0.12);
-                this.spawnSegment(this.midpoint, this.forkPoint, swingAngle);
+                this.spawnSegment(this.midpoint, this.forkPoint, swingAngle, radiusScale, maxSegments);
             }
 
             this.previousPoint.copy(this.currentPoint);
@@ -137,8 +159,14 @@ export class WrenchTrail {
         this.clip(swingAngle);
     }
 
-    private spawnSegment(from: Vector3, to: Vector3, swingAngle: number): void {
-        if (this.segments.length >= MAX_SEGMENTS) {
+    private spawnSegment(
+        from: Vector3,
+        to: Vector3,
+        swingAngle: number,
+        radiusScale: number,
+        maxSegments: number,
+    ): void {
+        if (this.segments.length >= maxSegments) {
             return;
         }
 
@@ -155,7 +183,8 @@ export class WrenchTrail {
         // Roll the four-sided segment around its own axis so repeated bolts do not line up.
         this.roll.setFromAxisAngle(UP, Math.random() * Math.PI * 2);
         this.quaternion.multiply(this.roll);
-        this.scale.set(SEGMENT_RADIUS, length, SEGMENT_RADIUS);
+        const radius = SEGMENT_RADIUS * radiusScale;
+        this.scale.set(radius, length, radius);
         this.segments.push({
             matrix: new Matrix4().compose(this.midpoint, this.quaternion, this.scale),
             angle: swingAngle,

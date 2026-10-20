@@ -480,27 +480,93 @@ export class SpeechLabel {
     }
 
     private draw(text: string): void {
-        const context = this.context;
-        context.clearRect(0, 0, this.canvas.width, this.canvas.height);
-        context.font = LABEL_FONT;
-        context.textAlign = 'center';
-        context.textBaseline = 'middle';
-        context.lineJoin = 'round';
-
-        const lines = wrapText(context, text, LABEL_MAX_WIDTH, LABEL_MAX_LINES);
-        const blockHeight = lines.length * LABEL_LINE_HEIGHT;
-        const firstLineY = (this.canvas.height - blockHeight) / 2 + LABEL_LINE_HEIGHT / 2;
-
-        for (let i = 0; i < lines.length; i++) {
-            const y = firstLineY + i * LABEL_LINE_HEIGHT;
-            context.strokeStyle = '#000000';
-            context.lineWidth = 9;
-            context.strokeText(lines[i], this.canvas.width / 2, y);
-            context.fillStyle = '#ffffff';
-            context.fillText(lines[i], this.canvas.width / 2, y);
-        }
-
+        paintSpeechText(this.context, this.canvas.width, this.canvas.height, text);
         this.texture.needsUpdate = true;
+    }
+}
+
+// A head label with no canvas of its own. Every line is baked once at startup with
+// renderSpeechTexture(), so showing one is only a texture swap.
+export class PreRenderedSpeechLabel {
+    readonly sprite = new Sprite();
+
+    private readonly material: SpriteMaterial;
+    private opacity = 0;
+    private targetOpacity = 0;
+
+    constructor(texture: CanvasTexture, worldWidth = LABEL_WORLD_WIDTH) {
+        this.material = new SpriteMaterial({
+            map: texture,
+            transparent: true,
+            opacity: 0,
+            depthTest: false,
+            depthWrite: false,
+            fog: false,
+            toneMapped: false,
+        });
+
+        this.sprite.material = this.material;
+        this.sprite.center.set(0.5, 0);
+        this.sprite.scale.set(worldWidth, (worldWidth * LABEL_CANVAS_HEIGHT) / LABEL_CANVAS_WIDTH, 1);
+        this.sprite.renderOrder = 100;
+        this.sprite.visible = false;
+        this.sprite.name = 'speech-label';
+    }
+
+    show(texture: CanvasTexture): void {
+        this.material.map = texture;
+        this.sprite.visible = true;
+        this.targetOpacity = 1;
+    }
+
+    hide(): void {
+        this.targetOpacity = 0;
+    }
+
+    update(dt: number): void {
+        this.opacity = damp(this.opacity, this.targetOpacity, 14, dt);
+        this.material.opacity = this.opacity;
+        if (this.targetOpacity === 0 && this.opacity < 0.01) {
+            this.sprite.visible = false;
+        }
+    }
+}
+
+// Bakes one line into its own texture. Speech code calls this for every line during startup, so
+// no canvas work happens while the game is running.
+export function renderSpeechTexture(text: string): CanvasTexture {
+    const canvas = document.createElement('canvas');
+    canvas.width = LABEL_CANVAS_WIDTH;
+    canvas.height = LABEL_CANVAS_HEIGHT;
+    const context = canvas.getContext('2d');
+    if (!context) {
+        throw new Error('Could not create the speech label canvas.');
+    }
+
+    paintSpeechText(context, canvas.width, canvas.height, text);
+    const texture = new CanvasTexture(canvas);
+    texture.colorSpace = SRGBColorSpace;
+    return texture;
+}
+
+function paintSpeechText(context: CanvasRenderingContext2D, width: number, height: number, text: string): void {
+    context.clearRect(0, 0, width, height);
+    context.font = LABEL_FONT;
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.lineJoin = 'round';
+
+    const lines = wrapText(context, text, LABEL_MAX_WIDTH, LABEL_MAX_LINES);
+    const blockHeight = lines.length * LABEL_LINE_HEIGHT;
+    const firstLineY = (height - blockHeight) / 2 + LABEL_LINE_HEIGHT / 2;
+
+    for (let i = 0; i < lines.length; i++) {
+        const y = firstLineY + i * LABEL_LINE_HEIGHT;
+        context.strokeStyle = '#000000';
+        context.lineWidth = 9;
+        context.strokeText(lines[i], width / 2, y);
+        context.fillStyle = '#ffffff';
+        context.fillText(lines[i], width / 2, y);
     }
 }
 

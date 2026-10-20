@@ -14,7 +14,7 @@ import type { Material } from 'three';
 import { buildElectricBolts } from './electric-bolts';
 import type { Difficulty } from './enemies';
 import { GLOW_RING_TEXTURE_INNER_RADIUS } from './glow';
-import { clamp, dampAngle, smoothstep } from './math-utils';
+import { angleDelta, clamp, damp, smoothstep } from './math-utils';
 import {
     ANTENNA_IDLE_HALO_OPACITY,
     ANTENNA_IDLE_HALO_SCALE,
@@ -109,7 +109,16 @@ const THRUSTER_GLOW_FULL_SPEED = 19;
 const WALK_ANIMATION_SPEED = 0.5;
 // Forward torso lean at full walking speed, in radians (15 degrees).
 const WALK_LEAN = Math.PI / 12;
-const WRENCH_ATTACK_SECONDS = 0.325;
+// The body turns toward the direction of travel. Angular velocity is damped toward the rate that
+// closes the heading error; these rates control how quickly it gets there. Lower values let the
+// body carry its existing spin longer, so turns feel heavier. The air value is half as strong, so
+// turns there are softer.
+const TURN_GAIN = 11;
+const GROUND_TURN_ACCELERATION = TURN_GAIN * 2;
+const AIR_TURN_ACCELERATION = GROUND_TURN_ACCELERATION / 2;
+// Regular swing duration. The first- and third-person animations both run off this timer, and the
+// charged spin below scales from it as well.
+const WRENCH_ATTACK_SECONDS = 0.45;
 // The charged spin gets extra time so both turns read, 20% faster than the doubled pace.
 const WRENCH_CHARGED_ATTACK_SECONDS = (WRENCH_ATTACK_SECONDS * 2) / 1.2;
 // The charged strike fills the wrench in this long after a press. A full charge triples the
@@ -190,6 +199,7 @@ export class Player {
     private readonly rightArmRestZ: number;
     private readonly leftArmRestZ: number;
     private velocity = new Vector3();
+    private turnVelocity = 0;
     private verticalVelocity = 0;
     private grounded = true;
     private airJumpsRemaining = MAX_AIR_JUMPS;
@@ -316,6 +326,21 @@ export class Player {
         return this.knockdownActive;
     }
 
+    // How far through the face-plant sequence the robot is, from 0 (standing) to 1 (flat on its
+    // face), including the pause and the get-up. The first-person viewmodel uses it to drop out of
+    // frame during a hard landing and return as the robot recovers.
+    get knockdownProgress(): number {
+        if (!this.knockdownActive) {
+            return 0;
+        }
+        const fall = Math.min(1, this.knockdownElapsed / KNOCKDOWN_FALL_SECONDS);
+        const getUpStart = KNOCKDOWN_FALL_SECONDS + KNOCKDOWN_HOLD_SECONDS;
+        const getUp = Math.min(1, Math.max(0, (this.knockdownElapsed - getUpStart) / KNOCKDOWN_GET_UP_SECONDS));
+        const fallEase = 1 - (1 - fall) * (1 - fall);
+        const getUpEase = getUp * getUp * (3 - 2 * getUp);
+        return fallEase * (1 - getUpEase);
+    }
+
     get isDestroyed(): boolean {
         return this.destroyed;
     }
@@ -328,6 +353,12 @@ export class Player {
     // True once the wrench has been held long enough for a charged strike.
     get isWrenchCharged(): boolean {
         return this.wrenchChargeElapsed >= WRENCH_CHARGE_SECONDS;
+    }
+
+    // 0..1 charge progress. It stays at 1 through the charged swing, so effects tied to the charge
+    // keep running until the swing ends, matching the third-person wrench bolts.
+    get wrenchChargeProgress(): number {
+        return Math.min(1, this.wrenchChargeElapsed / WRENCH_CHARGE_SECONDS);
     }
 
     // Forward arc covered by a regular wrench swing, in radians.
@@ -352,6 +383,11 @@ export class Player {
     // True while a wrench swing, charged or regular, is playing.
     get isWrenchSwinging(): boolean {
         return this.wrenchAttackElapsed >= 0;
+    }
+
+    // True once the caretakers have handed the wrench over. The first-person viewmodel follows it.
+    get isWrenchEquipped(): boolean {
+        return this.wrench.visible;
     }
 
     private get wrenchSwingSeconds(): number {
@@ -690,6 +726,7 @@ export class Player {
 
     private resetPose(): void {
         this.airJumpsRemaining = MAX_AIR_JUMPS;
+        this.turnVelocity = 0;
         this.walkPhase = 0;
         this.idleTime = 0;
         this.landingBoost = 0;
@@ -894,10 +931,20 @@ export class Player {
         }
 
         const horizontalSpeed = Math.hypot(this.velocity.x + shockKnockbackX, this.velocity.z + shockKnockbackZ);
-        if (horizontalSpeed > 0.5) {
-            const targetFacing = Math.atan2(this.velocity.x + shockKnockbackX, this.velocity.z + shockKnockbackZ);
-            this.group.rotation.y = dampAngle(this.group.rotation.y, targetFacing, 11, dt);
-        }
+        const targetTurnVelocity =
+            horizontalSpeed > 0.5
+                ? angleDelta(
+                      this.group.rotation.y,
+                      Math.atan2(this.velocity.x + shockKnockbackX, this.velocity.z + shockKnockbackZ),
+                  ) * TURN_GAIN
+                : 0;
+        this.turnVelocity = damp(
+            this.turnVelocity,
+            targetTurnVelocity,
+            this.grounded ? GROUND_TURN_ACCELERATION : AIR_TURN_ACCELERATION,
+            dt,
+        );
+        this.group.rotation.y += this.turnVelocity * dt;
 
         this.animate(dt, horizontalSpeed);
     }
@@ -990,17 +1037,7 @@ export class Player {
             this.walkPhase += dt * (3.2 + horizontalSpeed * 1.5) * WALK_ANIMATION_SPEED;
         }
 
-        // How far through the face-plant sequence the robot is, from 0 (standing) to 1 (flat on
-        // its face), including the pause and the get-up.
-        let lying = 0;
-        if (this.knockdownActive) {
-            const fall = Math.min(1, this.knockdownElapsed / KNOCKDOWN_FALL_SECONDS);
-            const getUpStart = KNOCKDOWN_FALL_SECONDS + KNOCKDOWN_HOLD_SECONDS;
-            const getUp = Math.min(1, Math.max(0, (this.knockdownElapsed - getUpStart) / KNOCKDOWN_GET_UP_SECONDS));
-            const fallEase = 1 - (1 - fall) * (1 - fall);
-            const getUpEase = getUp * getUp * (3 - 2 * getUp);
-            lying = fallEase * (1 - getUpEase);
-        }
+        const lying = this.knockdownProgress;
 
         let leftLegTarget = 0;
         let rightLegTarget = 0;

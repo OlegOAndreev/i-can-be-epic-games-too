@@ -1,4 +1,13 @@
-import { BufferGeometry, CatmullRomCurve3, Mesh, MeshBasicMaterial, Scene, TubeGeometry, Vector3 } from 'three';
+import {
+    BufferGeometry,
+    CatmullRomCurve3,
+    Mesh,
+    MeshBasicMaterial,
+    Object3D,
+    Scene,
+    TubeGeometry,
+    Vector3,
+} from 'three';
 
 // A regular hit leaves a two-thirds-turn wisp from the gap between the jaws.
 export const WRENCH_WIND_TRAIL_ARC = (Math.PI * 2) / 3;
@@ -50,6 +59,15 @@ export class WrenchWindTrail {
         this.fadeRemaining = AFTER_SWING_FADE;
         this.material.opacity = 0;
         this.mesh.visible = false;
+    }
+
+    // Anchors the wisp to a moving frame. Callers pass points in that frame's local space, so the
+    // trail keeps its shape when the player or camera moves mid-swing.
+    setFrame(frame: Object3D): void {
+        frame.updateWorldMatrix(true, false);
+        this.mesh.matrixAutoUpdate = false;
+        this.mesh.matrix.copy(frame.matrixWorld);
+        this.mesh.matrixWorldNeedsUpdate = true;
     }
 
     // The jaw-gap position and swing angle are supplied only while the regular swing is running.

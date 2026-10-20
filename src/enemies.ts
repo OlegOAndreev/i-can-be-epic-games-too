@@ -1,12 +1,29 @@
-import { Box3, CylinderGeometry, Group, Mesh, MeshBasicMaterial, Sprite, SpriteMaterial, Vector3 } from 'three';
+import {
+    Box3,
+    CanvasTexture,
+    CylinderGeometry,
+    Group,
+    Mesh,
+    MeshBasicMaterial,
+    Sprite,
+    SpriteMaterial,
+    Vector3,
+} from 'three';
 
+import type { GameAudio, RobotBeepHandle } from './audio';
 import { EnemyDebris } from './enemy-debris';
 import { getRadialGlowTexture, glowMaterial, glowSpriteMaterial } from './glow';
-import { dampAngle } from './math-utils';
+import { clamp, dampAngle } from './math-utils';
 import { disposeGeometry, isSharedMaterial } from './mesh-optimize';
 import type { MegastructureStorey, MegastructureTower, Ramp } from './megastructures';
 import { mulberry32 } from './noise';
-import { createEnemyRobotModel } from './npc-robots';
+import {
+    buildRobotBeepTimes,
+    countWords,
+    createEnemyRobotModel,
+    PreRenderedSpeechLabel,
+    renderSpeechTexture,
+} from './npc-robots';
 import type { RobotKind, RobotModel } from './npc-robots';
 import { PLAYER_HEIGHT, PLAYER_RADIUS } from './player';
 import type { PlayerSettings } from './player';
@@ -18,6 +35,7 @@ const ENEMY_KINDS: RobotKind[] = ['matron', 'walle', 'probe'];
 const ENEMY_HEIGHT: Record<RobotKind, number> = { matron: 2.5, walle: 1.5, probe: 1.9 };
 const ENEMY_HOVER: Record<RobotKind, number> = { matron: 0, walle: 0, probe: 0.55 };
 const ENEMY_RADIUS: Record<RobotKind, number> = { matron: 0.85, walle: 0.85, probe: 0.65 };
+const ENEMY_VOICE_PITCH: Record<RobotKind, number> = { matron: 96, walle: 134, probe: 176 };
 // Hits required to put each caretaker chassis down. `walle` is the WALL-E-looking tracked unit.
 export const ENEMY_HITS_TO_DEFEAT: Record<RobotKind, number> = { probe: 2, walle: 3, matron: 4 };
 export const HIT_IMMUNITY_SECONDS = 0.75;
@@ -132,9 +150,61 @@ const LASER_GLOW_COLOR = 0xff3a18;
 const LASER_FLASH_SIZE = 0.85;
 const AIM_HEIGHT = PLAYER_HEIGHT * 0.55;
 const MUZZLE_HEIGHT = 0.78;
+// Head speech. One storey speaks at a time, and every line is baked before the world starts.
+const SPEECH_WORDS_PER_MINUTE = 190;
+const MIN_SPEECH_SECONDS = 3;
+const MAX_SPEECH_SECONDS = 9;
+const SPEECH_ONSET_DELAY = 1.2;
+const SPEECH_GAP = 2.4;
+// The baked canvas carries some transparent padding below the text, so anchoring it at the head
+// puts the first visible line just above the chassis instead of a label-height away.
+const SPEECH_HEIGHT_OFFSET = -0.1;
+// The enemy label sits right on the chassis, so it is much narrower than the caretakers' screen
+// label. Every line still uses the same baked canvas, only the sprite is scaled down.
+const ENEMY_SPEECH_WORLD_WIDTH = 3.2;
 // The robots watch a 180-degree frontal half. Before they have spotted the player once they may
 // close in, but they hold their fire.
 const UP = new Vector3(0, 1, 0);
+
+export interface EnemyUtterance {
+    kind: RobotKind;
+    text: string;
+}
+
+export interface EnemyDialogue {
+    // Fragments of a mind that has outlived its purpose, spoken when a robot first notices you.
+    madness: EnemyUtterance[];
+    // Lines reserved for robots above a storey whose defenders are already scrap.
+    anger: EnemyUtterance[];
+}
+
+// Validates the editable speech file. Malformed lines are dropped instead of crashing the world.
+export function parseEnemyDialogue(data: unknown): EnemyDialogue {
+    if (!isRecord(data)) {
+        return { madness: [], anger: [] };
+    }
+
+    const read = (key: keyof EnemyDialogue): EnemyUtterance[] => {
+        const lines = data[key];
+        return Array.isArray(lines) ? lines.filter(isEnemyUtterance) : [];
+    };
+
+    return { madness: read('madness'), anger: read('anger') };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null;
+}
+
+function isEnemyUtterance(value: unknown): value is EnemyUtterance {
+    return (
+        isRecord(value) &&
+        typeof value.text === 'string' &&
+        value.text.trim().length > 0 &&
+        typeof value.kind === 'string' &&
+        ENEMY_KINDS.includes(value.kind as RobotKind)
+    );
+}
 
 interface Enemy {
     // Stable within a world seed: tower index, storey level, and spawn index on that floor.
@@ -183,11 +253,24 @@ interface EnemyLevel {
     floorY: number;
     centreX: number;
     centreZ: number;
+    towerIndex: number;
+    level: number;
     enemies: Enemy[];
     previousRamp: Ramp | null;
     nextRamp: Ramp | null;
     timer: number;
     active: boolean;
+    speech: LevelSpeech | null;
+}
+
+interface LevelSpeech {
+    label: PreRenderedSpeechLabel;
+    speaker: Enemy | null;
+    remaining: number;
+    pause: number;
+    beeps: RobotBeepHandle | null;
+    announcedMadness: boolean;
+    announcedAnger: boolean;
 }
 
 export interface PlayerFloorState {
@@ -348,15 +431,32 @@ export class EnemyRobots {
     private readonly debris: EnemyDebris;
     private readonly rng: () => number;
     private readonly debrisRng: () => number;
+    private readonly dialogue: EnemyDialogue;
+    private readonly audio: GameAudio | undefined;
+    private readonly speechTextures = new Map<string, CanvasTexture>();
     private enemiesEnabled: boolean;
     private fireInterval: number;
     private hitPointDelta: number;
     private elapsed = 0;
 
-    constructor(terrain: Terrain, playerSettings: PlayerSettings, difficulty: Difficulty = 'medium') {
+    constructor(
+        terrain: Terrain,
+        playerSettings: PlayerSettings,
+        difficulty: Difficulty = 'medium',
+        dialogue: EnemyDialogue = { madness: [], anger: [] },
+        audio?: GameAudio,
+    ) {
         this.group.name = 'enemy-robots';
         this.terrain = terrain;
         this.playerSettings = playerSettings;
+        this.dialogue = dialogue;
+        this.audio = audio;
+        // Bake every line once, before any robot exists. Runtime speech only swaps sprite maps.
+        for (const utterance of [...dialogue.madness, ...dialogue.anger]) {
+            if (!this.speechTextures.has(utterance.text)) {
+                this.speechTextures.set(utterance.text, renderSpeechTexture(utterance.text));
+            }
+        }
         this.rng = mulberry32(terrain.seed ^ 0x3c6ef372);
         // Debris is cosmetic; keep it off the AI stream so pool exhaustion cannot change combat
         // rolls.
@@ -561,6 +661,8 @@ export class EnemyRobots {
                 }
             }
 
+            this.updateSpeech(level, dt, playerPosition, inLevel);
+
             if (fired && firingPosition) {
                 // Position the volley at the robot that actually fired instead of the floor's first spawn.
                 this.onLaserVolley?.(firingPosition);
@@ -570,12 +672,171 @@ export class EnemyRobots {
         return hits;
     }
 
+    // Enemy speech is one line per storey. A labelled robot speaks when it first spots the player;
+    // a higher floor swaps that line for anger when any floor below it has already been cleared.
+    private updateSpeech(level: EnemyLevel, dt: number, playerPosition: Vector3, inLevel: boolean): void {
+        const speech = level.speech;
+        if (!speech) {
+            return;
+        }
+
+        speech.label.update(dt);
+
+        if (speech.speaker) {
+            if (speech.speaker.defeated) {
+                this.stopSpeech(speech);
+                speech.pause = SPEECH_GAP;
+                return;
+            }
+
+            speech.remaining -= dt;
+            if (speech.remaining <= 0) {
+                this.stopSpeech(speech);
+                speech.pause = SPEECH_GAP;
+            }
+            return;
+        }
+
+        if (!inLevel) {
+            return;
+        }
+
+        if (speech.pause > 0) {
+            speech.pause = Math.max(0, speech.pause - dt);
+            if (speech.pause > 0) {
+                return;
+            }
+        }
+
+        const angry = this.hasFallenKin(level);
+        if (angry ? speech.announcedAnger : speech.announcedMadness) {
+            return;
+        }
+
+        const speaker = this.closestSpottedEnemy(level, playerPosition);
+        if (!speaker) {
+            return;
+        }
+
+        const utterance = this.pickUtterance(level, speaker.kind, angry);
+        if (utterance) {
+            this.startSpeech(speech, speaker, utterance, angry);
+        }
+    }
+
+    // Any destroyed robot on a lower floor of the same tower counts. Restored save data marks those
+    // robots defeated before the first frame, so awareness survives a reload too.
+    private hasFallenKin(level: EnemyLevel): boolean {
+        return this.levels.some(
+            (other) =>
+                other.towerIndex === level.towerIndex &&
+                other.level < level.level &&
+                other.enemies.some((enemy) => enemy.defeated),
+        );
+    }
+
+    private closestSpottedEnemy(level: EnemyLevel, playerPosition: Vector3): Enemy | null {
+        let closest: Enemy | null = null;
+        let closestDistance = Infinity;
+
+        for (const enemy of level.enemies) {
+            if (enemy.defeated || !enemy.group.visible || !enemy.hasSeenPlayer) {
+                continue;
+            }
+
+            const distance = Math.hypot(
+                playerPosition.x - enemy.group.position.x,
+                playerPosition.z - enemy.group.position.z,
+            );
+            if (distance < closestDistance) {
+                closest = enemy;
+                closestDistance = distance;
+            }
+        }
+
+        return closest;
+    }
+
+    private pickUtterance(level: EnemyLevel, kind: RobotKind, angry: boolean): EnemyUtterance | null {
+        const pool = angry ? this.dialogue.anger : this.dialogue.madness;
+        const matching = pool.filter((utterance) => utterance.kind === kind);
+        const candidates = matching.length > 0 ? matching : pool;
+        if (candidates.length === 0) {
+            return null;
+        }
+
+        // Vary the line by tower and floor so neighbouring robots do not recite the same sentence.
+        return candidates[(level.towerIndex * 7 + level.level * 3 + (angry ? 1 : 0)) % candidates.length];
+    }
+
+    private startSpeech(speech: LevelSpeech, speaker: Enemy, utterance: EnemyUtterance, angry: boolean): void {
+        if (angry) {
+            speech.announcedAnger = true;
+        } else {
+            speech.announcedMadness = true;
+        }
+
+        const texture = this.speechTextures.get(utterance.text);
+        if (!texture) {
+            return;
+        }
+
+        speech.speaker = speaker;
+        speech.remaining = clamp(
+            countWords(utterance.text) / (SPEECH_WORDS_PER_MINUTE / 60),
+            MIN_SPEECH_SECONDS,
+            MAX_SPEECH_SECONDS,
+        );
+        speech.label.sprite.removeFromParent();
+        speaker.group.add(speech.label.sprite);
+        speech.label.sprite.position.set(0, speaker.height + SPEECH_HEIGHT_OFFSET, 0);
+        speech.label.sprite.userData.text = utterance.text;
+        speech.label.show(texture);
+
+        const pitch = ENEMY_VOICE_PITCH[speaker.kind];
+        speech.beeps =
+            this.audio?.playRobotBeeps(
+                pitch,
+                buildRobotBeepTimes(utterance.text, speech.remaining),
+                0.24,
+                utterance.text.length * 977 + pitch,
+                speaker.group.position,
+            ) ?? null;
+    }
+
+    private stopSpeech(speech: LevelSpeech): void {
+        speech.speaker = null;
+        speech.remaining = 0;
+        speech.beeps?.stop();
+        speech.beeps = null;
+        speech.label.hide();
+    }
+
+    private stopSpeechFor(enemy: Enemy): void {
+        for (const level of this.levels) {
+            if (level.speech?.speaker === enemy) {
+                this.stopSpeech(level.speech);
+                // Another robot on the floor may still be alive, so let it pick up the thought.
+                level.speech.announcedMadness = false;
+                level.speech.announcedAnger = false;
+                level.speech.pause = SPEECH_GAP;
+            }
+        }
+    }
+
     // Hides every short-lived effect that the normal update loop would otherwise expire. The
     // finale freezes enemy AI, so beams, muzzle/impact flashes, and shock bursts must be cleared
     // explicitly or they stay on screen for the whole cutscene.
     clearTransientEffects(): void {
         for (const enemy of this.enemies) {
             this.hideBeam(enemy);
+        }
+        for (const level of this.levels) {
+            if (level.speech) {
+                this.stopSpeech(level.speech);
+                // The AI loop will not run during the finale, so skip the fade as well.
+                level.speech.label.sprite.visible = false;
+            }
         }
         for (const burst of this.shockBursts) {
             burst.group.visible = false;
@@ -651,6 +912,11 @@ export class EnemyRobots {
         }
 
         if (!this.enemiesEnabled) {
+            for (const level of this.levels) {
+                if (level.speech) {
+                    this.stopSpeech(level.speech);
+                }
+            }
             for (const enemy of this.enemies) {
                 this.hideBeam(enemy);
             }
@@ -815,6 +1081,7 @@ export class EnemyRobots {
 
             if (enemy.hitPoints <= 0) {
                 enemy.defeated = true;
+                this.stopSpeechFor(enemy);
                 // The wreck is replaced by its debris; no chassis is left behind.
                 enemy.model.visual.visible = false;
                 this.hideBeam(enemy);
@@ -892,6 +1159,12 @@ export class EnemyRobots {
 
     dispose(): void {
         this.debris.dispose();
+        for (const level of this.levels) {
+            if (level.speech) {
+                level.speech.beeps?.stop();
+                level.speech.beeps = null;
+            }
+        }
         this.group.removeFromParent();
         this.group.traverse((child) => {
             if (child instanceof Mesh) {
@@ -922,6 +1195,10 @@ export class EnemyRobots {
         this.laserCoreMaterial.dispose();
         this.laserGlowMaterial.dispose();
         this.laserFlashMaterial.dispose();
+        for (const texture of this.speechTextures.values()) {
+            texture.dispose();
+        }
+        this.speechTextures.clear();
         for (const burst of this.shockBursts) {
             burst.dispose();
         }
@@ -1215,14 +1492,38 @@ export class EnemyRobots {
                     floorY,
                     centreX,
                     centreZ,
+                    towerIndex,
+                    level,
                     enemies: created,
                     previousRamp,
                     nextRamp,
                     timer: this.fireInterval,
                     active: false,
+                    speech: this.createLevelSpeech(),
                 });
             }
         }
+    }
+
+    // One prepared label per floor. All of its lines already live in textures, so a speaker only
+    // points the shared sprite at the right one.
+    private createLevelSpeech(): LevelSpeech | null {
+        const texture = this.speechTextures.values().next().value;
+        if (!texture) {
+            return null;
+        }
+
+        const label = new PreRenderedSpeechLabel(texture, ENEMY_SPEECH_WORLD_WIDTH);
+        this.group.add(label.sprite);
+        return {
+            label,
+            speaker: null,
+            remaining: 0,
+            pause: SPEECH_ONSET_DELAY,
+            beeps: null,
+            announcedMadness: false,
+            announcedAnger: false,
+        };
     }
 
     // Places up to `count` enemies in the inset corners farthest from the point where the previous

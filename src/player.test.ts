@@ -2,6 +2,8 @@ import { Group, Mesh, MeshStandardMaterial, Sprite, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
 import { GLOW_RING_TEXTURE_INNER_RADIUS } from './glow';
+import { angleDelta } from './math-utils';
+import type { Player } from './player';
 import {
     chargedWrenchArmAngle,
     chargedWrenchSpinAngle,
@@ -600,9 +602,11 @@ describe('Player hard landings', () => {
         const knockedPosition = player.group.position.clone();
         stepPlayer(player, terrain, 20, { forward: 1, right: 0, jump: true });
         expect(player.group.position.distanceTo(knockedPosition)).toBeLessThan(0.01);
+        expect(player.knockdownProgress).toBe(1);
 
         stepPlayer(player, terrain, 120);
         expect(player.isKnockedDown).toBe(false);
+        expect(player.knockdownProgress).toBe(0);
     });
 
     it('does not knock the robot down after a fall from a small hill', () => {
@@ -818,6 +822,54 @@ describe('Player destruction', () => {
         expect(player.group.rotation.y).toBeCloseTo(Math.PI / 2, 5);
         expect(player.isGrounded).toBe(true);
         expect(player.horizontalSpeed).toBe(0);
+    });
+});
+
+describe('Player turning', () => {
+    it('accelerates into a turn instead of snapping to full angular speed', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        const { x, y, z } = player.group.position;
+        player.restoreSnapshot({ x, y, z, facing: 0, speed: 0, verticalSpeed: 0, grounded: true });
+
+        const frameDeltas: number[] = [];
+        let previousFacing = player.group.rotation.y;
+        for (let frame = 0; frame < 40; frame++) {
+            player.update(1 / 60, { forward: 1, right: 0, jump: false }, 0, terrain);
+            const facing = player.group.rotation.y;
+            frameDeltas.push(Math.abs(angleDelta(previousFacing, facing)));
+            previousFacing = facing;
+        }
+
+        const firstTurningFrame = frameDeltas.findIndex((delta) => delta > 1e-6);
+        expect(firstTurningFrame).toBeGreaterThanOrEqual(0);
+        // The body starts turning gently and speeds up over the first frames instead of snapping
+        // to the full angular speed on the first turned frame.
+        expect(frameDeltas[firstTurningFrame + 1]).toBeGreaterThan(frameDeltas[firstTurningFrame]);
+        // The robot still reaches the direction of travel (-Z is yaw π).
+        expect(Math.abs(angleDelta(player.group.rotation.y, Math.PI))).toBeLessThan(0.05);
+    });
+
+    it('damps the turn more in the air than on the ground', () => {
+        const terrain = testTerrain();
+        const grounded = testPlayer(terrain);
+        const airborne = testPlayer(terrain);
+        const { x, y, z } = grounded.group.position;
+        grounded.restoreSnapshot({ x, y, z, facing: 0, speed: 0, verticalSpeed: 0, grounded: true });
+        airborne.restoreSnapshot({ x, y: y + 5, z, facing: 0, speed: 0, verticalSpeed: 0, grounded: false });
+
+        const turnOverFrames = (player: Player): number => {
+            let previousFacing = player.group.rotation.y;
+            let total = 0;
+            for (let frame = 0; frame < 3; frame++) {
+                player.update(1 / 60, { forward: 1, right: 0, jump: false }, 0, terrain);
+                total += Math.abs(angleDelta(previousFacing, player.group.rotation.y));
+                previousFacing = player.group.rotation.y;
+            }
+            return total;
+        };
+
+        expect(turnOverFrames(grounded)).toBeGreaterThan(turnOverFrames(airborne));
     });
 });
 
