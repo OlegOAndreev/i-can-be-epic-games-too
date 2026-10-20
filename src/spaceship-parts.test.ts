@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { GameAudio } from './audio';
 import { SpaceshipParts, bestGridSpot, findRingSpot } from './spaceship-parts';
 import { stubAudio as audioStub, testTerrain } from './test-helpers';
-import { WATER_LEVEL } from './terrain';
+import { WATER_LEVEL, WORLD_HALF_SIZE } from './terrain';
 
 function stubAudio(): { audio: GameAudio; calls: { recovered: number; beeps: number } } {
     const calls = { recovered: 0, beeps: 0 };
@@ -109,9 +109,12 @@ describe('spaceship parts', () => {
         expect(sites).toHaveLength(5);
         expect(new Set(sites.map((site) => site.id)).size).toBe(5);
         expect(sites.some((site) => site.y < WATER_LEVEL)).toBe(true);
+        // Pieces belong to the outer third of the placement circle (2/3 r to r).
+        const ringInnerRadius = ((WORLD_HALF_SIZE - 250) * 2) / 3;
         for (const site of sites) {
             expect(Number.isFinite(site.x)).toBe(true);
             expect(Number.isFinite(site.z)).toBe(true);
+            expect(Math.hypot(site.x, site.z)).toBeGreaterThanOrEqual(ringInnerRadius);
             expect(site.y).toBeCloseTo(terrain.heightAt(site.x, site.z), 6);
             if (site.y < WATER_LEVEL) {
                 expect(WATER_LEVEL - site.y).toBeGreaterThanOrEqual(2.5);

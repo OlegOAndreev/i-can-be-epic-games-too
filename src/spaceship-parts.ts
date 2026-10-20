@@ -71,6 +71,13 @@ const UNDERWATER_DEPTH = 2.5;
 const SEARCH_RADIUS = 52;
 const SEARCH_MIN_OFFSET = 14;
 const SEARCH_MAX_OFFSET = 38;
+// Pieces spawn in the outer third of the placement circle (2/3 r to r) instead of anywhere inside
+// it, so they never bunch up around the middle of the map.
+const PLACEMENT_RING_INNER_FRACTION = 2 / 3;
+// Some worlds, especially ones where the required underwater piece has no valid seabed in the
+// outer third, only offer spots closer to the middle. The search then widens to this radius rather
+// than failing to place a piece.
+const PLACEMENT_FALLBACK_MIN_RADIUS = 180;
 
 // Samples a ring around the origin, keeping the first point the validator accepts. The angle is
 // drawn before the radius so the caller's random sequence stays stable.
@@ -307,15 +314,30 @@ export class SpaceshipParts {
 
     private findUnderwaterPosition(placed: ReadonlyArray<{ x: number; z: number }>): { x: number; z: number } {
         const spawn = this.terrain.spawn;
-        const limit = WORLD_HALF_SIZE - 250;
 
+        return (
+            this.findRingPosition((x, z) => this.isValidUnderwaterPosition(x, z, spawn, placed)) ??
+            this.findFallbackUnderwaterPosition(spawn, placed)
+        );
+    }
+
+    // Prefers the outer third of the placement circle. If that band offers no valid spot, the
+    // search widens to the rest of the circle before the coarse grid fallback runs.
+    private findRingPosition(accept: (x: number, z: number) => boolean): { x: number; z: number } | null {
+        const limit = WORLD_HALF_SIZE - 250;
         return (
             findRingSpot(this.rng, {
                 attempts: PLACEMENT_ATTEMPTS,
-                minRadius: 180,
+                minRadius: limit * PLACEMENT_RING_INNER_FRACTION,
                 maxRadius: limit,
-                accept: (x, z) => this.isValidUnderwaterPosition(x, z, spawn, placed),
-            }) ?? this.findFallbackUnderwaterPosition(spawn, placed)
+                accept,
+            }) ??
+            findRingSpot(this.rng, {
+                attempts: PLACEMENT_ATTEMPTS,
+                minRadius: PLACEMENT_FALLBACK_MIN_RADIUS,
+                maxRadius: limit,
+                accept,
+            })
         );
     }
 
@@ -370,15 +392,11 @@ export class SpaceshipParts {
 
     private findPosition(placed: ReadonlyArray<{ x: number; z: number }>): { x: number; z: number } {
         const spawn = this.terrain.spawn;
-        const limit = WORLD_HALF_SIZE - 250;
 
         return (
-            findRingSpot(this.rng, {
-                attempts: PLACEMENT_ATTEMPTS,
-                minRadius: 180,
-                maxRadius: limit,
-                accept: (x, z) => this.isValidPosition(x, z, spawn, placed, MIN_SPAWN_DISTANCE, MIN_PART_DISTANCE),
-            }) ?? this.findFallbackPosition(spawn, placed)
+            this.findRingPosition((x, z) =>
+                this.isValidPosition(x, z, spawn, placed, MIN_SPAWN_DISTANCE, MIN_PART_DISTANCE),
+            ) ?? this.findFallbackPosition(spawn, placed)
         );
     }
 
