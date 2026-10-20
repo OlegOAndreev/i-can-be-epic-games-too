@@ -30,6 +30,7 @@ interface TrailSegment {
 // A white electric arc left behind a wrench swing. Segments are tagged with the wrench arm's
 // angle and the oldest are discarded as soon as the arc would exceed the configured length.
 export class WrenchTrail {
+    private readonly scene: Scene;
     private readonly mesh: InstancedMesh;
     private readonly material: MeshBasicMaterial;
     private readonly arc: number;
@@ -50,6 +51,7 @@ export class WrenchTrail {
     private readonly scale = new Vector3();
 
     constructor(scene: Scene, arc: number) {
+        this.scene = scene;
         this.arc = arc;
         const geometry = new CylinderGeometry(1, 1, 1, 4);
         this.material = new MeshBasicMaterial({
@@ -186,11 +188,19 @@ export class WrenchTrail {
         this.mesh.instanceMatrix.needsUpdate = true;
     }
 
-    private clear(): void {
+    clear(): void {
         this.active = false;
         this.segments.length = 0;
         this.mesh.count = 0;
         this.mesh.visible = false;
         this.material.opacity = 0;
+    }
+
+    dispose(): void {
+        this.clear();
+        this.scene.remove(this.mesh);
+        this.mesh.dispose();
+        this.mesh.geometry.dispose();
+        this.material.dispose();
     }
 }

@@ -65,8 +65,55 @@ export function boxesBlockBody(
     return false;
 }
 
+// Entry parameter of a segment into a box, or null when it misses. This is exact, so a thin
+// window pane cannot slip between the old 0.2 m march samples.
+function segmentBoxEntry(
+    startX: number,
+    startY: number,
+    startZ: number,
+    deltaX: number,
+    deltaY: number,
+    deltaZ: number,
+    box: StructureBox,
+): number | null {
+    let tMin = 0;
+    let tMax = 1;
+
+    const axis = (
+        origin: number,
+        direction: number,
+        minimum: number,
+        maximum: number,
+    ): boolean => {
+        if (Math.abs(direction) < 1e-9) {
+            return origin >= minimum && origin <= maximum;
+        }
+        let t1 = (minimum - origin) / direction;
+        let t2 = (maximum - origin) / direction;
+        if (t1 > t2) {
+            const swap = t1;
+            t1 = t2;
+            t2 = swap;
+        }
+        tMin = Math.max(tMin, t1);
+        tMax = Math.min(tMax, t2);
+        return tMin <= tMax;
+    };
+
+    if (!axis(startX, deltaX, box.minX, box.maxX)) {
+        return null;
+    }
+    if (!axis(startY, deltaY, box.baseY, box.topY)) {
+        return null;
+    }
+    if (!axis(startZ, deltaZ, box.minZ, box.maxZ)) {
+        return null;
+    }
+    return tMin;
+}
+
 // First point along a line where it enters solid structure geometry, or null when the line is
-// clear. Floors, walls, and ramp decks all block both lasers and a robot's view of the player.
+// clear. Floors, walls, glass, and ramp decks all block both lasers and a robot's view of the player.
 export function findStructureBlockingPoint(
     start: Vector3,
     end: Vector3,
@@ -85,18 +132,28 @@ export function findStructureBlockingPoint(
         return null;
     }
 
+    let earliest = Infinity;
+    for (const box of boxes) {
+        const hit = segmentBoxEntry(
+            start.x,
+            start.y,
+            start.z,
+            deltaX,
+            deltaY,
+            deltaZ,
+            box,
+        );
+        if (hit !== null && hit < earliest) {
+            earliest = hit;
+        }
+    }
+
     const steps = Math.max(1, Math.ceil(length / LASER_SAMPLE_STEP));
     for (let step = 1; step <= steps; step++) {
         const t = step / steps;
         const x = start.x + deltaX * t;
         const y = start.y + deltaY * t;
         const z = start.z + deltaZ * t;
-
-        for (const box of boxes) {
-            if (x >= box.minX && x <= box.maxX && z >= box.minZ && z <= box.maxZ && y >= box.baseY && y <= box.topY) {
-                return new Vector3(x, y, z);
-            }
-        }
 
         for (const ramp of ramps) {
             if (
@@ -110,12 +167,23 @@ export function findStructureBlockingPoint(
 
             const surfaceY = rampSurfaceAt(ramp, x, z);
             if (y >= surfaceY - RAMP_THICKNESS && y <= surfaceY) {
-                return new Vector3(x, y, z);
+                earliest = Math.min(earliest, t);
+                break;
             }
+        }
+        if (earliest <= t) {
+            break;
         }
     }
 
-    return null;
+    if (!Number.isFinite(earliest)) {
+        return null;
+    }
+    return new Vector3(
+        start.x + deltaX * earliest,
+        start.y + deltaY * earliest,
+        start.z + deltaZ * earliest,
+    );
 }
 
 // First point along the laser where it enters a ramp's solid deck, or null when the shot is clear.

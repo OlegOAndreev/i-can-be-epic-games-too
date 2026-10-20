@@ -15,10 +15,11 @@ import {
 } from 'three';
 import type { Object3D } from 'three';
 
-import type { GameAudio } from './audio';
+import type { GameAudio, RobotBeepHandle } from './audio';
 import { getRadialGlowTexture } from './glow';
 import { t } from './i18n';
 import { clamp } from './math-utils';
+import { disposeGeometry } from './mesh-optimize';
 import type {
     CrownCatwalk,
     MegastructureStorey,
@@ -59,6 +60,7 @@ interface SpeechState {
     position: Vector3;
     remaining: number;
     active: boolean;
+    beeps: RobotBeepHandle | null;
 }
 
 interface Interactable {
@@ -196,8 +198,7 @@ export class RobotRemains {
             }
             speech.remaining = Math.max(0, speech.remaining - dt);
             if (speech.remaining === 0) {
-                speech.label.hide();
-                speech.active = false;
+                this.finishSpeech(speech);
             }
         }
     }
@@ -242,7 +243,7 @@ export class RobotRemains {
         this.group.removeFromParent();
         this.group.traverse((child) => {
             if (child instanceof Mesh) {
-                child.geometry.dispose();
+                disposeGeometry(child.geometry);
             }
             if (child instanceof Mesh || child instanceof Sprite) {
                 const materials = Array.isArray(child.material) ? child.material : [child.material];
@@ -254,6 +255,9 @@ export class RobotRemains {
                 }
             }
         });
+        for (const speech of this.speeches) {
+            speech.beeps?.stop();
+        }
         this.sites.length = 0;
         this.interactables.length = 0;
         this.colliders.length = 0;
@@ -912,12 +916,15 @@ export class RobotRemains {
             position: parent.position.clone(),
             remaining: 0,
             active: false,
+            beeps: null,
         };
         this.speeches.push(state);
         return state;
     }
 
     private speak(speech: SpeechState, text: string, pitch: number, beep: boolean): void {
+        speech.beeps?.stop();
+        speech.beeps = null;
         speech.label.show(text);
         const words = text.split(/\s+/).filter(Boolean).length;
         speech.remaining = clamp(words / WORDS_PER_SECOND, 2.8, 11);
@@ -929,7 +936,13 @@ export class RobotRemains {
             for (let index = 1; index <= count; index++) {
                 times.push((index / count) * speech.remaining * 0.9);
             }
-            this.audio.playRobotBeeps(pitch, times, 0.22, words * 977 + pitch, speech.position);
+            speech.beeps = this.audio.playRobotBeeps(
+                pitch,
+                times,
+                0.22,
+                words * 977 + pitch,
+                speech.position,
+            );
         }
     }
 
@@ -939,6 +952,8 @@ export class RobotRemains {
         }
         speech.active = false;
         speech.remaining = 0;
+        speech.beeps?.stop();
+        speech.beeps = null;
         speech.label.hide();
     }
 

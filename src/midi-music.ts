@@ -30,6 +30,9 @@ const START_DELAY = 0.12;
 export interface MidiMusicPlayback {
     readonly duration: number;
     readonly offset: number;
+    // Pauses note scheduling while the music is muted. Already scheduled notes ring out, but no
+    // new ones are queued until unmuting.
+    setMuted(muted: boolean): void;
     // Stops the scheduler and releases the note buses. Used when the walking score hands over to
     // the finale fanfare.
     stop(): void;
@@ -325,9 +328,28 @@ export async function startMidiMusic(
         cursor = events.length;
     }
 
+    // A resumed track starts at a bar boundary, but notes that began before it may still be
+    // sustaining. Schedule their remaining tail so the first chord is not thinned out.
+    if (offset > 0) {
+        for (const event of events) {
+            if (event.time >= offset - 0.001) {
+                break;
+            }
+            const remaining = event.time + event.duration - offset;
+            if (remaining <= 0.01) {
+                continue;
+            }
+            const bus = buses.get(event.program);
+            if (bus) {
+                scheduleNote(context, { ...event, duration: remaining }, firstNoteTime, bus);
+            }
+        }
+    }
+
     let interval: number | null = null;
     let disposed = false;
     let finished = false;
+    let muted = false;
 
     const clearScheduler = (): void => {
         if (interval !== null) {
@@ -349,7 +371,7 @@ export async function startMidiMusic(
     };
 
     const schedule = (): void => {
-        if (disposed || finished) {
+        if (disposed || finished || muted) {
             return;
         }
         const horizon = context.currentTime + LOOKAHEAD;
@@ -395,6 +417,16 @@ export async function startMidiMusic(
         get offset() {
             const elapsed = Math.max(0, context.currentTime - firstNoteTime);
             return loop ? (offset + elapsed) % duration : offset + elapsed;
+        },
+        setMuted(value: boolean) {
+            if (muted === value) {
+                return;
+            }
+            muted = value;
+            // Catch up on any notes whose windows passed while muted, without replaying them.
+            if (!muted) {
+                schedule();
+            }
         },
         stop: dispose,
     };

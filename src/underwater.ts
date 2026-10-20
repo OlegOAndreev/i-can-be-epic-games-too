@@ -20,6 +20,9 @@ import { clamp, lerp } from './math-utils';
 const MIN_STRENGTH = 0.55;
 const FULL_DEPTH = 9;
 const FADE_OUT_SECONDS = 1;
+// The warp and tint hide the difference, so the offscreen pass runs slightly below the drawing
+// buffer resolution. This cuts its fill cost by roughly 28% without changing the look.
+const RENDER_SCALE = 0.85;
 const UNDERWATER_FOG_NEAR = 1.5;
 const UNDERWATER_FOG_FAR = 55;
 const UNDERWATER_FOG_COLOR = new Color(0x2c7a8c);
@@ -141,6 +144,12 @@ export class UnderwaterEffect {
             this.strength = 0;
         }
 
+        // The full-screen half-float target is expensive, so release it as soon as the fade reaches
+        // zero. render() recreates it on the next dive.
+        if (this.strength === 0) {
+            this.releaseTarget();
+        }
+
         this.material.uniforms.uTime.value = this.time;
         this.material.uniforms.uStrength.value = this.strength;
 
@@ -159,8 +168,8 @@ export class UnderwaterEffect {
         }
 
         renderer.getDrawingBufferSize(this.size);
-        const width = Math.max(1, Math.floor(this.size.x));
-        const height = Math.max(1, Math.floor(this.size.y));
+        const width = Math.max(1, Math.floor(this.size.x * RENDER_SCALE));
+        const height = Math.max(1, Math.floor(this.size.y * RENDER_SCALE));
         if (!this.target || this.target.width !== width || this.target.height !== height) {
             this.target?.dispose();
             this.target = new WebGLRenderTarget(width, height, {
@@ -180,8 +189,17 @@ export class UnderwaterEffect {
     }
 
     dispose(): void {
-        this.target?.dispose();
+        this.releaseTarget();
         this.material.dispose();
         this.quadGeometry.dispose();
+    }
+
+    private releaseTarget(): void {
+        if (!this.target) {
+            return;
+        }
+        this.target.dispose();
+        this.target = null;
+        this.material.uniforms.tDiffuse.value = null;
     }
 }

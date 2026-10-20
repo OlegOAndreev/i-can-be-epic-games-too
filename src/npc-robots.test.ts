@@ -13,6 +13,8 @@ import {
 } from './npc-robots';
 import { Player } from './player';
 import { Terrain } from './terrain';
+
+const FAST_TERRAIN = { meshes: false, decorations: false } as const;
 import { getSurfaceTextures } from './textures';
 
 // Prime the headless terrain textures while there is still no document, then give runtime canvas
@@ -91,7 +93,7 @@ describe('speech pacing', () => {
 
 describe('opening formation', () => {
     it('stands the caretakers on the three corners the player does not occupy', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const npc = new NpcRobots(terrain, stubAudio(), []);
         const corners = terrain.startPoints.filter(
             (point) =>
@@ -120,7 +122,7 @@ describe('opening formation', () => {
 
 describe('caretaker dialogue', () => {
     it('reports every story line to the presenter and clears it afterwards', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const shown: string[] = [];
         let hides = 0;
         const npc = new NpcRobots(
@@ -215,7 +217,7 @@ describe('caretaker dialogue', () => {
     });
 
     it('skips lines tagged for hostile worlds in peaceful mode', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const shown: string[] = [];
         const npc = new NpcRobots(
             terrain,
@@ -254,7 +256,7 @@ describe('caretaker dialogue', () => {
             },
         ];
         const shownFor = (difficulty: 'peaceful' | 'medium'): string[] => {
-            const terrain = new Terrain(1234);
+            const terrain = new Terrain(1234, FAST_TERRAIN);
             const shown: string[] = [];
             const npc = new NpcRobots(terrain, stubAudio(), lines, {
                 showLine: (line) => shown.push(line.text),
@@ -277,7 +279,7 @@ describe('caretaker dialogue', () => {
     });
 
     it('plays the short celebration lines after the intro and reports when they finish', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const shown: string[] = [];
         let hides = 0;
         const npc = new NpcRobots(terrain, stubAudio(), [], {
@@ -307,7 +309,7 @@ describe('caretaker dialogue', () => {
     });
 
     it('paces the matron slower and the probe faster than the default voice', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const text = Array.from({ length: 40 }, () => 'word').join(' ');
         const beepSpans: number[] = [];
         const audio = {
@@ -340,7 +342,7 @@ describe('caretaker placement', () => {
     it('keeps every caretaker clear of the ship hull', () => {
         // 1234 takes the fallback ship site; 2 picks the closest site distance.
         for (const seed of [1234, 2]) {
-            const terrain = new Terrain(seed);
+            const terrain = new Terrain(seed, FAST_TERRAIN);
             const npc = new NpcRobots(terrain, stubAudio(), []);
 
             for (const collider of npc.getColliders()) {
@@ -363,7 +365,7 @@ describe('caretaker placement', () => {
 
 describe('caretaker wrench', () => {
     it('hands over the wrench when the offer line plays, before the story finishes', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         let wrenchReadyWhenShown: boolean | null = null;
         const npc = new NpcRobots(
             terrain,
@@ -409,7 +411,7 @@ describe('caretaker wrench', () => {
     });
 
     it('still hands the wrench over when the player leaves before hearing the offer', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const npc = new NpcRobots(terrain, stubAudio(), [
             { speaker: 'matron', text: 'First line.' },
             { speaker: 'walle', text: 'Second line.' },

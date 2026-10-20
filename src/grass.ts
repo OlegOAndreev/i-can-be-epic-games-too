@@ -10,6 +10,7 @@ import {
     MeshStandardMaterial,
     Object3D,
     ShaderChunk,
+    Sphere,
     Vector3,
 } from 'three';
 
@@ -55,6 +56,9 @@ export class GrassField {
     private cellRadius: number;
     private lastCellX = Number.NaN;
     private lastCellZ = Number.NaN;
+    // The whole patch is one instanced draw, so its bounds must enclose every tuft in the current
+    // cell ring. Mutating the same sphere avoids allocating one per cell crossing.
+    private readonly boundsSphere = new Sphere();
 
     constructor(terrain: Terrain, radius = DEFAULT_GRASS_RADIUS) {
         this.group.name = 'grass';
@@ -104,7 +108,9 @@ export class GrassField {
         this.mesh.name = 'grass-tufts';
         this.mesh.count = 0;
         this.mesh.instanceMatrix.setUsage(DynamicDrawUsage);
-        this.mesh.frustumCulled = false;
+        // The bounds are updated with the cell ring in update(); the default geometry bounds only
+        // cover one tuft and would cull the whole field incorrectly.
+        this.mesh.frustumCulled = true;
         this.mesh.castShadow = false;
         this.mesh.receiveShadow = true;
         this.group.add(this.mesh);
@@ -175,6 +181,17 @@ export class GrassField {
         }
 
         this.mesh.count = count;
+        // Tufts are generated for the full cell ring even when the instance cap truncates the
+        // copy, so this conservative sphere always contains everything that was written.
+        const horizontalRadius = (this.cellRadius + 0.5) * CELL_SIZE * Math.SQRT2;
+        const halfHeight = (62 - WATER_LEVEL) * 0.5;
+        this.boundsSphere.center.set(
+            (centerX + 0.5) * CELL_SIZE,
+            WATER_LEVEL + halfHeight,
+            (centerZ + 0.5) * CELL_SIZE,
+        );
+        this.boundsSphere.radius = Math.hypot(horizontalRadius, halfHeight) + 1;
+        this.mesh.boundingSphere = this.boundsSphere;
         this.mesh.instanceMatrix.needsUpdate = true;
         if (this.mesh.instanceColor) {
             this.mesh.instanceColor.needsUpdate = true;

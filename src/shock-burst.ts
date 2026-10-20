@@ -15,6 +15,7 @@ const SHOCK_BOLT_LAYERS = 2;
 const SHOCK_BOLTS_PER_LAYER = 4;
 const SHOCK_BOLT_SEGMENTS = 2;
 const SHOCK_BOLT_RADIAL_SEGMENTS = 4;
+const SHOCK_BOLT_VARIANTS = 3;
 
 export interface ShockBurstOptions {
     radius: number;
@@ -32,6 +33,8 @@ export class ShockBurst {
     private readonly radius: number;
     private readonly bolts: Mesh;
     private readonly boltMaterial: MeshBasicMaterial;
+    private readonly boltVariants: BufferGeometry[];
+    private boltVariant = 0;
     private readonly particles: Mesh[] = [];
     private readonly particleMaterials: MeshBasicMaterial[] = [];
     private readonly particleVelocities: Vector3[] = [];
@@ -58,7 +61,10 @@ export class ShockBurst {
             fog: false,
             toneMapped: false,
         });
-        this.bolts = new Mesh(new BufferGeometry(), this.boltMaterial);
+        // Bolts are rebuilt only here; a hit swaps between prebuilt variants so the tube merge
+        // and its temporary geometries never run during combat.
+        this.boltVariants = Array.from({ length: SHOCK_BOLT_VARIANTS }, () => this.buildBolts());
+        this.bolts = new Mesh(this.boltVariants[0], this.boltMaterial);
         this.group.add(this.bolts);
 
         for (let index = 0; index < this.particleCount; index++) {
@@ -89,8 +95,8 @@ export class ShockBurst {
     // awayX/awayZ are the local-space horizontal direction the burst is thrown from, so the sparks
     // leave the contact point on the side the impact came from.
     trigger(awayX = 0, awayZ = 0): void {
-        this.bolts.geometry.dispose();
-        this.bolts.geometry = this.buildBolts();
+        this.boltVariant = (this.boltVariant + 1) % this.boltVariants.length;
+        this.bolts.geometry = this.boltVariants[this.boltVariant];
         this.bolts.rotation.y = 0;
         this.boltMaterial.opacity = 0.9;
         this.remaining = SHOCK_BURST_SECONDS;
@@ -187,7 +193,10 @@ export class ShockBurst {
     }
 
     dispose(): void {
-        this.bolts.geometry.dispose();
+        for (const geometry of this.boltVariants) {
+            geometry.dispose();
+        }
+        this.boltVariants.length = 0;
         this.boltMaterial.dispose();
         for (const material of this.particleMaterials) {
             material.dispose();

@@ -13,6 +13,9 @@ import { lcg32 } from './math-utils';
 import { WATER_LEVEL } from './terrain';
 
 const MAX_PARTICLES = 26;
+// The wake drops a patch every 0.09 s and each lives for under a second, so this cap is only
+// reached when several effects overlap.
+const MAX_FOAM_PATCHES = 32;
 const PARTICLE_GRAVITY = 16;
 const SURFACE_Y = WATER_LEVEL + 0.065;
 
@@ -45,6 +48,8 @@ export class WaterSplash {
     private foamGeometries: BufferGeometry[];
     private particles: SplashParticle[] = [];
     private rings: FoamRing[] = [];
+    private readonly particlePool: SplashParticle[] = [];
+    private readonly ringPool: FoamRing[] = [];
 
     constructor(scene: Scene) {
         this.scene = scene;
@@ -185,6 +190,14 @@ export class WaterSplash {
 
     dispose(): void {
         this.clear();
+        for (const particle of this.particlePool) {
+            particle.material.dispose();
+        }
+        this.particlePool.length = 0;
+        for (const ring of this.ringPool) {
+            ring.material.dispose();
+        }
+        this.ringPool.length = 0;
         this.particleGeometry.dispose();
         for (const geometry of this.foamGeometries) {
             geometry.dispose();
@@ -202,37 +215,60 @@ export class WaterSplash {
         upward: number,
         lifetime: number,
     ): void {
-        const material = new MeshBasicMaterial({
-            color: 0xffffff,
-            transparent: true,
-            opacity: 0.95,
-            depthWrite: false,
-            toneMapped: false,
-        });
-        const mesh = new Mesh(this.particleGeometry, material);
-        mesh.position.set(
+        if (this.particles.length >= MAX_PARTICLES) {
+            this.removeParticle(0);
+        }
+
+        let particle = this.particlePool.pop();
+        if (!particle) {
+            const material = new MeshBasicMaterial({
+                color: 0xffffff,
+                transparent: true,
+                opacity: 0.95,
+                depthWrite: false,
+                toneMapped: false,
+            });
+            const mesh = new Mesh(this.particleGeometry, material);
+            mesh.renderOrder = 5;
+            particle = {
+                mesh,
+                material,
+                velocity: new Vector3(),
+                spin: new Vector3(),
+                age: 0,
+                lifetime: 1,
+                size: 1,
+            };
+        }
+
+        particle.material.opacity = 0.95;
+        particle.mesh.position.set(
             x + Math.cos(angle) * radius,
             SURFACE_Y + Math.random() * 0.1,
             z + Math.sin(angle) * radius,
         );
-        mesh.scale.setScalar(size);
-        mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
-        mesh.renderOrder = 5;
-        this.scene.add(mesh);
+        particle.mesh.scale.setScalar(size);
+        particle.mesh.rotation.set(
+            Math.random() * Math.PI,
+            Math.random() * Math.PI,
+            Math.random() * Math.PI,
+        );
+        particle.velocity.set(
+            Math.cos(angle) * outward,
+            upward,
+            Math.sin(angle) * outward,
+        );
+        particle.spin.set(
+            (Math.random() - 0.5) * 11,
+            (Math.random() - 0.5) * 11,
+            (Math.random() - 0.5) * 11,
+        );
+        particle.age = 0;
+        particle.lifetime = lifetime;
+        particle.size = size;
 
-        this.particles.push({
-            mesh,
-            material,
-            velocity: new Vector3(Math.cos(angle) * outward, upward, Math.sin(angle) * outward),
-            spin: new Vector3(
-                (Math.random() - 0.5) * 11,
-                (Math.random() - 0.5) * 11,
-                (Math.random() - 0.5) * 11,
-            ),
-            age: 0,
-            lifetime,
-            size,
-        });
+        this.scene.add(particle.mesh);
+        this.particles.push(particle);
     }
 
     private spawnRing(
@@ -256,41 +292,66 @@ export class WaterSplash {
         delay = 0,
         height = SURFACE_Y,
     ): void {
-        const material = new MeshBasicMaterial({
-            color: 0xffffff,
-            transparent: true,
-            opacity: 0,
-            depthWrite: false,
-            side: FrontSide,
-            toneMapped: false,
-        });
-        const mesh = new Mesh(
-            this.foamGeometries[Math.floor(Math.random() * this.foamGeometries.length)],
-            material,
-        );
-        mesh.position.set(
+        if (this.rings.length >= MAX_FOAM_PATCHES) {
+            this.removeRing(0);
+        }
+
+        let ring = this.ringPool.pop();
+        if (!ring) {
+            const material = new MeshBasicMaterial({
+                color: 0xffffff,
+                transparent: true,
+                opacity: 0,
+                depthWrite: false,
+                side: FrontSide,
+                toneMapped: false,
+            });
+            const mesh = new Mesh(this.foamGeometries[0], material);
+            mesh.renderOrder = 4;
+            ring = {
+                mesh,
+                material,
+                age: 0,
+                delay: 0,
+                lifetime: 1,
+                startScale: 1,
+                endScale: 1,
+                opacity: 1,
+            };
+        }
+
+        ring.mesh.geometry =
+            this.foamGeometries[Math.floor(Math.random() * this.foamGeometries.length)];
+        ring.mesh.position.set(
             x + (Math.random() - 0.5) * 0.12,
             height,
             z + (Math.random() - 0.5) * 0.12,
         );
-        mesh.rotation.set(-Math.PI / 2, 0, Math.random() * Math.PI * 2);
-        mesh.scale.set(startScale, startScale, 1);
-        mesh.renderOrder = 4;
-        this.scene.add(mesh);
-        this.rings.push({ mesh, material, age: 0, delay, lifetime, startScale, endScale, opacity });
+        ring.mesh.rotation.set(-Math.PI / 2, 0, Math.random() * Math.PI * 2);
+        ring.mesh.scale.set(startScale, startScale, 1);
+        ring.material.opacity = 0;
+        ring.age = 0;
+        ring.delay = delay;
+        ring.lifetime = lifetime;
+        ring.startScale = startScale;
+        ring.endScale = endScale;
+        ring.opacity = opacity;
+
+        this.scene.add(ring.mesh);
+        this.rings.push(ring);
     }
 
     private removeParticle(index: number): void {
         const particle = this.particles[index];
         this.scene.remove(particle.mesh);
-        particle.material.dispose();
+        this.particlePool.push(particle);
         this.particles.splice(index, 1);
     }
 
     private removeRing(index: number): void {
         const ring = this.rings[index];
         this.scene.remove(ring.mesh);
-        ring.material.dispose();
+        this.ringPool.push(ring);
         this.rings.splice(index, 1);
     }
 }

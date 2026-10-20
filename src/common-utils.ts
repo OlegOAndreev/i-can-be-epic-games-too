@@ -108,21 +108,88 @@ export async function sleep(delay: number): Promise<void> {
     return promise;
 }
 
+const ERROR_MESSAGE_COOLDOWN_MS = 1500;
+const ERROR_OVERLAY_VISIBLE_MS = 8000;
+let lastErrorMessage = '';
+let lastErrorShownAt = Number.NEGATIVE_INFINITY;
+let errorOverlayTimer = 0;
+
+function showErrorOverlay(message: string): void {
+    if (typeof document === 'undefined' || !document.body) {
+        return;
+    }
+
+    let element = document.getElementById('error-overlay');
+    if (!element) {
+        element = document.createElement('div');
+        element.id = 'error-overlay';
+        element.setAttribute('role', 'status');
+        element.style.cssText = [
+            'position:fixed',
+            'left:12px',
+            'right:12px',
+            'bottom:12px',
+            'z-index:9999',
+            'padding:10px 14px',
+            'border:1px solid #a33',
+            'border-radius:6px',
+            'background:rgba(40,0,0,0.92)',
+            'color:#ffd7d7',
+            'font:12px/1.4 monospace',
+            'white-space:pre-wrap',
+            'pointer-events:none',
+        ].join(';');
+        document.body.append(element);
+    }
+
+    element.textContent = message;
+    element.hidden = false;
+    window.clearTimeout(errorOverlayTimer);
+    errorOverlayTimer = window.setTimeout(() => {
+        element.hidden = true;
+    }, ERROR_OVERLAY_VISIBLE_MS);
+}
+
+// Non-blocking error surface: every error reaches the console, and the on-screen banner is
+// rate-limited so a broken frame loop cannot stack hundreds of modal alerts.
+export function reportError(message: string): void {
+    console.error(message);
+    const now = typeof performance === 'undefined' ? Date.now() : performance.now();
+    if (message === lastErrorMessage && now - lastErrorShownAt < ERROR_MESSAGE_COOLDOWN_MS) {
+        return;
+    }
+    lastErrorMessage = message;
+    lastErrorShownAt = now;
+    showErrorOverlay(message);
+}
+
 // Setup a few common error handlers (onerror must still be setup in each worker/worklet).
-export function setupWindowOnError() {
-    window.onerror = (event: Event | string, source?: string, lineno?: number, colno?: number, error?: Error) => {
-        console.error('Error:', event, source, lineno, colno, error);
-        alert(`Error: ${event}, ${source}:${lineno}, ${error}`);
+export function setupWindowOnError(): void {
+    window.onerror = (
+        event: Event | string,
+        source?: string,
+        lineno?: number,
+        colno?: number,
+        error?: Error,
+    ) => {
+        const location = source ? ` at ${source}:${lineno ?? 0}:${colno ?? 0}` : '';
+        reportError(
+            `Uncaught error: ${String(event)}${location}${error ? `\n${error.stack ?? error.message}` : ''}`,
+        );
     };
 
     window.onunhandledrejection = (event: PromiseRejectionEvent) => {
-        console.error('Unhandled rejection:', event);
-        alert(`Unhandled rejection: ${event.reason}`);
+        const reason =
+            event.reason instanceof Error
+                ? event.reason.stack ?? event.reason.message
+                : String(event.reason);
+        reportError(`Unhandled rejection: ${reason}`);
     };
 }
 
 // Log error, suitable for global error catching
-export function logError(context: string, event: ErrorEvent) {
-    console.error(`Error from ${context}: ${event.message}, ${event.filename}:${event.lineno}, ${event.error}`);
-    alert(`Error from ${context}: ${event.message}, ${event.filename}:${event.lineno}, ${event.error}`);
+export function logError(context: string, event: ErrorEvent): void {
+    reportError(
+        `Error from ${context}: ${event.message}, ${event.filename}:${event.lineno}, ${event.error}`,
+    );
 }

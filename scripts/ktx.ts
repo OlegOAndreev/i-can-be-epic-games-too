@@ -1,5 +1,8 @@
 // Shared KTX2 encoding for the texture generators. Requires Khronos KTX-Software's `ktx` CLI.
 import { spawnSync } from 'node:child_process';
+import { renameSync, rmSync } from 'node:fs';
+
+import { siblingTempPath } from './write-file.ts';
 
 export function ensureKtx(): void {
     const result = spawnSync('ktx', ['create', '--help'], { stdio: 'ignore' });
@@ -20,6 +23,8 @@ export function createKtx2(
     mipmapWrap: 'wrap' | 'clamp' = 'clamp',
 ): void {
     const srgb = colorSpace === 'srgb';
+    // ktx infers its container from the extension, so keep it on the temporary path too.
+    const tempPath = siblingTempPath(outputPath);
     const result = spawnSync(
         'ktx',
         [
@@ -42,15 +47,17 @@ export function createKtx2(
             mipmapWrap,
             ...(inputPaths.length > 1 ? ['--layers', String(inputPaths.length)] : []),
             ...inputPaths,
-            outputPath,
+            tempPath,
         ],
         { stdio: 'inherit' },
     );
 
     if (result.error || result.status !== 0) {
+        rmSync(tempPath, { force: true });
         console.error(`ktx create failed for ${outputPath}`);
         process.exit(1);
     }
 
+    renameSync(tempPath, outputPath);
     console.log(`Generated ${outputPath} (${inputPaths.length} layers)`);
 }

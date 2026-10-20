@@ -1,9 +1,15 @@
+import uiEn from '../assets/ui.en.json';
+import uiRu from '../assets/ui.ru.json';
+
 const FALLBACK = 'en';
 const STORAGE_KEY = 'walking-game.locale';
-const UI_URL = `${import.meta.env.BASE_URL}assets/ui`;
 
 export const SUPPORTED_LOCALES = ['en', 'ru'] as const;
 export type Locale = (typeof SUPPORTED_LOCALES)[number];
+
+// Bundling the UI strings removes two startup round trips and makes a missing file a build error
+// instead of a silent English fallback at runtime.
+const MESSAGES: Record<Locale, Record<string, string>> = { en: uiEn, ru: uiRu };
 
 const LOCALE_LABELS: Record<Locale, string> = {
     en: 'English',
@@ -41,10 +47,8 @@ export async function initI18n(): Promise<void> {
     }
 
     const requested = resolveLocale(location.search, stored, navigator.language);
-    const english = (await fetchMessages(FALLBACK)) ?? {};
-    const selected = requested === FALLBACK ? english : await fetchMessages(requested);
-    currentLocale = selected ? requested : FALLBACK;
-    messages = { ...english, ...(selected ?? {}) };
+    currentLocale = requested;
+    messages = { ...MESSAGES[FALLBACK], ...MESSAGES[requested] };
 
     try {
         localStorage.setItem(STORAGE_KEY, currentLocale);
@@ -55,6 +59,7 @@ export async function initI18n(): Promise<void> {
     document.documentElement.lang = currentLocale;
     applyTranslations();
     setupLanguageSelect();
+    document.documentElement.classList.remove('i18n-pending');
 }
 
 function applyTranslations(): void {
@@ -94,17 +99,4 @@ function setupLanguageSelect(): void {
         url.searchParams.set('lang', select.value);
         location.assign(url.toString());
     });
-}
-
-async function fetchMessages(lang: Locale): Promise<Record<string, string> | null> {
-    try {
-        const response = await fetch(`${UI_URL}.${lang}.json`);
-        if (!response.ok) {
-            return null;
-        }
-        return (await response.json()) as Record<string, string>;
-    } catch (error) {
-        console.warn(`UI translations failed to load for "${lang}".`, error);
-        return null;
-    }
 }

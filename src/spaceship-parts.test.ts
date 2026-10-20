@@ -5,6 +5,8 @@ import type { GameAudio } from './audio';
 import { SpaceshipParts } from './spaceship-parts';
 import { Terrain, WATER_LEVEL } from './terrain';
 
+const FAST_TERRAIN = { meshes: false, decorations: false } as const;
+
 function stubAudio(): { audio: GameAudio; calls: { recovered: number; beeps: number } } {
     const calls = { recovered: 0, beeps: 0 };
     const audio = {
@@ -21,7 +23,7 @@ function stubAudio(): { audio: GameAudio; calls: { recovered: number; beeps: num
 
 describe('spaceship parts', () => {
     it('scatters five distinct pieces with at least one beneath the water', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const { audio } = stubAudio();
         const parts = new SpaceshipParts(terrain, audio);
         const sites = parts.getSites();
@@ -51,7 +53,7 @@ describe('spaceship parts', () => {
     });
 
     it('can reveal every remaining piece for the debug shortcut', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const { audio } = stubAudio();
         const parts = new SpaceshipParts(terrain, audio);
 
@@ -67,7 +69,7 @@ describe('spaceship parts', () => {
 
     it('submerges a piece for every world seed', () => {
         for (const seed of [1, 42, 777]) {
-            const terrain = new Terrain(seed);
+            const terrain = new Terrain(seed, FAST_TERRAIN);
             const { audio } = stubAudio();
             const parts = new SpaceshipParts(terrain, audio);
             expect(parts.getSites().some((site) => site.y < WATER_LEVEL)).toBe(true);
@@ -77,7 +79,7 @@ describe('spaceship parts', () => {
     }, 20_000);
 
     it('wraps each piece in a tight glowing cylinder instead of a floor ring', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const { audio } = stubAudio();
         const parts = new SpaceshipParts(terrain, audio);
         const target = parts.getSites()[0];
@@ -100,7 +102,7 @@ describe('spaceship parts', () => {
     });
 
     it('collects a piece by walking over it and plays the recovery sound once', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const { audio, calls } = stubAudio();
         const parts = new SpaceshipParts(terrain, audio);
         const target = parts.getSites()[0];
@@ -126,7 +128,7 @@ describe('spaceship parts', () => {
     });
 
     it('announces each detector beep with the interval to the next one', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const { audio } = stubAudio();
         const parts = new SpaceshipParts(terrain, audio);
         const target = parts.getSites()[0];
@@ -156,7 +158,7 @@ describe('spaceship parts', () => {
     });
 
     it('ticks the detector 30% faster while the tracked piece is in view', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const { audio } = stubAudio();
         const facing = new SpaceshipParts(terrain, audio);
         const away = new SpaceshipParts(terrain, audio);
@@ -186,7 +188,7 @@ describe('spaceship parts', () => {
     });
 
     it('keeps recovered pieces hidden after a save is restored', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const { audio, calls } = stubAudio();
         const parts = new SpaceshipParts(terrain, audio);
         const sites = parts.getSites();

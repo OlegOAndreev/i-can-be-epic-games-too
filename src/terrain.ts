@@ -27,12 +27,12 @@ import { DecalGeometry } from 'three/addons/geometries/DecalGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import { getRadialGlowTexture } from './glow';
-import { smoothstep } from './math-utils';
+import { clamp, hash32, smoothstep } from './math-utils';
 import { Noise2D, mulberry32 } from './noise';
 import { Megastructures, RAMP_PARAPET_HEIGHT, RAMP_PARAPET_THICKNESS, RAMP_THICKNESS } from './megastructures';
 import type { CrownCatwalk, CrownSpiral, Ramp } from './megastructures';
 import { RockEffects } from './rock-effects';
-import { createRockGeometry } from './rock-shapes';
+import { ROCK_COLLIDER_RADIUS_FACTOR, createRockGeometry } from './rock-shapes';
 import { SPACESHIP_CLEARING_RADIUS, Spaceship, findSpaceshipSite, shipFootprintClearance } from './spaceship';
 import type { SpaceshipSite } from './spaceship';
 import {
@@ -63,8 +63,19 @@ const MAX_STONES = 2200;
 const SMALL_BOULDER_SHADOW_RADIUS = 0.9;
 const MAX_SPIRES = 100;
 const MAX_CACTI = 140;
+// Scattered props keep a little room around each other so trunks and rocks do not interpenetrate.
+const SCATTER_SPACING_CELL = 8;
+const SCATTER_SPACING_MARGIN = 0.4;
+const TREE_SCATTER_RADIUS = 1.2;
+const STONE_SCATTER_RADIUS = 0.6;
+const SPIRE_SCATTER_RADIUS = 1.5;
+const CACTUS_SCATTER_RADIUS = 0.8;
 // Multiplier on the dune ridge height; lower values flatten the sand seas.
 const DUNE_PROMINENCE = 0.25;
+// The ridged-detail signal is one-sided; subtract its measured mean so the detail is zero-mean.
+// Keep the former mean as an explicit base elevation instead of hiding it in the ridge term.
+const RIDGE_DETAIL_MEAN = 0.833;
+const LOWLAND_BASE = 2 + RIDGE_DETAIL_MEAN * 20;
 // One corner of the world is a desert. The corner is chosen from the seed, and the mask fades
 // radially into the surrounding grassland.
 const SAND_CORNER_OFFSET = WORLD_HALF_SIZE * 0.6;
@@ -137,6 +148,10 @@ const ROCK_SMALL_DENT_SIZE = 0.8;
 const ROCK_LARGE_DENT_SIZE = 1.4;
 const ROCK_DENT_DEPTH = 1.2;
 const DENT_SURFACE_OFFSET = 0.012;
+// Static colliders are indexed in a uniform grid so each player collision pass only tests the
+// handful of trunks and rocks near the capsule instead of every collider in the world.
+const COLLIDER_GRID_CELL_SIZE = 8;
+const COLLIDER_GRID_KEY_STRIDE = 4096;
 
 const GRASS_LUSH_COLOR = new Color(0x4c8b3a);
 const GRASS_DRY_COLOR = new Color(0x8e9a50);
@@ -220,6 +235,11 @@ interface DecorationCell {
     instances: DecorationInstance[];
 }
 
+interface CrownSpiralSurface {
+    y: number;
+    centerRadius: number;
+}
+
 interface TreeCell {
     mesh: InstancedMesh;
     instances: DecorationInstance[];
@@ -230,6 +250,14 @@ interface TreeCell {
 // A finite island world made of chunked heightmap meshes, a water plane, and instanced placeholder
 // vegetation and rock formations. The heightmap combines domain-warped continents, ridged mountain
 // ranges, dune fields, and a mountain rim that hides the edge of the world.
+export interface TerrainOptions {
+    // Test fixtures that only sample heights or structures can skip the rendered heightfield and
+    // water plane. Height, slope, colour, and structure queries do not depend on them.
+    meshes?: boolean;
+    // Trees, rocks, spires, cacti, and their colliders are the slowest part of world construction.
+    decorations?: boolean;
+}
+
 export class Terrain {
     readonly group = new Group();
     readonly seed: number;
@@ -275,22 +303,39 @@ export class Terrain {
     private treeLodZ = Number.NaN;
     private treeLodCounts = { high: 0, low: 0, culled: 0 };
     private treesVisible = true;
+    private colliderGrid: Map<number, number[]> | null = null;
+    private colliderGridCount = -1;
+    private colliderGridStamps = new Uint32Array(0);
+    private colliderGridStamp = 0;
+    private readonly colliderCandidates: number[] = [];
+    private readonly crownSurfaceScratch: CrownSpiralSurface[] = [];
+    private crownSurfaceCount = 0;
+    private structureBounds: {
+        minX: number;
+        maxX: number;
+        minZ: number;
+        maxZ: number;
+        minY: number;
+        maxY: number;
+    } | null = null;
 
-    constructor(seed: number) {
+    constructor(seed: number, options: TerrainOptions = {}) {
         this.group.name = 'terrain';
         this.seed = seed;
         this.noise = new Noise2D(seed);
         // Pick one of the four corners for the desert. The two bits of the mixed seed keep the
         // next world from always putting its sand in the same place.
-        const cornerRng = mulberry32(seed ^ 0x9e3779b9);
+        const cornerRng = mulberry32(hash32(0x5a4e, 0x4401, seed));
         this.sandCornerX = (cornerRng() < 0.5 ? -1 : 1) * SAND_CORNER_OFFSET;
         this.sandCornerZ = (cornerRng() < 0.5 ? -1 : 1) * SAND_CORNER_OFFSET;
         this.group.name = 'terrain';
         this.rockEffects = new RockEffects(this);
         this.group.add(this.rockEffects.group);
 
-        this.buildTerrain();
-        this.buildWater();
+        if (options.meshes !== false) {
+            this.buildTerrain();
+            this.buildWater();
+        }
         const scenicSpawn = this.findSpawn();
         this.spaceshipSite = findSpaceshipSite(
             scenicSpawn,
@@ -311,11 +356,15 @@ export class Terrain {
         this.spaceship = new Spaceship(this.spaceshipSite, (x, z) => this.heightAt(x, z));
         this.group.add(this.spaceship.group);
         this.disposables.push(...this.spaceship.materials);
-        this.buildDecorations();
+        if (options.decorations !== false) {
+            this.buildDecorations();
+        }
         this.colliders.push(...this.spaceship.colliders);
     }
 
-    // Saved progress only needs the count; the world itself is rebuilt from its seed.
+    // Saved progress only needs the count; the world itself is rebuilt from its seed. Harvested
+    // emerald boulders therefore come back after a reload until MINERAL_GOAL is reached. This is a
+    // known minor farming exploit, accepted because the objective is capped.
     restoreMineralsCollected(count: number): void {
         this.mineralsCollectedCount = Math.min(MINERAL_GOAL, Math.max(0, Math.floor(count)));
     }
@@ -324,6 +373,9 @@ export class Terrain {
         return this.mineralsCollectedCount;
     }
 
+    // TODO: Collision samples this analytic height while the rendered terrain interpolates the 3 m
+    // triangle grid. Decide whether smooth analytic collision is intentional, or whether both
+    // paths should share the baked height field (current p99 mismatch is ~0.24 m, max ~1 m).
     // World-space terrain height. Pure function of the seed and the coordinates, so chunk seams line up.
     heightAt(x: number, z: number): number {
         const noise = this.noise;
@@ -335,10 +387,11 @@ export class Terrain {
 
         const broad = noise.fbm(warpedX * 0.001 + 12.3, warpedZ * 0.001 - 7.1, 5);
         const rolling = noise.fbm(x * 0.0052 + 37.5, z * 0.0052 - 82.1, 4);
-        const ridgeDetail = Math.pow(
-            1 - Math.abs(noise.fbm(x * 0.009 - 53.6, z * 0.009 + 27.3, 4)),
-            1.3,
-        );
+        const ridgeDetail =
+            Math.pow(
+                1 - Math.abs(noise.fbm(x * 0.009 - 53.6, z * 0.009 + 27.3, 4)),
+                1.3,
+            ) - RIDGE_DETAIL_MEAN;
         const hills = noise.fbm(x * 0.0046 - 4.7, z * 0.0046 + 8.9, 3);
 
         const mountainMask = smoothstep(
@@ -362,7 +415,8 @@ export class Terrain {
             noise.fbm(x * 0.0013 - 211.4, z * 0.0013 + 147.2, 3) * 0.5 + 0.5,
         );
 
-        const lowland = 2 + broad * 33 * (1 - sand * 0.35) - basins * 24 * (1 - mountainMask);
+        const lowland =
+            LOWLAND_BASE + broad * 33 * (1 - sand * 0.35) - basins * 24 * (1 - mountainMask);
         const sandFlats =
             sand *
             (1 - smoothstep(22, 58, lowland)) *
@@ -441,6 +495,10 @@ export class Terrain {
     // onto a ramp from an uneven approach can raise the ramp allowance.
     walkSurfaceAt(x: number, z: number, feetY: number, rampStepHeight = STEP_HEIGHT): number {
         let surface = this.heightAt(x, z);
+        const bounds = this.getStructureBounds();
+        if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) {
+            return surface;
+        }
         const maxRampStepHeight = Math.max(STEP_HEIGHT, rampStepHeight);
 
         for (const box of this.megastructures.boxes) {
@@ -465,7 +523,9 @@ export class Terrain {
         }
 
         for (const spiral of this.megastructures.crownSpirals) {
-            for (const crownSurface of this.crownSpiralSurfaces(spiral, x, z, 0)) {
+            const count = this.crownSpiralSurfaces(spiral, x, z, 0);
+            for (let i = 0; i < count; i++) {
+                const crownSurface = this.crownSurfaceScratch[i];
                 if (crownSurface.y > feetY + STEP_HEIGHT) {
                     continue;
                 }
@@ -482,16 +542,6 @@ export class Terrain {
             }
         }
 
-        for (const platform of this.megastructures.crownPlatforms) {
-            if (platform.topY > feetY + STEP_HEIGHT) {
-                continue;
-            }
-            if (Math.hypot(x - platform.x, z - platform.z) > platform.radius) {
-                continue;
-            }
-            surface = Math.max(surface, platform.topY);
-        }
-
         return surface;
     }
 
@@ -499,6 +549,15 @@ export class Terrain {
     // ledge, floor or ramp stops here instead of passing through it from below.
     ceilingAt(x: number, z: number, headY: number, radius: number): number {
         let ceiling = Infinity;
+        const bounds = this.getStructureBounds();
+        if (
+            x < bounds.minX - radius ||
+            x > bounds.maxX + radius ||
+            z < bounds.minZ - radius ||
+            z > bounds.maxZ + radius
+        ) {
+            return ceiling;
+        }
 
         for (const box of this.megastructures.boxes) {
             if (box.baseY + 1e-4 < headY) {
@@ -516,12 +575,9 @@ export class Terrain {
         }
 
         for (const ramp of this.megastructures.ramps) {
-            if (
-                x < ramp.minX - radius ||
-                x > ramp.maxX + radius ||
-                z < ramp.minZ - radius ||
-                z > ramp.maxZ + radius
-            ) {
+            // The radius widens the broadphase, but a ramp can only be overhead when the sample
+            // point itself is inside its footprint; do not extrapolate the slope past the edge.
+            if (x < ramp.minX || x > ramp.maxX || z < ramp.minZ || z > ramp.maxZ) {
                 continue;
             }
             const underside = this.rampHeightAt(ramp, x, z) - RAMP_THICKNESS;
@@ -531,8 +587,9 @@ export class Terrain {
         }
 
         for (const spiral of this.megastructures.crownSpirals) {
-            for (const surface of this.crownSpiralSurfaces(spiral, x, z, radius)) {
-                const underside = surface.y - spiral.thickness;
+            const count = this.crownSpiralSurfaces(spiral, x, z, radius);
+            for (let i = 0; i < count; i++) {
+                const underside = this.crownSurfaceScratch[i].y - spiral.thickness;
                 if (underside + 1e-4 >= headY) {
                     ceiling = Math.min(ceiling, underside);
                 }
@@ -578,16 +635,24 @@ export class Terrain {
     }
 
     private rampHeightAt(ramp: Ramp, x: number, z: number): number {
-        const t =
-            ramp.axis === 'x'
-                ? (x - ramp.minX) / (ramp.maxX - ramp.minX)
-                : (z - ramp.minZ) / (ramp.maxZ - ramp.minZ);
+        const run = ramp.axis === 'x' ? ramp.maxX - ramp.minX : ramp.maxZ - ramp.minZ;
+        if (!(run > 1e-6)) {
+            // A degenerate ramp has no slope; use its low edge instead of dividing by zero.
+            return ramp.minY;
+        }
+        const along = ramp.axis === 'x' ? x - ramp.minX : z - ramp.minZ;
+        const t = clamp(along / run, 0, 1);
         return ramp.minY + (ramp.maxY - ramp.minY) * t;
     }
 
     // True when the feet are resting on a megastructure floor, ramp, crown spiral, or landing
     // rather than natural ground, so the robot should make a metallic step sound.
     isOnStructure(x: number, z: number, feetY: number, tolerance = 0.35): boolean {
+        const bounds = this.getStructureBounds();
+        if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) {
+            return false;
+        }
+
         for (const box of this.megastructures.boxes) {
             if (x < box.minX || x > box.maxX || z < box.minZ || z > box.maxZ) {
                 continue;
@@ -602,8 +667,9 @@ export class Terrain {
         }
 
         for (const spiral of this.megastructures.crownSpirals) {
-            for (const surface of this.crownSpiralSurfaces(spiral, x, z, 0)) {
-                if (Math.abs(surface.y - feetY) <= tolerance) {
+            const count = this.crownSpiralSurfaces(spiral, x, z, 0);
+            for (let i = 0; i < count; i++) {
+                if (Math.abs(this.crownSurfaceScratch[i].y - feetY) <= tolerance) {
                     return true;
                 }
             }
@@ -646,23 +712,37 @@ export class Terrain {
 
     // Every turn of a crown spiral that covers this position, with its walkway height and the
     // radius of the ribbon's centreline. The ribbon is continuous, so there are no joint gaps.
+    // Fills the shared scratch list and returns how many entries are valid. The caller consumes
+    // them immediately; reusing the list keeps the player, camera, and animal queries allocation-free.
     private crownSpiralSurfaces(
         spiral: CrownSpiral,
         x: number,
         z: number,
         margin: number,
-    ): Array<{ y: number; centerRadius: number }> {
+    ): number {
+        this.crownSurfaceCount = 0;
         const dx = x - spiral.x;
         const dz = z - spiral.z;
         const pointRadius = Math.hypot(dx, dz);
         if (pointRadius < 1e-4) {
-            return [];
+            return 0;
+        }
+
+        const halfWidth = spiral.width / 2 + margin;
+        const minCenterRadius =
+            Math.min(spiral.baseRadius, spiral.topRadius) + spiral.width / 2 + spiral.gap;
+        const maxCenterRadius =
+            Math.max(spiral.baseRadius, spiral.topRadius) + spiral.width / 2 + spiral.gap;
+        // Most queries are far outside the ribbon's ring, so reject before the per-turn loop.
+        if (
+            pointRadius < minCenterRadius - halfWidth - 1e-6 ||
+            pointRadius > maxCenterRadius + halfWidth + 1e-6
+        ) {
+            return 0;
         }
 
         let angle = Math.atan2(dz, dx) * spiral.direction;
         angle = ((angle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
-        const halfWidth = spiral.width / 2 + margin;
-        const surfaces: Array<{ y: number; centerRadius: number }> = [];
 
         for (let s = angle; s <= spiral.totalAngle + 1e-9; s += Math.PI * 2) {
             const climb = s / spiral.totalAngle;
@@ -672,14 +752,33 @@ export class Terrain {
                 spiral.width / 2 +
                 spiral.gap;
             if (Math.abs(pointRadius - centerRadius) <= halfWidth + 1e-6) {
-                surfaces.push({ y: spiral.baseY + spiral.height * climb, centerRadius });
+                let surface = this.crownSurfaceScratch[this.crownSurfaceCount];
+                if (!surface) {
+                    surface = { y: 0, centerRadius: 0 };
+                    this.crownSurfaceScratch.push(surface);
+                }
+                surface.y = spiral.baseY + spiral.height * climb;
+                surface.centerRadius = centerRadius;
+                this.crownSurfaceCount++;
             }
         }
 
-        return surfaces;
+        return this.crownSurfaceCount;
     }
 
     intersectsStructure(x: number, y: number, z: number, radius = 0): boolean {
+        const bounds = this.getStructureBounds();
+        if (
+            x < bounds.minX - radius ||
+            x > bounds.maxX + radius ||
+            z < bounds.minZ - radius ||
+            z > bounds.maxZ + radius ||
+            y < bounds.minY - radius ||
+            y > bounds.maxY + radius
+        ) {
+            return false;
+        }
+
         for (const box of this.megastructures.boxes) {
             if (
                 x < box.minX - radius ||
@@ -709,7 +808,9 @@ export class Terrain {
         }
         for (const spiral of this.megastructures.crownSpirals) {
             const pointRadius = Math.hypot(x - spiral.x, z - spiral.z);
-            for (const crownSurface of this.crownSpiralSurfaces(spiral, x, z, radius)) {
+            const count = this.crownSpiralSurfaces(spiral, x, z, radius);
+            for (let i = 0; i < count; i++) {
+                const crownSurface = this.crownSurfaceScratch[i];
                 if (
                     y > crownSurface.y - spiral.thickness - radius &&
                     y < crownSurface.y + radius
@@ -769,6 +870,94 @@ export class Terrain {
         return false;
     }
 
+    // Conservative AABB around every megastructure piece, used to reject structure queries from
+    // far-away points before scanning the individual boxes, ramps, and crowns.
+    private getStructureBounds(): {
+        minX: number;
+        maxX: number;
+        minZ: number;
+        maxZ: number;
+        minY: number;
+        maxY: number;
+    } {
+        if (this.structureBounds) {
+            return this.structureBounds;
+        }
+
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minZ = Infinity;
+        let maxZ = -Infinity;
+        let minY = Infinity;
+        let maxY = -Infinity;
+        const expand = (x: number, z: number, reach: number, baseY: number, topY: number) => {
+            minX = Math.min(minX, x - reach);
+            maxX = Math.max(maxX, x + reach);
+            minZ = Math.min(minZ, z - reach);
+            maxZ = Math.max(maxZ, z + reach);
+            minY = Math.min(minY, baseY);
+            maxY = Math.max(maxY, topY);
+        };
+
+        const structures = this.megastructures;
+        for (const box of structures.boxes) {
+            minX = Math.min(minX, box.minX);
+            maxX = Math.max(maxX, box.maxX);
+            minZ = Math.min(minZ, box.minZ);
+            maxZ = Math.max(maxZ, box.maxZ);
+            minY = Math.min(minY, box.baseY);
+            maxY = Math.max(maxY, box.topY);
+        }
+        for (const ramp of structures.ramps) {
+            minX = Math.min(minX, ramp.minX);
+            maxX = Math.max(maxX, ramp.maxX);
+            minZ = Math.min(minZ, ramp.minZ);
+            maxZ = Math.max(maxZ, ramp.maxZ);
+            minY = Math.min(minY, ramp.minY - RAMP_THICKNESS);
+            maxY = Math.max(maxY, ramp.maxY);
+        }
+        for (const spiral of structures.crownSpirals) {
+            const reach =
+                Math.max(spiral.baseRadius, spiral.topRadius) +
+                spiral.width +
+                spiral.gap +
+                spiral.parapetThickness;
+            expand(
+                spiral.x,
+                spiral.z,
+                reach,
+                spiral.baseY - spiral.thickness,
+                spiral.baseY + spiral.height + spiral.parapetHeight + 0.05,
+            );
+        }
+        for (const catwalk of structures.crownCatwalks) {
+            const reach =
+                catwalk.length + catwalk.ledgeLength + Math.max(catwalk.width, catwalk.ledgeWidth) / 2;
+            expand(
+                catwalk.x,
+                catwalk.z,
+                reach,
+                catwalk.y - catwalk.thickness,
+                catwalk.y + catwalk.parapetHeight + 0.05,
+            );
+        }
+        for (const cone of structures.crownCones) {
+            expand(
+                cone.x,
+                cone.z,
+                Math.max(cone.baseRadius, cone.topRadius),
+                cone.baseY - 0.1,
+                cone.topY + 0.05,
+            );
+        }
+        for (const platform of structures.crownPlatforms) {
+            expand(platform.x, platform.z, platform.radius, platform.topY - 0.3, platform.topY + 0.05);
+        }
+
+        this.structureBounds = { minX, maxX, minZ, maxZ, minY, maxY };
+        return this.structureBounds;
+    }
+
     // Push a vertical capsule (the player) out of nearby static colliders and optional moving
     // actors. Returns true if it was moved. Two passes handle the case where pushing out of one
     // obstacle leaves the player inside another.
@@ -779,18 +968,22 @@ export class Terrain {
         extraColliders: readonly CylinderCollider[] = [],
     ): boolean {
         const headY = position.y + playerHeight;
-        const colliders =
-            extraColliders.length > 0 ? [...this.colliders, ...extraColliders] : this.colliders;
         let collided = false;
 
         for (let pass = 0; pass < 2; pass++) {
             let hitThisPass = false;
-            for (const collider of colliders) {
-                if (headY < collider.base || position.y + 0.25 > collider.top) {
+            const candidates = this.collectColliderCandidates(position.x, position.z, radius);
+            for (let i = 0; i < candidates.length; i++) {
+                if (!this.pushOutOfCollider(position, radius, headY, this.colliders[candidates[i]])) {
                     continue;
                 }
 
-                if (!pushOutOfCircle(position, collider.x, collider.z, radius + collider.radius)) {
+                hitThisPass = true;
+                collided = true;
+            }
+            // Moving actors are few and change every frame, so they stay out of the static grid.
+            for (const collider of extraColliders) {
+                if (!this.pushOutOfCollider(position, radius, headY, collider)) {
                     continue;
                 }
 
@@ -898,7 +1091,9 @@ export class Terrain {
                 const dx = position.x - spiral.x;
                 const dz = position.z - spiral.z;
                 const pointRadius = Math.hypot(dx, dz);
-                for (const crownSurface of this.crownSpiralSurfaces(spiral, position.x, position.z, 0)) {
+                const surfaceCount = this.crownSpiralSurfaces(spiral, position.x, position.z, 0);
+                for (let surfaceIndex = 0; surfaceIndex < surfaceCount; surfaceIndex++) {
+                    const crownSurface = this.crownSurfaceScratch[surfaceIndex];
                     if (Math.abs(position.y - crownSurface.y) > 1) {
                         continue;
                     }
@@ -955,6 +1150,95 @@ export class Terrain {
         }
 
         return collided;
+    }
+
+    private ensureColliderGrid(): void {
+        if (this.colliderGrid && this.colliderGridCount === this.colliders.length) {
+            return;
+        }
+
+        const grid = new Map<number, number[]>();
+        const cellSize = COLLIDER_GRID_CELL_SIZE;
+        for (let index = 0; index < this.colliders.length; index++) {
+            const collider = this.colliders[index];
+            const minX = Math.floor((collider.x - collider.radius) / cellSize);
+            const maxX = Math.floor((collider.x + collider.radius) / cellSize);
+            const minZ = Math.floor((collider.z - collider.radius) / cellSize);
+            const maxZ = Math.floor((collider.z + collider.radius) / cellSize);
+            for (let cellX = minX; cellX <= maxX; cellX++) {
+                for (let cellZ = minZ; cellZ <= maxZ; cellZ++) {
+                    const key = cellX * COLLIDER_GRID_KEY_STRIDE + cellZ;
+                    const bucket = grid.get(key);
+                    if (bucket) {
+                        bucket.push(index);
+                    } else {
+                        grid.set(key, [index]);
+                    }
+                }
+            }
+        }
+
+        this.colliderGrid = grid;
+        this.colliderGridCount = this.colliders.length;
+        this.colliderGridStamps = new Uint32Array(this.colliders.length);
+        this.colliderGridStamp = 0;
+    }
+
+    // Indices of static colliders whose cells overlap the capsule's horizontal footprint, in the
+    // same order they appear in `colliders` so pushes stay deterministic.
+    private collectColliderCandidates(x: number, z: number, radius: number): number[] {
+        this.ensureColliderGrid();
+        const candidates = this.colliderCandidates;
+        candidates.length = 0;
+
+        let stamp = this.colliderGridStamp + 1;
+        if (stamp > 0xffffffff) {
+            this.colliderGridStamps.fill(0);
+            stamp = 1;
+        }
+        this.colliderGridStamp = stamp;
+
+        const stamps = this.colliderGridStamps;
+        const grid = this.colliderGrid!;
+        const cellSize = COLLIDER_GRID_CELL_SIZE;
+        const minX = Math.floor((x - radius) / cellSize);
+        const maxX = Math.floor((x + radius) / cellSize);
+        const minZ = Math.floor((z - radius) / cellSize);
+        const maxZ = Math.floor((z + radius) / cellSize);
+
+        for (let cellX = minX; cellX <= maxX; cellX++) {
+            for (let cellZ = minZ; cellZ <= maxZ; cellZ++) {
+                const bucket = grid.get(cellX * COLLIDER_GRID_KEY_STRIDE + cellZ);
+                if (!bucket) {
+                    continue;
+                }
+                for (let i = 0; i < bucket.length; i++) {
+                    const index = bucket[i];
+                    if (stamps[index] === stamp) {
+                        continue;
+                    }
+                    stamps[index] = stamp;
+                    candidates.push(index);
+                }
+            }
+        }
+
+        if (candidates.length > 1) {
+            candidates.sort(compareAscending);
+        }
+        return candidates;
+    }
+
+    private pushOutOfCollider(
+        position: Vector3,
+        radius: number,
+        headY: number,
+        collider: CylinderCollider,
+    ): boolean {
+        if (headY < collider.base || position.y + 0.25 > collider.top) {
+            return false;
+        }
+        return pushOutOfCircle(position, collider.x, collider.z, radius + collider.radius);
     }
 
     private crownCatwalkLocal(catwalk: CrownCatwalk, x: number, z: number): { along: number; across: number } {
@@ -1106,6 +1390,7 @@ export class Terrain {
 
             highMesh.count = highCount;
             highMesh.instanceMatrix.needsUpdate = true;
+            highMesh.computeBoundingSphere();
             if (highMesh.instanceColor) {
                 highMesh.instanceColor.setUsage(DynamicDrawUsage);
                 highMesh.instanceColor.needsUpdate = true;
@@ -1114,6 +1399,7 @@ export class Terrain {
             if (leafHighMesh) {
                 leafHighMesh.count = leafHighCount;
                 leafHighMesh.instanceMatrix.needsUpdate = true;
+                leafHighMesh.computeBoundingSphere();
                 if (leafHighMesh.instanceColor) {
                     leafHighMesh.instanceColor.setUsage(DynamicDrawUsage);
                     leafHighMesh.instanceColor.needsUpdate = true;
@@ -1436,6 +1722,10 @@ export class Terrain {
         this.spaceship.dispose();
         this.rockEffects.dispose();
         this.group.traverse((child) => {
+            if (child instanceof InstancedMesh) {
+                // Releases the per-instance attribute buffers as well as the shared geometry.
+                child.dispose();
+            }
             if (child instanceof Mesh) {
                 child.geometry.dispose();
             }
@@ -1990,28 +2280,54 @@ export class Terrain {
                 const height = this.heightAt(x, z);
                 const slope = this.slopeAt(x, z);
                 const clear = this.isScatterPositionClear(x, z, 8, 4);
-                const score =
-                    Math.min(height - WATER_LEVEL, 4) - slope * 2 + (clear ? 10 : 0);
-                if (score > fallbackScore) {
-                    fallbackScore = score;
-                    fallback = { x, z };
+                const dry = height >= 0.2;
+                // Keep a slightly steeper site as the fallback, but never one that is underwater
+                // or blocked by the wreck/structures. Those are the core reachability checks.
+                if (dry && clear) {
+                    const score = Math.min(height - WATER_LEVEL, 4) - slope * 2;
+                    if (score > fallbackScore) {
+                        fallbackScore = score;
+                        fallback = { x, z };
+                    }
                 }
-                if (height < 0.2 || slope > 1.2 || !clear) {
+                if (!dry || slope > 1.2 || !clear) {
                     continue;
                 }
                 return { x, z };
             }
         }
 
-        const dx = site.x - this.spawn.x;
-        const dz = site.z - this.spawn.z;
-        const length = Math.hypot(dx, dz) || 1;
-        return (
-            fallback ?? {
-                x: site.x + (dx / length) * EMERALD_CRASH_SITE_MIN_DISTANCE,
-                z: site.z + (dz / length) * EMERALD_CRASH_SITE_MIN_DISTANCE,
+        if (fallback) {
+            return fallback;
+        }
+
+        // No dry, reachable candidate on the main rings: widen the search before giving up. The
+        // relaxed pass accepts any slope but still requires dry ground outside the wreck clearing.
+        for (let ring = EMERALD_CRASH_SITE_RINGS; ring < EMERALD_CRASH_SITE_RINGS * 2; ring++) {
+            const distance = EMERALD_CRASH_SITE_MIN_DISTANCE + ring * EMERALD_CRASH_SITE_RING_STEP;
+            for (let index = 0; index < EMERALD_CRASH_SITE_SAMPLES * 2; index++) {
+                const angle =
+                    awayAngle + (index / (EMERALD_CRASH_SITE_SAMPLES * 2)) * Math.PI * 2;
+                const x = site.x + Math.cos(angle) * distance;
+                const z = site.z + Math.sin(angle) * distance;
+                if (
+                    Math.abs(x) > WORLD_HALF_SIZE - 24 ||
+                    Math.abs(z) > WORLD_HALF_SIZE - 24
+                ) {
+                    continue;
+                }
+                if (
+                    this.heightAt(x, z) >= 0.2 &&
+                    this.isScatterPositionClear(x, z, 8, 4)
+                ) {
+                    return { x, z };
+                }
             }
-        );
+        }
+
+        // The spawn is dry, walkable ground by construction. It is the only guaranteed reachable
+        // fallback if the entire search area is flooded or built over.
+        return { x: this.spawn.x, z: this.spawn.z };
     }
 
     // Rejects scattered decoration positions too close to the spawn, the ship, or a megastructure.
@@ -2033,9 +2349,44 @@ export class Terrain {
     }
 
     private buildDecorations(): void {
-        const rng = mulberry32(this.seed ^ 0x9e3779b9);
+        // Decorations need a different stream from the sand-corner choice above.
+        const rng = mulberry32(hash32(0x4445, 0x434f, this.seed));
         const dummy = new Object3D();
         const color = new Color();
+
+        const placedScatter = new Map<string, Array<{ x: number; z: number; radius: number }>>();
+        const scatterKey = (x: number, z: number): string =>
+            `${Math.floor(x / SCATTER_SPACING_CELL)},${Math.floor(z / SCATTER_SPACING_CELL)}`;
+        const isScatterSpaced = (x: number, z: number, radius: number): boolean => {
+            const cellX = Math.floor(x / SCATTER_SPACING_CELL);
+            const cellZ = Math.floor(z / SCATTER_SPACING_CELL);
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dz = -1; dz <= 1; dz++) {
+                    const bucket = placedScatter.get(`${cellX + dx},${cellZ + dz}`);
+                    if (!bucket) {
+                        continue;
+                    }
+                    for (const point of bucket) {
+                        if (
+                            Math.hypot(x - point.x, z - point.z) <
+                            radius + point.radius + SCATTER_SPACING_MARGIN
+                        ) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            return true;
+        };
+        const addScatter = (x: number, z: number, radius: number): void => {
+            const key = scatterKey(x, z);
+            const bucket = placedScatter.get(key);
+            if (bucket) {
+                bucket.push({ x, z, radius });
+            } else {
+                placedScatter.set(key, [{ x, z, radius }]);
+            }
+        };
 
         const treeShapes = DEAD_TREE_SEEDS.map((seed) => createDeadTreeShape(seed));
         const lowTreeShapes = DEAD_TREE_SEEDS.map((seed) => createDeadTreeShape(seed, 'low'));
@@ -2062,7 +2413,16 @@ export class Terrain {
             flatShading: true,
             vertexColors: true,
         });
-        this.disposables.push(treeMaterial, leafMaterial);
+        // Some variants receive no instances and never get a mesh, so register every generated
+        // tree and canopy geometry explicitly instead of relying on the scene traversal.
+        this.disposables.push(
+            treeMaterial,
+            leafMaterial,
+            ...treeShapes.map((shape) => shape.geometry),
+            ...lowTreeShapes.map((shape) => shape.geometry),
+            ...leafHighGeometries,
+            ...leafLowGeometries,
+        );
 
         const treeInstances = treeShapes.map(() => [] as DecorationInstance[]);
         const leafInstances = treeShapes.map(() => [] as DecorationInstance[]);
@@ -2088,6 +2448,9 @@ export class Terrain {
             const forest = this.forestField(x, z);
             const density = 0.06 + forest * 0.9 * (1 - desert * 0.9) * (1 - rock * 0.75);
             if (rng() > density) {
+                continue;
+            }
+            if (!isScatterSpaced(x, z, TREE_SCATTER_RADIUS)) {
                 continue;
             }
 
@@ -2141,6 +2504,7 @@ export class Terrain {
                 base: height - 0.3,
                 top: height + shape.height * heightScale,
             });
+            addScatter(x, z, TREE_SCATTER_RADIUS);
             treeCount++;
         }
 
@@ -2150,7 +2514,7 @@ export class Terrain {
             mesh.instanceMatrix.setUsage(DynamicDrawUsage);
             mesh.castShadow = true;
             mesh.receiveShadow = true;
-            mesh.frustumCulled = false;
+            mesh.frustumCulled = true;
             this.group.add(mesh);
             return mesh;
         });
@@ -2173,7 +2537,7 @@ export class Terrain {
             mesh.count = 0;
             mesh.castShadow = true;
             mesh.receiveShadow = true;
-            mesh.frustumCulled = false;
+            mesh.frustumCulled = true;
             this.group.add(mesh);
             return mesh;
         });
@@ -2245,6 +2609,7 @@ export class Terrain {
         this.disposables.push(
             rockMaterial,
             emeraldRockMaterial,
+            rockGeometry,
             mineralGeometry,
             mineralMaterial,
             mineralHaloMaterial,
@@ -2304,7 +2669,14 @@ export class Terrain {
             dummy.updateMatrix();
             const variant = Math.floor(rng() * boulderGeometries.length);
 
-            const colliderRadius = Math.max(scaleX, scaleZ, scaleY * 0.35) * 0.95;
+            // Cover the deformed silhouette, not the undeformed unit sphere. The broadphase stays
+            // a cheap cylinder; only its radius grows to match the visible rock.
+            const colliderRadius =
+                Math.max(scaleX, scaleZ, scaleY * 0.35) * ROCK_COLLIDER_RADIUS_FACTOR;
+            const scatterRadius = Math.max(1, colliderRadius);
+            if (!forcedEmerald && !isScatterSpaced(x, z, scatterRadius)) {
+                continue;
+            }
             const base = height - 0.4;
             const top = height + scaleY * 1.2 + 0.2;
             const collider: CylinderCollider | null =
@@ -2365,6 +2737,7 @@ export class Terrain {
                 x,
                 z,
             });
+            addScatter(x, z, scatterRadius);
             guaranteedPlaced = true;
             boulderCount++;
         }
@@ -2426,6 +2799,9 @@ export class Terrain {
             if (!this.isScatterPositionClear(x, z, 0, 3)) {
                 continue;
             }
+            if (!isScatterSpaced(x, z, STONE_SCATTER_RADIUS)) {
+                continue;
+            }
 
             const scale = 0.08 + Math.pow(rng(), 2) * 0.34;
             const sandyStone = this.desertField(x, z);
@@ -2434,6 +2810,7 @@ export class Terrain {
             dummy.scale.set(scale, scale * (0.5 + rng() * 0.6), scale * (0.7 + rng() * 0.5));
             dummy.updateMatrix();
 
+            addScatter(x, z, STONE_SCATTER_RADIUS);
             stoneInstances.push({
                 matrix: dummy.matrix.clone(),
                 color: color
@@ -2479,7 +2856,10 @@ export class Terrain {
             dummy.updateMatrix();
             const variant = Math.floor(rng() * boulderGeometries.length);
 
-            const radius = Math.max(scale, scaleZ) * 0.9;
+            if (!isScatterSpaced(x, z, SPIRE_SCATTER_RADIUS)) {
+                continue;
+            }
+            const radius = Math.max(scale, scaleZ) * ROCK_COLLIDER_RADIUS_FACTOR;
             const base = height - 0.5;
             const top = height + scaleY * 1.55;
             const collider: CylinderCollider = { kind: 'rock', x, z, radius, base, top };
@@ -2512,6 +2892,7 @@ export class Terrain {
             };
             this.boulders.push(spire);
             spireInstances[variant].push({ matrix, color: tint, boulder: spire, x, z });
+            addScatter(x, z, SPIRE_SCATTER_RADIUS);
             spireCount++;
         }
         for (let variant = 0; variant < boulderGeometries.length; variant++) {
@@ -2570,6 +2951,9 @@ export class Terrain {
             if (desert < 0.5 + rng() * 0.15) {
                 continue;
             }
+            if (!isScatterSpaced(x, z, CACTUS_SCATTER_RADIUS)) {
+                continue;
+            }
 
             const scale = 0.7 + rng() * 0.8;
             dummy.position.set(x, height, z);
@@ -2579,6 +2963,7 @@ export class Terrain {
 
             cacti.setMatrixAt(cactusCount, dummy.matrix);
             cacti.setColorAt(cactusCount, color.copy(CACTUS_CHAR_COLOR).lerp(CACTUS_ASH_COLOR, rng() * 0.75));
+            addScatter(x, z, CACTUS_SCATTER_RADIUS);
             cactusCount++;
         }
         this.finishInstancedMesh(cacti, cactusCount, true);
@@ -2662,6 +3047,10 @@ export class Terrain {
 
 
 // Pushes the player horizontally out of a rectangular obstacle. Returns true if the position moved.
+function compareAscending(a: number, b: number): number {
+    return a - b;
+}
+
 function pushOutOfBox(
     position: Vector3,
     radius: number,

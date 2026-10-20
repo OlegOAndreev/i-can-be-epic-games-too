@@ -11,7 +11,7 @@ function triangleCount(mesh: InstancedMesh): number {
 
 describe('rock damage', () => {
     it('sprays sparks, dents the rock, and breaks it into rubble', () => {
-        const terrain = new Terrain(13579);
+        const terrain = new Terrain(13579, { meshes: false });
         const normalBoulderCell = terrain.group.children.find(
             (child): child is InstancedMesh =>
                 child instanceof InstancedMesh && child.name.startsWith('boulder-cell-'),
@@ -108,7 +108,7 @@ describe('rock damage', () => {
     });
 
     it('measures wrench reach from the boulder wall, not its centre', () => {
-        const terrain = new Terrain(13579);
+        const terrain = new Terrain(13579, { meshes: false });
         const rocks = terrain.colliders.filter((collider) => collider.kind === 'rock');
         const rock = rocks.reduce((widest, collider) =>
             collider.radius > widest.radius ? collider : widest,
@@ -132,7 +132,7 @@ describe('rock damage', () => {
     });
 
     it('scatters several boulder shapes with an uneven silhouette', () => {
-        const terrain = new Terrain(13579);
+        const terrain = new Terrain(13579, { meshes: false });
         const boulderCells = terrain.group.children.filter(
             (child): child is InstancedMesh =>
                 child instanceof InstancedMesh && child.name.startsWith('boulder-cell-'),
@@ -172,7 +172,7 @@ describe('rock damage', () => {
     });
 
     it('drops an emerald mineral from a sheened boulder and records the pickup', () => {
-        const terrain = new Terrain(13579);
+        const terrain = new Terrain(13579, { meshes: false });
         const emeraldCell = terrain.group.children.find(
             (child): child is InstancedMesh =>
                 child instanceof InstancedMesh && child.name.startsWith('boulder-emerald-cell-'),
@@ -219,7 +219,7 @@ describe('rock damage', () => {
 
     it('always places an emerald boulder near the crash site', () => {
         for (const seed of [1, 13579, 20261018]) {
-            const terrain = new Terrain(seed);
+            const terrain = new Terrain(seed, { meshes: false });
             const matrix = new Matrix4();
             const position = new Vector3();
             let nearest = Infinity;

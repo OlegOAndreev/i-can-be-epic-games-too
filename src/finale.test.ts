@@ -1,7 +1,7 @@
-import { Vector3 } from 'three';
+import { Quaternion, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
-import { crossedRing, findFlightCollision, flightSpeedCap, hyperdriveEnginePitch, hyperdriveEngineThrottle, hyperdriveEngineVolume, hyperdriveSpeedMultiplier, mountainCeiling, planRingCourse, planSkyArc, sampleSkyArc } from './finale';
+import { crossedRing, findFlightCollision, findHullCollision, flightSpeedCap, hyperdriveEnginePitch, hyperdriveEngineThrottle, hyperdriveEngineVolume, hyperdriveSpeedMultiplier, mountainCeiling, planRingCourse, planSkyArc, sampleSkyArc } from './finale';
 import { SECOND_SUN_DIRECTION, SUN_BISECTOR_DIRECTION, SUN_DIRECTION } from './sky-directions';
 import { WORLD_HALF_SIZE } from './terrain';
 
@@ -58,6 +58,18 @@ describe('finale ring course', () => {
         for (const ring of rings) {
             expect(ring.y - 15).toBeGreaterThanOrEqual(4 - 1e-6);
             expect(ring.y - 15).toBeLessThan(16);
+        }
+    });
+
+    it('keeps a fallback ring above ground when the outer band is uphill', () => {
+        const heightAt = (x: number, z: number) => (Math.hypot(x, z) > 200 ? 80 : 5);
+        const rings = planRingCourse({ x: 0, z: 0 }, heightAt, 60);
+
+        for (const ring of rings) {
+            // The fallback must find lower ground instead of clamping the hoop into the hillside.
+            const ground = heightAt(ring.x, ring.z);
+            expect(ring.y - 15).toBeGreaterThanOrEqual(ground + 4 - 1e-6);
+            expect(ring.y).toBeLessThan(60);
         }
     });
 
@@ -172,6 +184,33 @@ describe('flight collision', () => {
         expect(hit).not.toBeNull();
         expect(hit!.x).toBeGreaterThanOrEqual(5);
         expect(hit!.x).toBeLessThan(8);
+    });
+
+    it('catches the belly below the hull centre sphere', () => {
+        const hit = findHullCollision(
+            () => 0,
+            () => false,
+            new Vector3(0, 8, 0),
+            new Vector3(0, 8, 10),
+            new Quaternion(),
+        );
+
+        // The old 4 m centre sphere stopped at y = 4; the keel sphere reaches the ground at 8.
+        expect(hit).not.toBeNull();
+    });
+
+    it('stops the nose at a wall before the hull centre reaches it', () => {
+        const wallZ = 10;
+        const hit = findHullCollision(
+            () => 0,
+            (_x, _y, z, radius) => z + radius >= wallZ,
+            new Vector3(0, 20, -20),
+            new Vector3(0, 20, 0),
+            new Quaternion(),
+        );
+
+        expect(hit).not.toBeNull();
+        expect(hit!.z).toBeLessThan(0);
     });
 
     it('treats the sea surface as terrain', () => {

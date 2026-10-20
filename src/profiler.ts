@@ -42,11 +42,11 @@ export class Profiler {
     private renderStart = 0;
     private lastFrameStart = 0;
     private lastDisplay = 0;
-    private frameTimes: number[] = [];
-    private renderTimes: number[] = [];
-    private intervalTimes: number[] = [];
-    private gpuTimes: number[] = [];
-    private samples: FrameSample[] = [];
+    private frameTimes = new SampleBuffer<number>();
+    private renderTimes = new SampleBuffer<number>();
+    private intervalTimes = new SampleBuffer<number>();
+    private gpuTimes = new SampleBuffer<number>();
+    private samples = new SampleBuffer<FrameSample>();
     private gpuSampleResolvers: Array<(value: number | null) => void> = [];
     private gpuSampleRequested = false;
 
@@ -111,7 +111,7 @@ export class Profiler {
         // work. Otherwise a frame that spends 7ms of CPU followed by 8ms of waiting reports 8ms
         // instead of the actual 15ms cadence.
         if (this.lastFrameStart > 0) {
-            pushSample(this.intervalTimes, now - this.lastFrameStart);
+            this.intervalTimes.push(now - this.lastFrameStart);
         }
         this.lastFrameStart = now;
         this.frameStart = now;
@@ -142,14 +142,11 @@ export class Profiler {
     endFrame(): void {
         const now = performance.now();
         const frameMs = now - this.frameStart;
-        pushSample(this.frameTimes, frameMs);
-        pushSample(this.renderTimes, now - this.renderStart);
+        this.frameTimes.push(frameMs);
+        this.renderTimes.push(now - this.renderStart);
 
         const sample: FrameSample = { cpu: frameMs, gpu: null };
         this.samples.push(sample);
-        if (this.samples.length > SAMPLE_SIZE) {
-            this.samples.shift();
-        }
 
         if (this.gl && this.timerExtension && this.activeQuery) {
             this.gl.endQuery(this.timerExtension.TIME_ELAPSED_EXT);
@@ -166,12 +163,37 @@ export class Profiler {
         }
     }
 
+    // A lost context invalidates every query object; drop them without touching WebGL and resolve
+    // any audit request waiting on a GPU reading.
+    handleContextLost(): void {
+        this.resolveGpuSample(null);
+        this.activeQuery = null;
+        this.pendingQuery = null;
+        this.pendingSample = null;
+        this.timerExtension = null;
+        this.gl = null;
+    }
+
+    // A restored context keeps the same renderer but needs fresh extension handles.
+    handleContextRestored(): void {
+        const context = this.renderer.getContext();
+        this.gl = context instanceof WebGL2RenderingContext ? context : null;
+        this.timerExtension =
+            (this.gl?.getExtension('EXT_disjoint_timer_query_webgl2') as
+                | DisjointTimerQueryExtension
+                | null
+                | undefined) ?? null;
+    }
+
     dispose(): void {
         this.clearQueries();
         this.dom.remove();
     }
 
     private collectGpuTime(): void {
+        if (!this.gl || !this.timerExtension) {
+            return;
+        }
         const gl = this.gl;
         const extension = this.timerExtension;
         const query = this.pendingQuery;
@@ -187,7 +209,7 @@ export class Profiler {
         let gpuMs: number | null = null;
         if (!disjoint) {
             gpuMs = (gl.getQueryParameter(query, gl.QUERY_RESULT) as number) / 1e6;
-            pushSample(this.gpuTimes, gpuMs);
+            this.gpuTimes.push(gpuMs);
             if (this.pendingSample) {
                 this.pendingSample.gpu = gpuMs;
             }
@@ -232,13 +254,13 @@ export class Profiler {
 
     private refresh(): void {
         const info = this.renderer.info;
-        const interval = average(this.intervalTimes);
-        const frame = average(this.frameTimes);
-        const render = average(this.renderTimes);
+        const interval = this.intervalTimes.average();
+        const frame = this.frameTimes.average();
+        const render = this.renderTimes.average();
         const update = Math.max(0, frame - render);
         const fps = interval > 0 ? 1000 / interval : 0;
-        const current = this.intervalTimes[this.intervalTimes.length - 1] ?? 0;
-        const gpu = this.gpuTimes.length > 0 ? average(this.gpuTimes) : null;
+        const current = this.intervalTimes.last() ?? 0;
+        const gpu = this.gpuTimes.length > 0 ? this.gpuTimes.average() : null;
         const width = this.renderer.domElement.width;
         const height = this.renderer.domElement.height;
         const yaw = normalizeDegrees((this.camera.rotation.y * 180) / Math.PI);
@@ -277,7 +299,8 @@ export class Profiler {
 
         const samples = this.samples;
         let maxValue = 16.7;
-        for (const sample of samples) {
+        for (let index = 0; index < samples.length; index++) {
+            const sample = samples.at(index);
             maxValue = Math.max(maxValue, sample.cpu, sample.gpu ?? 0);
         }
         const graphMax = niceGraphMax(maxValue);
@@ -352,7 +375,7 @@ export class Profiler {
 
 function drawSeries(
     context: CanvasRenderingContext2D,
-    samples: FrameSample[],
+    samples: SampleBuffer<FrameSample>,
     startX: number,
     slotWidth: number,
     plotBottom: number,
@@ -364,7 +387,7 @@ function drawSeries(
     context.beginPath();
     let started = false;
     for (let index = 0; index < samples.length; index++) {
-        const value = valueOf(samples[index]);
+        const value = valueOf(samples.at(index));
         if (value === null || !Number.isFinite(value)) {
             started = false;
             continue;
@@ -385,7 +408,7 @@ function drawSeries(
     // A lone sample has no line segment, so mark each point to make the first GPU frames visible.
     context.fillStyle = color;
     for (let index = 0; index < samples.length; index++) {
-        const value = valueOf(samples[index]);
+        const value = valueOf(samples.at(index));
         if (value === null || !Number.isFinite(value)) {
             continue;
         }
@@ -400,22 +423,45 @@ function niceGraphMax(value: number): number {
     return Math.ceil(value / step) * step;
 }
 
-function pushSample(samples: number[], value: number): void {
-    samples.push(value);
-    if (samples.length > SAMPLE_SIZE) {
-        samples.shift();
-    }
-}
+// Fixed-size ring: appending overwrites the oldest sample instead of shifting the array and
+// reallocating its backing store every frame.
+class SampleBuffer<T> {
+    private readonly items: Array<T | undefined> = new Array(SAMPLE_SIZE);
+    private start = 0;
+    private count = 0;
 
-function average(samples: number[]): number {
-    if (samples.length === 0) {
-        return 0;
+    get length(): number {
+        return this.count;
     }
-    let total = 0;
-    for (const sample of samples) {
-        total += sample;
+
+    push(item: T): void {
+        if (this.count < SAMPLE_SIZE) {
+            this.items[(this.start + this.count) % SAMPLE_SIZE] = item;
+            this.count++;
+        } else {
+            this.items[this.start] = item;
+            this.start = (this.start + 1) % SAMPLE_SIZE;
+        }
     }
-    return total / samples.length;
+
+    at(index: number): T {
+        return this.items[(this.start + index) % SAMPLE_SIZE] as T;
+    }
+
+    last(): T | undefined {
+        return this.count === 0 ? undefined : this.at(this.count - 1);
+    }
+
+    average(): number {
+        if (this.count === 0) {
+            return 0;
+        }
+        let total = 0;
+        for (let index = 0; index < this.count; index++) {
+            total += this.at(index) as number;
+        }
+        return total / this.count;
+    }
 }
 
 function normalizeDegrees(degrees: number): number {

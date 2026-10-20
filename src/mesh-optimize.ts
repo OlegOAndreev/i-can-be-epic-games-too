@@ -2,6 +2,21 @@ import { Matrix4, Mesh, MeshStandardMaterial } from 'three';
 import type { BufferGeometry, Object3D } from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
+// Geometry instances registered here are shared by many meshes (for example the unit box scaled by
+// each robot part). Disposing one mesh must not invalidate the buffers still used by its siblings.
+const sharedGeometries = new WeakSet<BufferGeometry>();
+
+export function registerSharedGeometry<T extends BufferGeometry>(geometry: T): T {
+    sharedGeometries.add(geometry);
+    return geometry;
+}
+
+export function disposeGeometry(geometry: BufferGeometry): void {
+    if (!sharedGeometries.has(geometry)) {
+        geometry.dispose();
+    }
+}
+
 interface MergeOptions {
     // Return true to skip an object and its whole subtree.
     skip?: (object: Object3D) => boolean;
@@ -69,7 +84,7 @@ export function mergeMeshesByMaterial(root: Object3D, options: MergeOptions = {}
 
         for (const entry of entries) {
             entry.mesh.removeFromParent();
-            entry.mesh.geometry.dispose();
+            disposeGeometry(entry.mesh.geometry);
             entry.geometry.dispose();
         }
     }

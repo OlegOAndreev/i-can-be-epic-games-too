@@ -250,10 +250,13 @@ export class EnemyDebris {
 
             chunk.baseScale.copy(scale);
             chunk.halfHeight = Math.max(scale.x, scale.y, scale.z) * 0.5;
+            // Draw one radial speed for both horizontal axes so the chunk leaves along the exact
+            // angle it was spawned at instead of drifting toward one axis on average.
+            const radialSpeed = lerp(profile.radialSpeed[0], profile.radialSpeed[1], this.rng());
             chunk.velocity.set(
-                Math.cos(angle) * lerp(profile.radialSpeed[0], profile.radialSpeed[1], this.rng()),
+                Math.cos(angle) * radialSpeed,
                 lerp(profile.upwardSpeed[0], profile.upwardSpeed[1], this.rng()),
-                Math.sin(angle) * lerp(profile.radialSpeed[0], profile.radialSpeed[1], this.rng()),
+                Math.sin(angle) * radialSpeed,
             );
             chunk.spin.set(
                 (this.rng() - 0.5) * 13,

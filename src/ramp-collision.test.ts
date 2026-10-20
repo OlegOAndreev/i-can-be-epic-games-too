@@ -56,6 +56,27 @@ describe('ramp collision', () => {
         ).toBeNull();
     });
 
+    it('blocks a sight line through a thin glass pane', () => {
+        const glass: StructureBox = {
+            minX: 0.08,
+            maxX: 0.16,
+            minZ: -2,
+            maxZ: 2,
+            baseY: 0,
+            topY: 3,
+        };
+        const hit = findStructureBlockingPoint(
+            new Vector3(-5, 1.5, 0),
+            new Vector3(5, 1.5, 0),
+            [glass],
+            [],
+        );
+
+        // The old 0.2 m march sampled x = 0 and x = 0.2, stepping over this pane.
+        expect(hit).not.toBeNull();
+        expect(hit!.x).toBeCloseTo(0.08, 5);
+    });
+
     it('finds where a laser enters the ramp deck', () => {
         const hit = findRampBlockingPoint(
             new Vector3(5, 4.8, -6),

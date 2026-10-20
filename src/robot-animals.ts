@@ -9,7 +9,8 @@ import {
 } from 'three';
 
 import { getRadialGlowTexture } from './glow';
-import { dampAngle } from './math-utils';
+import { dampAngle, hash32 } from './math-utils';
+import { disposeGeometry } from './mesh-optimize';
 import {
     addBox,
     addCylinder,
@@ -48,6 +49,13 @@ const DEER_FLEE_SPEED = 12;
 const DEER_FLEE_STOP_FACTOR = 2.4;
 const DEER_FLEE_TARGET_MIN = 45;
 const DEER_FLEE_TARGET_MAX = 70;
+// Packs farther than this are out of sight; their wander timers and animation pause until the
+// player comes closer. Recycling still runs first so wildlife keeps following the player.
+const DISTANT_PACK_DISTANCE = 120;
+// A walkability query is only repeated after the animal has moved this far, or after the fallback
+// interval, whichever comes first. Both are well inside one terrain cell.
+const WALK_CHECK_DISTANCE = 0.4;
+const WALK_CHECK_INTERVAL = 0.12;
 
 interface AnimalSpec {
     kind: AnimalKind;
@@ -160,6 +168,14 @@ interface Animal {
     phase: number;
     height: number;
     collider: CylinderCollider;
+    // Cached ground height for the animal's current x/z, so standing still samples no terrain.
+    groundX: number;
+    groundY: number;
+    groundZ: number;
+    walkCheckX: number;
+    walkCheckZ: number;
+    walkCheckTimer: number;
+    walkBlocked: boolean;
 }
 
 interface Pack {
@@ -195,7 +211,8 @@ export class RobotAnimals {
     constructor(terrain: Terrain) {
         this.group.name = 'robot-animals';
         this.terrain = terrain;
-        this.rng = mulberry32(terrain.seed ^ 0x51ed270b);
+        // Derive a separate stream so animal placement does not repeat the megastructure layout.
+        this.rng = mulberry32(hash32(0x524f, 0x424f, terrain.seed));
 
         for (const spec of SPECS) {
             const palette = this.palette(spec.kind);
@@ -212,15 +229,6 @@ export class RobotAnimals {
     update(dt: number, playerPosition: Vector3): void {
         this.elapsed += dt;
         this.trackPlayerDirection(dt, playerPosition);
-
-        for (const pack of this.packs) {
-            for (const animal of pack.members) {
-                animal.eye.emissiveIntensity =
-                    2.2 +
-                    Math.sin(this.elapsed * (1.8 + animal.pace * 0.6) + animal.phase) *
-                        0.4;
-            }
-        }
 
         for (const pack of this.packs) {
             this.updatePack(pack, dt, playerPosition);
@@ -245,7 +253,7 @@ export class RobotAnimals {
         this.group.removeFromParent();
         this.group.traverse((child) => {
             if (child instanceof Mesh) {
-                child.geometry.dispose();
+                disposeGeometry(child.geometry);
             }
         });
 
@@ -311,7 +319,9 @@ export class RobotAnimals {
 
         for (let attempt = 0; attempt < 40; attempt++) {
             const angle = attempt === 0 ? slot : this.rng() * Math.PI * 2;
-            const radius = spec.minDistance + this.rng() * (spec.maxDistance - spec.minDistance);
+            const radius =
+                spec.minDistance +
+                Math.sqrt(this.rng()) * (spec.maxDistance - spec.minDistance);
             const x = this.terrain.spawn.x + Math.sin(angle) * radius;
             const z = this.terrain.spawn.z + Math.cos(angle) * radius;
 
@@ -419,6 +429,13 @@ export class RobotAnimals {
                 phase,
                 height,
                 collider,
+                groundX: x,
+                groundY: y,
+                groundZ: z,
+                walkCheckX: x,
+                walkCheckZ: z,
+                walkCheckTimer: 0,
+                walkBlocked: false,
             });
         }
     }
@@ -437,13 +454,23 @@ export class RobotAnimals {
         centerX /= pack.members.length;
         centerZ /= pack.members.length;
 
-        if (
-            Math.hypot(playerPosition.x - centerX, playerPosition.z - centerZ) >
-                RECYCLE_DISTANCE &&
-            pack.relocateDelay <= 0
-        ) {
+        const playerDistance = Math.hypot(
+            playerPosition.x - centerX,
+            playerPosition.z - centerZ,
+        );
+        if (playerDistance > RECYCLE_DISTANCE && pack.relocateDelay <= 0) {
             this.relocatePack(pack, playerPosition);
             return;
+        }
+        if (playerDistance > DISTANT_PACK_DISTANCE) {
+            return;
+        }
+
+        for (const animal of pack.members) {
+            animal.eye.emissiveIntensity =
+                2.2 +
+                Math.sin(this.elapsed * (1.8 + animal.pace * 0.6) + animal.phase) *
+                    0.4;
         }
 
         if (pack.kind === 'deer') {
@@ -652,10 +679,13 @@ export class RobotAnimals {
     }
 
     private updateIdleAnimal(animal: Animal, dt: number): void {
-        animal.group.position.y = this.terrain.heightAt(
-            animal.group.position.x,
-            animal.group.position.z,
-        );
+        const group = animal.group;
+        if (group.position.x !== animal.groundX || group.position.z !== animal.groundZ) {
+            animal.groundX = group.position.x;
+            animal.groundZ = group.position.z;
+            animal.groundY = this.terrain.heightAt(animal.groundX, animal.groundZ);
+        }
+        group.position.y = animal.groundY;
         animal.model.update(
             dt,
             this.elapsed,
@@ -673,10 +703,10 @@ export class RobotAnimals {
         speed: number,
     ): boolean {
         const group = animal.group;
+        group.position.y = animal.groundY;
         const dx = x - group.position.x;
         const dz = z - group.position.z;
         const distance = Math.hypot(dx, dz);
-        group.position.y = this.terrain.heightAt(group.position.x, group.position.z);
 
         if (distance < TARGET_REACHED * 0.6) {
             return false;
@@ -693,13 +723,32 @@ export class RobotAnimals {
         const nextX = group.position.x + Math.sin(group.rotation.y) * step;
         const nextZ = group.position.z + Math.cos(group.rotation.y) * step;
 
-        if (!this.canWalk(animal, nextX, nextZ)) {
+        animal.walkCheckTimer -= dt;
+        const checkDistance = Math.hypot(
+            nextX - animal.walkCheckX,
+            nextZ - animal.walkCheckZ,
+        );
+        const mustCheck = checkDistance >= WALK_CHECK_DISTANCE || animal.walkCheckTimer <= 0;
+        if (animal.walkBlocked && !mustCheck) {
             return false;
+        }
+        if (mustCheck) {
+            animal.walkCheckTimer = WALK_CHECK_INTERVAL;
+            animal.walkCheckX = nextX;
+            animal.walkCheckZ = nextZ;
+            if (!this.canWalk(animal, nextX, nextZ)) {
+                animal.walkBlocked = true;
+                return false;
+            }
+            animal.walkBlocked = false;
         }
 
         group.position.x = nextX;
         group.position.z = nextZ;
-        group.position.y = this.terrain.heightAt(nextX, nextZ);
+        animal.groundX = nextX;
+        animal.groundZ = nextZ;
+        animal.groundY = this.terrain.heightAt(nextX, nextZ);
+        group.position.y = animal.groundY;
         return true;
     }
 
@@ -708,7 +757,7 @@ export class RobotAnimals {
 
         for (let attempt = 0; attempt < 12; attempt++) {
             const angle = this.rng() * Math.PI * 2;
-            const radius = 2 + this.rng() * pack.roamRadius;
+            const radius = 2 + Math.sqrt(this.rng()) * pack.roamRadius;
             const x = pack.home.x + Math.sin(angle) * radius;
             const z = pack.home.z + Math.cos(angle) * radius;
 
@@ -815,12 +864,16 @@ export class RobotAnimals {
             for (const animal of pack.members) {
                 const memberX = x + animal.offsetX;
                 const memberZ = z + animal.offsetZ;
-                animal.group.position.set(
-                    memberX,
-                    this.terrain.heightAt(memberX, memberZ),
-                    memberZ,
-                );
+                const memberY = this.terrain.heightAt(memberX, memberZ);
+                animal.group.position.set(memberX, memberY, memberZ);
                 animal.group.rotation.y = this.rng() * Math.PI * 2;
+                animal.groundX = memberX;
+                animal.groundY = memberY;
+                animal.groundZ = memberZ;
+                animal.walkCheckX = memberX;
+                animal.walkCheckZ = memberZ;
+                animal.walkCheckTimer = 0;
+                animal.walkBlocked = false;
                 animal.obstacles = this.terrain.colliders.filter(
                     (collider) =>
                         Math.hypot(collider.x - x, collider.z - z) <
@@ -1142,10 +1195,10 @@ function finishRig(rig: AnimalRig, variation: ModelVariation): AnimalModel {
             const bob = moving
                 ? Math.abs(Math.sin(phase)) * rig.bobHeight
                 : Math.sin(time * 1.4) * rig.bobHeight * 0.25;
-            rig.body.position.y += (bob - rig.body.position.y) * Math.min(1, dt * 10);
+            rig.body.position.y += (bob - rig.body.position.y) * (1 - Math.exp(-10 * dt));
 
             const roll = moving ? Math.sin(phase) * 0.012 : 0;
-            rig.body.rotation.z += (roll - rig.body.rotation.z) * Math.min(1, dt * 8);
+            rig.body.rotation.z += (roll - rig.body.rotation.z) * (1 - Math.exp(-8 * dt));
 
             for (const leg of rig.legs) {
                 const swing = moving
@@ -1153,7 +1206,7 @@ function finishRig(rig: AnimalRig, variation: ModelVariation): AnimalModel {
                       rig.stride *
                       variation.strideScale
                     : 0;
-                leg.pivot.rotation.x += (swing - leg.pivot.rotation.x) * Math.min(1, dt * 12);
+                leg.pivot.rotation.x += (swing - leg.pivot.rotation.x) * (1 - Math.exp(-12 * dt));
 
                 const bend = moving
                     ? -Math.max(0, Math.sin(phase + leg.offset)) *
@@ -1161,7 +1214,7 @@ function finishRig(rig: AnimalRig, variation: ModelVariation): AnimalModel {
                       variation.strideScale *
                       0.7
                     : 0;
-                leg.lower.rotation.x += (bend - leg.lower.rotation.x) * Math.min(1, dt * 12);
+                leg.lower.rotation.x += (bend - leg.lower.rotation.x) * (1 - Math.exp(-12 * dt));
             }
 
             const clamped = Math.max(-1.15, Math.min(1.15, headYaw));

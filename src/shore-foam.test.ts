@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { ShoreFoam, foamAmountForSurfaceArea } from './shore-foam';
 import { Terrain } from './terrain';
 
+const FAST_TERRAIN = { meshes: false, decorations: false } as const;
+
 describe('shore foam', () => {
     it('gives small pools only a trace of foam and large water the full surf', () => {
         expect(foamAmountForSurfaceArea(60)).toBeLessThan(0.25);
@@ -15,7 +17,7 @@ describe('shore foam', () => {
     });
 
     it('always builds two continuous, finite foam layers', () => {
-        const terrain = new Terrain(20261018);
+        const terrain = new Terrain(20261018, FAST_TERRAIN);
         const scene = new Scene();
         const foam = new ShoreFoam(scene, terrain);
 
@@ -63,7 +65,7 @@ describe('shore foam', () => {
     });
 
     it('faces every foam triangle up so the band is hidden from underwater', () => {
-        const terrain = new Terrain(20261018);
+        const terrain = new Terrain(20261018, FAST_TERRAIN);
         const scene = new Scene();
         const foam = new ShoreFoam(scene, terrain);
 
@@ -88,7 +90,7 @@ describe('shore foam', () => {
     });
 
     it('cycles layer opacity so foam drifts and respawns', () => {
-        const terrain = new Terrain(20261018);
+        const terrain = new Terrain(20261018, FAST_TERRAIN);
         const scene = new Scene();
         const foam = new ShoreFoam(scene, terrain);
         const meshes = scene.children as Mesh[];

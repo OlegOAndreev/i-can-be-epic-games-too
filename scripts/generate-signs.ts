@@ -2,7 +2,7 @@
 // transparent backgrounds; the game tints them gold or purple and animates a wave through them.
 // They are also packed into a KTX2 array. Requires Khronos KTX-Software's `ktx` CLI.
 // Run with: npm run generate:signs
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -10,6 +10,7 @@ import { createCanvas } from '@napi-rs/canvas';
 
 import { mulberry32 } from '../src/noise.ts';
 import { createKtx2, ensureKtx } from './ktx.ts';
+import { writeFileAtomic } from './write-file.ts';
 
 const SIGN_SIZE = 256;
 const SIGN_COUNT = 14;
@@ -56,7 +57,7 @@ for (let index = 0; index < SIGN_COUNT; index++) {
     context.restore();
 
     const filePath = join(OUTPUT_DIRECTORY, `sign-${String(index).padStart(2, '0')}.png`);
-    writeFileSync(filePath, canvas.toBuffer('image/png'));
+    writeFileAtomic(filePath, canvas.toBuffer('image/png'));
     signFiles.push(filePath);
     console.log(`Generated ${filePath} (${SIGN_SIZE}x${SIGN_SIZE})`);
 }

@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 import type { GameAudio } from './audio';
 import { SpaceshipParts } from './spaceship-parts';
 import { Terrain } from './terrain';
+
+const FAST_TERRAIN = { meshes: false, decorations: false } as const;
 import { getSurfaceTextures } from './textures';
 import { WreckMap, WRECK_MAP_HALF_SIZE } from './wreck-map';
 
@@ -24,7 +26,7 @@ function stubAudio(): GameAudio {
 
 describe('wreck map', () => {
     it('bakes the world and draws the player arrow over it', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const parts = new SpaceshipParts(terrain, stubAudio());
         const panel = {
             classList: { toggle: () => undefined },
@@ -104,7 +106,7 @@ describe('wreck map', () => {
     });
 
     it('draws a drained megastructure white', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const parts = new SpaceshipParts(terrain, stubAudio());
         const panel = {
             classList: { toggle: () => undefined },

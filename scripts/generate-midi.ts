@@ -3,14 +3,15 @@
 // cello melody and a few timpani hits. The finale is a full brass-and-choir send-off. The game
 // synthesizes them with native Web Audio, so the files stay tiny and need no soundfont.
 // Run with: npm run generate:midi
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import midiPackage from '@tonejs/midi';
+import { Midi } from '@tonejs/midi';
 import type { Track } from '@tonejs/midi';
 
 import { mulberry32 } from '../src/noise.ts';
+import { writeFileAtomic } from './write-file.ts';
 
 const { Midi } = midiPackage;
 
@@ -396,7 +397,7 @@ function renderVariation(variation: Variation, index: number): void {
 
     const bytes = midi.toArray();
     const filePath = join(OUTPUT_DIRECTORY, variation.file);
-    writeFileSync(filePath, bytes);
+    writeFileAtomic(filePath, bytes);
 
     const seconds = midi.duration;
     const minutes = Math.floor(seconds / 60);
@@ -611,7 +612,7 @@ function renderEnding(): void {
 
     const bytes = midi.toArray();
     const filePath = join(OUTPUT_DIRECTORY, 'triumphant-return.mid');
-    writeFileSync(filePath, bytes);
+    writeFileAtomic(filePath, bytes);
 
     const seconds = midi.duration;
     const minutes = Math.floor(seconds / 60);

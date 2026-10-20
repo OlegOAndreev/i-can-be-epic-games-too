@@ -2,7 +2,9 @@ import { lerp } from './math-utils';
 
 // Small deterministic RNG, good enough for scattering and noise permutations.
 export function mulberry32(seed: number): () => number {
-    let state = seed >>> 0;
+    // Keep the seed space integral; fractional seeds would otherwise alias through the bitwise
+    // conversion without making that intent visible.
+    let state = Math.floor(seed) >>> 0;
     return () => {
         state = (state + 0x6d2b79f5) >>> 0;
         let value = state;
@@ -49,6 +51,10 @@ export class Noise2D {
     }
 
     fbm(x: number, y: number, octaves: number, lacunarity = 2, gain = 0.5): number {
+        // No octaves means no signal; returning 0 avoids the 0/0 that the normalizer would produce.
+        if (!Number.isFinite(octaves) || octaves <= 0) {
+            return 0;
+        }
         let amplitude = 1;
         let frequency = 1;
         let sum = 0;

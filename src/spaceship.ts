@@ -106,8 +106,11 @@ const COLLIDER_FOOTPRINT = [
     { x: -1.7, z: -1.0, radius: 1.1 },
     { x: 1.7, z: -1.0, radius: 1.1 },
     { x: 0, z: -1.8, radius: 1.2 },
-    // The wingtip sits below head height, so cap it separately.
+    // Both wingtips sit below head height, so cap them separately. The delta's nose tapers to a
+    // point ahead of the forward fuselage circle.
+    { x: -2.9, z: -2.15, radius: 0.8 },
     { x: 2.9, z: -2.15, radius: 0.8 },
+    { x: 0, z: 4.35, radius: 0.45 },
 ];
 
 interface SmokePuff {
@@ -280,6 +283,10 @@ export class Spaceship {
     private smokeGroup = new Group();
     private smokeGeometries = createSmokeGeometries();
     private smokePuffs: SmokePuff[] = [];
+    // Puffs live for 16-20 seconds, so the plume keeps 60-90 materials alive at once. Recycling them
+    // avoids rebuilding a material and its GPU program bindings every emission/expiry cycle.
+    private readonly smokeMaterialPool: MeshStandardMaterial[] = [];
+    private readonly smokeMeshPool: Mesh[] = [];
     private smokeTimer = 0.6;
     private smokeEngine = 0;
     private engineGlowMaterial: SpriteMaterial | null = null;
@@ -371,7 +378,8 @@ export class Spaceship {
             const progress = puff.age / puff.lifetime;
             if (progress >= 1) {
                 this.smokeGroup.remove(puff.mesh);
-                puff.material.dispose();
+                this.releaseSmokeMesh(puff.mesh);
+                this.releaseSmokeMaterial(puff.material);
                 this.smokePuffs.splice(i, 1);
                 continue;
             }
@@ -427,7 +435,8 @@ export class Spaceship {
 
         for (const puff of this.smokePuffs) {
             this.smokeGroup.remove(puff.mesh);
-            puff.material.dispose();
+            this.releaseSmokeMesh(puff.mesh);
+            this.releaseSmokeMaterial(puff.material);
         }
         this.smokePuffs = [];
         this.smokeGroup.visible = false;
@@ -503,9 +512,15 @@ export class Spaceship {
     dispose(): void {
         for (const puff of this.smokePuffs) {
             this.smokeGroup.remove(puff.mesh);
-            puff.material.dispose();
+            this.releaseSmokeMesh(puff.mesh);
+            this.releaseSmokeMaterial(puff.material);
         }
         this.smokePuffs = [];
+        this.smokeMeshPool.length = 0;
+        for (const material of this.smokeMaterialPool) {
+            material.dispose();
+        }
+        this.smokeMaterialPool.length = 0;
         for (const geometry of this.smokeGeometries) {
             geometry.dispose();
         }
@@ -525,6 +540,45 @@ export class Spaceship {
         }
     }
 
+    private acquireSmokeMaterial(): MeshStandardMaterial {
+        const pooled = this.smokeMaterialPool.pop();
+        if (pooled) {
+            return pooled;
+        }
+        return new MeshStandardMaterial({
+            color: 0xffffff,
+            emissive: SMOKE_EMISSIVE_COLOR,
+            emissiveIntensity: 0.45,
+            roughness: 1,
+            metalness: 0,
+            flatShading: true,
+            transparent: true,
+            opacity: 0.8,
+            depthWrite: false,
+            fog: false,
+        });
+    }
+
+    private releaseSmokeMaterial(material: MeshStandardMaterial): void {
+        // The next puff overwrites colour, emissive, and opacity before it is drawn again.
+        material.opacity = 0;
+        this.smokeMaterialPool.push(material);
+    }
+
+    private acquireSmokeMesh(geometry: BufferGeometry, material: MeshStandardMaterial): Mesh {
+        const pooled = this.smokeMeshPool.pop();
+        if (pooled) {
+            pooled.geometry = geometry;
+            pooled.material = material;
+            return pooled;
+        }
+        return new Mesh(geometry, material);
+    }
+
+    private releaseSmokeMesh(mesh: Mesh): void {
+        this.smokeMeshPool.push(mesh);
+    }
+
     private emitSmoke(): void {
         const engine = this.smokeEngine;
         this.smokeEngine = (engine + 1) % ENGINE_X.length;
@@ -540,22 +594,16 @@ export class Spaceship {
         // plume dark over both bright water and dark land, while fog:false stops it washing out as
         // it climbs into the hazy upper air.
         const hotColor = new Color(SMOKE_COLORS[Math.floor(Math.random() * SMOKE_COLORS.length)]);
-        const material = new MeshStandardMaterial({
-            color: hotColor,
-            emissive: SMOKE_EMISSIVE_COLOR,
-            emissiveIntensity: 0.45,
-            roughness: 1,
-            metalness: 0,
-            flatShading: true,
-            transparent: true,
-            opacity: 0.8,
-            depthWrite: false,
-            fog: false,
-        });
+        const material = this.acquireSmokeMaterial();
+        material.color.copy(hotColor);
+        material.emissive.copy(SMOKE_EMISSIVE_COLOR);
+        material.emissiveIntensity = 0.45;
+        material.opacity = 0.8;
         const geometry =
             this.smokeGeometries[Math.floor(Math.random() * this.smokeGeometries.length)];
-        const mesh = new Mesh(geometry, material);
+        const mesh = this.acquireSmokeMesh(geometry, material);
         mesh.position.copy(position);
+        mesh.rotation.set(0, 0, 0);
         this.smokeGroup.add(mesh);
 
         const startScale = 0.22 + Math.random() * 0.12;

@@ -14,6 +14,8 @@ import { findStructureBlockingPoint } from './ramp-collision';
 import { Terrain } from './terrain';
 import { getSurfaceTextures } from './textures';
 
+const FAST_TERRAIN = { meshes: false, decorations: false } as const;
+
 function spiralPoint(spiral: CrownSpiral, fraction: number, radialOffset: number): { x: number; y: number; z: number } {
     const angle = fraction * spiral.totalAngle * spiral.direction;
     const climb = fraction;
@@ -27,7 +29,7 @@ function spiralPoint(spiral: CrownSpiral, fraction: number, radialOffset: number
 
 describe('megastructures', () => {
     it('builds tall towers with full floors and ramps', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const structures = terrain.megastructures;
 
         expect(structures.sites.length).toBe(6);
@@ -74,7 +76,7 @@ describe('megastructures', () => {
     });
 
     it('fills the floors with differently sized rectangular glyph totems', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const structures = terrain.megastructures;
 
         expect(structures.floorProps.length).toBeGreaterThan(20);
@@ -205,7 +207,7 @@ describe('megastructures', () => {
     });
 
     it('builds each tower with a 1.5:1 rectangular footprint', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
 
         for (const tower of terrain.megastructures.towers) {
             const width = tower.maxX - tower.minX;
@@ -217,7 +219,7 @@ describe('megastructures', () => {
     });
 
     it('walls in all four sides of each tower', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
 
         for (const tower of terrain.megastructures.towers) {
             // Probe the first storey above the entrance, which has no doorway.
@@ -259,7 +261,7 @@ describe('megastructures', () => {
     });
 
     it('carries overhanging storeys on a full floor slab', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         let overhangs = 0;
 
         for (const tower of terrain.megastructures.towers) {
@@ -298,7 +300,7 @@ describe('megastructures', () => {
     });
 
     it('cuts a low band of real windows into every storey above the ground floor', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const structures = terrain.megastructures;
         const windows = structures.group.children.find(
             (child): child is Mesh => child instanceof Mesh && child.name === 'tower-windows',
@@ -392,7 +394,7 @@ describe('megastructures', () => {
     });
 
     it('moves every window sill into double-jump reach and keeps it standable', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const structures = terrain.megastructures;
         const settings = { moveSpeed: 10.5, jumpSpeed: 12, gravity: 26 };
 
@@ -444,7 +446,7 @@ describe('megastructures', () => {
     });
 
     it('leaves a ground-level entrance on one side of each tower', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
 
         for (const tower of terrain.megastructures.towers) {
             const centreX = (tower.minX + tower.maxX) / 2;
@@ -468,7 +470,7 @@ describe('megastructures', () => {
     });
 
     it('renders generated gold and purple sign glyphs on the towers', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const structures = terrain.megastructures;
 
         const signMeshes: Mesh[] = [];
@@ -525,7 +527,7 @@ describe('megastructures', () => {
     });
 
     it('builds a taper and a continuous walkable spiral ramp up each crown', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const structures = terrain.megastructures;
 
         // Each tower has a main cone plus the spire on its landing, and one continuous spiral.
@@ -578,8 +580,61 @@ describe('megastructures', () => {
         terrain.dispose();
     });
 
+    it('keeps the crown spiral walkway facing upward in both turn directions', () => {
+        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const structures = terrain.megastructures;
+        const stone = structures.group.children.find(
+            (child): child is Mesh => child instanceof Mesh && child.name === 'tower-stone',
+        );
+        expect(stone).toBeInstanceOf(Mesh);
+        if (!stone) {
+            terrain.dispose();
+            return;
+        }
+        stone.updateMatrixWorld();
+
+        const raycaster = new Raycaster();
+        // Structure meshes live on their own render layer, outside the raycaster's default layer 0.
+        raycaster.layers.enable(MEGASTRUCTURE_LAYER);
+        const origin = new Vector3();
+        const down = new Vector3(0, -1, 0);
+        const directions = new Set<number>();
+
+        for (const spiral of structures.crownSpirals) {
+            directions.add(spiral.direction);
+            // Mid-helix is clear of the cone, the top floor, and the catwalk.
+            const climb = 0.5;
+            const angle = climb * spiral.totalAngle * spiral.direction;
+            const radius =
+                spiral.baseRadius +
+                (spiral.topRadius - spiral.baseRadius) * climb +
+                spiral.width / 2 +
+                spiral.gap;
+            const x = spiral.x + Math.cos(angle) * radius;
+            const z = spiral.z + Math.sin(angle) * radius;
+            const topY = spiral.baseY + spiral.height * climb;
+
+            raycaster.set(origin.set(x, topY + 30, z), down);
+            const hit = raycaster.intersectObject(stone, false)[0];
+            expect(hit, `no walkway hit at tower ${spiral.x},${spiral.z}`).toBeDefined();
+            if (!hit) {
+                continue;
+            }
+
+            // A back-facing top triangle is skipped by the front-side material, so the first hit
+            // would be the underside. The top surface must be the first thing the ray meets.
+            expect(hit.point.y).toBeGreaterThan(topY - 0.05);
+            const normal = hit.face?.normal.clone().transformDirection(stone.matrixWorld);
+            expect(normal?.y ?? 0).toBeGreaterThan(0.5);
+        }
+
+        // Seed 1234 contains both a clockwise and a counter-clockwise crown.
+        expect(directions).toEqual(new Set([1, -1]));
+        terrain.dispose();
+    });
+
     it('walks a player up a crown spiral without falling through', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const structures = terrain.megastructures;
         const spiral = structures.crownSpirals[0];
         const segments = Math.ceil((spiral.totalAngle / (Math.PI * 2)) * 24);
@@ -614,7 +669,7 @@ describe('megastructures', () => {
     });
 
     it('puts a red glowing lamp on every crown', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const structures = terrain.megastructures;
         const lampMaterial = structures.materials.find(
             (material): material is MeshStandardMaterial =>
@@ -636,7 +691,7 @@ describe('megastructures', () => {
     });
 
     it('marks every ground-level entrance with a pulsing glow', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const structures = terrain.megastructures;
         let glowMesh: Mesh | null = null;
         structures.group.traverse((child) => {
@@ -656,7 +711,7 @@ describe('megastructures', () => {
     });
 
     it('breathes the spire glow between smaller and larger radii', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const structures = terrain.megastructures;
         const glowMeshes: Mesh[] = [];
         structures.group.traverse((child) => {
@@ -683,7 +738,7 @@ describe('megastructures', () => {
     });
 
     it('expands a fading hollow ring after each spire glow swells', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const structures = terrain.megastructures;
         const rings: Sprite[] = [];
         structures.group.traverse((child) => {
@@ -716,7 +771,7 @@ describe('megastructures', () => {
     });
 
     it('builds a crown above each tower', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const structures = terrain.megastructures;
         const hull = structures.group.children.find(
             (child): child is Mesh => child instanceof Mesh && child.material === structures.materials[0],
@@ -733,7 +788,7 @@ describe('megastructures', () => {
     });
 
     it('keeps the player out of solid blocks', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const box = terrain.megastructures.boxes[0];
         const position = new Vector3(box.minX + 0.05, box.topY - 1, (box.minZ + box.maxZ) / 2);
 
@@ -746,7 +801,7 @@ describe('megastructures', () => {
     });
 
     it('stops a robot jumping from below at the underside of a ledge', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const structures = terrain.megastructures;
         const tower = structures.towers[0];
         // Floor slabs are thin boxes whose top face is a storey floor; walls are much thicker.
@@ -790,7 +845,7 @@ describe('megastructures', () => {
     });
 
     it('detects metal decks and tower interiors for footsteps and reverb', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const structures = terrain.megastructures;
         const tower = structures.towers[0];
         const deck = structures.boxes.find(
@@ -817,7 +872,7 @@ describe('megastructures', () => {
     });
 
     it('flips a switch with the wrench and turns that crown blue at the strike', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const structures = terrain.megastructures;
         expect(structures.switches.length).toBe(structures.crownSpirals.length);
         expect(structures.crownCatwalks.length).toBe(structures.crownSpirals.length);
@@ -906,7 +961,7 @@ describe('megastructures', () => {
     });
 
     it('covers the drained crown in a shield that starts at the spiral', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const structures = terrain.megastructures;
         const spiral = structures.crownSpirals[0];
         const structureSwitch = structures.switches[0];
@@ -934,7 +989,7 @@ describe('megastructures', () => {
     });
 
     it('dims the crown shield to half opacity in the distance', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const structures = terrain.megastructures;
         const spiral = structures.crownSpirals[0];
         structures.restoreFlippedTowerIndices([structures.switches[0].towerIndex]);
@@ -963,7 +1018,7 @@ describe('megastructures', () => {
     });
 
     it('throws a robot out of the electrified crown and respects the hit cooldown', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const structures = terrain.megastructures;
         const spiral = structures.crownSpirals[0];
         structures.restoreFlippedTowerIndices([structures.switches[0].towerIndex]);
@@ -994,7 +1049,7 @@ describe('megastructures', () => {
     it('gives the switch a generous, direction-free wrench reach', () => {
         // Reach is a radius around the console, not a cone in front of the player: standing beside
         // it, well outside arm's length, still throws the switch with a swing.
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const target = terrain.megastructures.switches[0];
         const beside = new Vector3(target.x + 3.8, target.y, target.z);
 
@@ -1002,7 +1057,7 @@ describe('megastructures', () => {
         terrain.dispose();
 
         // Generous, but still bounded; a swing from across the catwalk misses.
-        const farTerrain = new Terrain(1234);
+        const farTerrain = new Terrain(1234, FAST_TERRAIN);
         const farTarget = farTerrain.megastructures.switches[0];
         const far = new Vector3(farTarget.x + 5.5, farTarget.y, farTarget.z);
 
@@ -1011,7 +1066,7 @@ describe('megastructures', () => {
     });
 
     it('restores flipped switches from a save without replaying the strike', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const structures = terrain.megastructures;
         expect(structures.getFlippedTowerIndices()).toEqual([]);
 

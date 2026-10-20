@@ -190,6 +190,15 @@ export class WindTrails {
         this.emissionTimer = 0;
     }
 
+    dispose(): void {
+        this.clear();
+        for (const line of this.lines) {
+            this.scene.remove(line.mesh);
+            line.material.dispose();
+        }
+        this.lines.length = 0;
+    }
+
     private spawnLine(
         position: Vector3,
         direction: Vector3,

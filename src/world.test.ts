@@ -14,6 +14,10 @@ const SETTINGS: PlayerSettings = {
     gravity: 26,
 };
 
+const FAST_TERRAIN = { meshes: false, decorations: false } as const;
+// Tree and boulder tests inspect decoration meshes but never the terrain chunks.
+const NO_MESHES = { meshes: false } as const;
+
 function triangleCount(mesh: InstancedMesh): number {
     const geometry = mesh.geometry;
     const vertices = geometry.index ? geometry.index.count : geometry.attributes.position.count;
@@ -22,9 +26,9 @@ function triangleCount(mesh: InstancedMesh): number {
 
 describe('Terrain', () => {
     it('is deterministic for a seed and varies between seeds', () => {
-        const first = new Terrain(1234);
-        const sameSeed = new Terrain(1234);
-        const otherSeed = new Terrain(4321);
+        const first = new Terrain(1234, FAST_TERRAIN);
+        const sameSeed = new Terrain(1234, FAST_TERRAIN);
+        const otherSeed = new Terrain(4321, FAST_TERRAIN);
 
         let differences = 0;
         for (let x = -700; x <= 700; x += 100) {
@@ -46,7 +50,7 @@ describe('Terrain', () => {
     }, 75000);
 
     it('chooses a dry spawn point inside the world', () => {
-        const terrain = new Terrain(8675309);
+        const terrain = new Terrain(8675309, FAST_TERRAIN);
         const { x, z } = terrain.spawn;
 
         expect(Math.abs(x)).toBeLessThanOrEqual(WORLD_HALF_SIZE);
@@ -58,7 +62,7 @@ describe('Terrain', () => {
     });
 
     it('lands the spaceship on dry, gentle ground near the spawn', () => {
-        const terrain = new Terrain(24680);
+        const terrain = new Terrain(24680, FAST_TERRAIN);
         const { x, z } = terrain.spaceshipSite;
 
         expect(Math.hypot(x - terrain.spawn.x, z - terrain.spawn.z)).toBeLessThan(30);
@@ -75,7 +79,7 @@ describe('Terrain', () => {
 
     it('starts the player on the lowest corner of a square near the ship', () => {
         for (const seed of [1, 1234, 24680, 8675309, 20261018]) {
-            const terrain = new Terrain(seed);
+            const terrain = new Terrain(seed, FAST_TERRAIN);
             expect(terrain.startPoints).toHaveLength(4);
 
             // Four corners are four equal sides and two equal diagonals.
@@ -130,7 +134,7 @@ describe('Terrain', () => {
     }, 150000);
 
     it('wakes facing the caretakers on the other corners', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const friends = terrain.startPoints.filter(
             (point) =>
                 Math.hypot(point.x - terrain.spawn.x, point.z - terrain.spawn.z) > 0.01,
@@ -152,7 +156,7 @@ describe('Terrain', () => {
     });
 
     it('pushes the hero out of the spaceship hull', () => {
-        const terrain = new Terrain(24680);
+        const terrain = new Terrain(24680, FAST_TERRAIN);
         expect(terrain.spaceship.colliders.length).toBeGreaterThan(0);
 
         for (const shipCollider of terrain.spaceship.colliders) {
@@ -173,7 +177,7 @@ describe('Terrain', () => {
     });
 
     it('draws the transparent water before other transparent effects', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, { decorations: false });
         const water = terrain.group.getObjectByName('water');
 
         expect(water?.renderOrder).toBe(-1);
@@ -182,7 +186,7 @@ describe('Terrain', () => {
     });
 
     it('starts with a pre-warmed engine smoke plume and disposes it with the world', () => {
-        const terrain = new Terrain(24680);
+        const terrain = new Terrain(24680, FAST_TERRAIN);
 
         // The opening shot already shows the exhaust climbing, so puffs exist from the first frame.
         expect(terrain.spaceship.smokePuffCount).toBeGreaterThan(0);
@@ -196,7 +200,7 @@ describe('Terrain', () => {
     });
 
     it('clears the smoke and stops emitting it when the ship is repaired', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         terrain.update(1, null);
         expect(terrain.spaceship.smokePuffCount).toBeGreaterThan(0);
 
@@ -211,7 +215,7 @@ describe('Terrain', () => {
 
     it('always spawns within walking distance of water', () => {
         for (const seed of [1, 1234, 8675309, 20261018]) {
-            const terrain = new Terrain(seed);
+            const terrain = new Terrain(seed, FAST_TERRAIN);
             const { x, z } = terrain.spawn;
             let closestWater = Infinity;
 
@@ -234,7 +238,7 @@ describe('Terrain', () => {
     });
 
     it('contains lakes, steep rolling terrain, and high mountain peaks', () => {
-        const terrain = new Terrain(20261018);
+        const terrain = new Terrain(20261018, FAST_TERRAIN);
         let lowest = Infinity;
         let highest = -Infinity;
         const slopes: number[] = [];
@@ -260,7 +264,7 @@ describe('Terrain', () => {
     });
 
     it('distinguishes grassy ground from bare ground for footfall dust', () => {
-        const terrain = new Terrain(20261018);
+        const terrain = new Terrain(20261018, FAST_TERRAIN);
         const values: number[] = [];
 
         for (let x = -400; x <= 400; x += 40) {
@@ -278,7 +282,7 @@ describe('Terrain', () => {
     });
 
     it('scatters trees with varied heights and branch sizes', () => {
-        const terrain = new Terrain(13579);
+        const terrain = new Terrain(13579, NO_MESHES);
         const treeMeshes: InstancedMesh[] = [];
         terrain.group.traverse((child) => {
             if (child instanceof InstancedMesh && /^dead-tree-\d+$/.test(child.name)) {
@@ -305,7 +309,7 @@ describe('Terrain', () => {
     });
 
     it('adds leaf canopies only to trees standing on grass', () => {
-        const terrain = new Terrain(13579);
+        const terrain = new Terrain(13579, NO_MESHES);
         const leafMeshes: InstancedMesh[] = [];
         terrain.group.traverse((child) => {
             if (child instanceof InstancedMesh && /^dead-tree-leaf-/.test(child.name)) {
@@ -358,7 +362,7 @@ describe('Terrain', () => {
     });
 
     it('uses a cheaper tree LOD away from the player and culls beyond the fog', () => {
-        const terrain = new Terrain(13579);
+        const terrain = new Terrain(13579, NO_MESHES);
         const highMeshes: InstancedMesh[] = [];
         const lowMeshes: InstancedMesh[] = [];
         const highTrianglesByVariant = new Map<string, number>();
@@ -377,6 +381,10 @@ describe('Terrain', () => {
 
         expect(highMeshes).toHaveLength(4);
         expect(lowMeshes.length).toBeGreaterThan(4);
+        for (const highMesh of highMeshes) {
+            expect(highMesh.frustumCulled).toBe(true);
+            expect(highMesh.boundingSphere).not.toBeNull();
+        }
         for (const lowMesh of lowMeshes) {
             const variant = /^dead-tree-low-(\d+)-/.exec(lowMesh.name)?.[1] ?? '';
             expect(triangleCount(lowMesh)).toBeLessThan(
@@ -399,7 +407,7 @@ describe('Terrain', () => {
     });
 
     it('chunks boulders and stones into cullable spatial cells', () => {
-        const terrain = new Terrain(13579);
+        const terrain = new Terrain(13579, NO_MESHES);
         let boulderCells = 0;
         let stoneCells = 0;
 
@@ -427,7 +435,7 @@ describe('Terrain', () => {
     });
 
     it('pushes the player out of static colliders', () => {
-        const terrain = new Terrain(13579);
+        const terrain = new Terrain(13579, NO_MESHES);
         expect(terrain.colliders.length).toBeGreaterThan(0);
         expect(terrain.colliders.some((collider) => collider.kind === 'tree')).toBe(true);
 
@@ -444,7 +452,7 @@ describe('Terrain', () => {
     });
 
     it('pushes the player out of moving actor cylinders', () => {
-        const terrain = new Terrain(13579);
+        const terrain = new Terrain(13579, FAST_TERRAIN);
         const position = new Vector3(terrain.spawn.x + 0.05, 100, terrain.spawn.z);
         const actor: CylinderCollider = {
             kind: 'enemy',
@@ -469,7 +477,7 @@ describe('Terrain', () => {
 
 describe('Player', () => {
     it('walks over the terrain and can jump', () => {
-        const terrain = new Terrain(424242);
+        const terrain = new Terrain(424242, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const cameraYaw = player.group.rotation.y - Math.PI;
 
@@ -497,7 +505,7 @@ describe('Player', () => {
     });
 
     it('walks underwater down to the seabed instead of floating at the water line', () => {
-        const terrain = new Terrain(20261018);
+        const terrain = new Terrain(20261018, FAST_TERRAIN);
         let deepX = Number.NaN;
         let deepZ = Number.NaN;
 
@@ -532,7 +540,7 @@ describe('Player', () => {
     });
 
     it('stops quickly when directional input is released', () => {
-        const terrain = new Terrain(424242);
+        const terrain = new Terrain(424242, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const cameraYaw = player.group.rotation.y - Math.PI;
 
@@ -550,12 +558,16 @@ describe('Player', () => {
     });
 
     it('generates grass tufts around the player', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const grass = new GrassField(terrain);
 
         grass.update(player.group.position);
         expect(grass.instanceCount).toBeGreaterThan(0);
+        const tuftMesh = grass.group.getObjectByName('grass-tufts') as InstancedMesh;
+        expect(tuftMesh.frustumCulled).toBe(true);
+        expect(tuftMesh.boundingSphere).not.toBeNull();
+        expect(tuftMesh.boundingSphere!.radius).toBeGreaterThan(100);
 
         const wideCount = grass.instanceCount;
         grass.setRadius(25);
@@ -567,7 +579,7 @@ describe('Player', () => {
     });
 
     it('emits a landing event after a jump', () => {
-        const terrain = new Terrain(424242);
+        const terrain = new Terrain(424242, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const cameraYaw = player.group.rotation.y - Math.PI;
         let landingSpeed = 0;
@@ -587,7 +599,7 @@ describe('Player', () => {
     });
 
     it('builds speed by chaining jump landings', () => {
-        const terrain = new Terrain(424242);
+        const terrain = new Terrain(424242, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const cameraYaw = player.group.rotation.y - Math.PI;
         let landingCount = 0;
@@ -617,7 +629,7 @@ describe('Player', () => {
     });
 
     it('allows exactly one extra jump while airborne', () => {
-        const terrain = new Terrain(424242);
+        const terrain = new Terrain(424242, FAST_TERRAIN);
 
         const peakFor = (jumpFrames: number[]): number => {
             const player = new Player(terrain, SETTINGS);
@@ -650,7 +662,7 @@ describe('Player', () => {
     });
 
     it('emits a double-jump event only when the air jump is used', () => {
-        const terrain = new Terrain(424242);
+        const terrain = new Terrain(424242, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const cameraYaw = player.group.rotation.y - Math.PI;
         let doubleJumps = 0;
@@ -675,7 +687,7 @@ describe('Player', () => {
     });
 
     it('keeps the landing boost through a double jump and still awards it', () => {
-        const terrain = new Terrain(424242);
+        const terrain = new Terrain(424242, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const cameraYaw = player.group.rotation.y - Math.PI;
         let landingCount = 0;

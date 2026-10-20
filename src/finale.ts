@@ -1,9 +1,11 @@
 import {
     AdditiveBlending,
+    Euler,
     Group,
     Mesh,
     MeshBasicMaterial,
     PerspectiveCamera,
+    Quaternion,
     Scene,
     SphereGeometry,
     TorusGeometry,
@@ -44,6 +46,7 @@ const RING_STRUCTURE_FAR_CLEARANCE = 40;
 const RING_BAND_FRACTIONS = [0.16, 0.35, 0.55, 0.74, 0.9];
 const RING_MIN_SEPARATION_FRACTION = 0.16;
 const RING_SEARCH_STEPS = 48;
+const RING_FALLBACK_STEPS = 12;
 const RING_WORLD_MARGIN = 90;
 const RING_PASS_MARGIN = 2.5;
 const RING_HALO_OPACITY = 0.3;
@@ -54,6 +57,28 @@ const HULL_CENTRE_HEIGHT = 5.2;
 // belly. Collision samples are spaced closer than the hull radius so no wall or ridge is skipped.
 const HULL_COLLISION_RADIUS = 4;
 const COLLISION_SAMPLE_STEP = 2;
+
+interface HullCollisionSphere {
+    // Offset from the hull centre, in the ship's local frame and world units.
+    x: number;
+    y: number;
+    z: number;
+    radius: number;
+}
+
+// The delta is far wider and longer than a single sphere can cover without swallowing the whole
+// neighbourhood. These spheres outline the nose, outer wings, wingtips, tail, fuselage, and belly.
+const HULL_COLLISION_SPHERES: readonly HullCollisionSphere[] = [
+    { x: 0, y: 0, z: 0, radius: HULL_COLLISION_RADIUS },
+    { x: 0, y: 0.15, z: 12.24, radius: 1.4 },
+    { x: -5.5, y: 0.03, z: -0.2, radius: 2 },
+    { x: 5.5, y: 0.03, z: -0.2, radius: 2 },
+    { x: -7.78, y: 0.03, z: -5.61, radius: 1.2 },
+    { x: 7.78, y: 0.03, z: -5.61, radius: 1.2 },
+    { x: 0, y: 0, z: -7, radius: 2.6 },
+    // The keel sits 3.95 m below the model origin; the hull centre is 5.2 m above it.
+    { x: 0, y: -5.95, z: 0, radius: 3.2 },
+];
 const CRASH_RESTART_SECONDS = 2.6;
 const FLIGHT_START_CLEARANCE = 12;
 const MOUNTAIN_FLIGHT_FRACTION = 0.75;
@@ -96,7 +121,9 @@ const HYPER_CAMERA_BACK = 34;
 const HYPER_CAMERA_LIFT = 18;
 const HYPER_CAMERA_SIDE = 6;
 const HYPER_CAMERA_SETTLE = 8;
-const HYPER_FOV_BOOST = 22;
+const HYPER_FOV_BOOST = 30;
+// Never push the projection past this, even when the configured view FOV is already wide.
+const MAX_CAMERA_FOV = 110;
 
 const ZERO_PLAYER_INPUT: PlayerInput = { forward: 0, right: 0, jump: false };
 
@@ -126,6 +153,8 @@ export interface FinaleOptions {
     outro: DialogueLine[];
     audio: GameAudio;
     difficulty: Difficulty;
+    // The configured lens, independent of any speed boost the walking camera was using.
+    baseFov?: number;
     ui: FinaleUi;
 }
 
@@ -306,6 +335,48 @@ export function findFlightCollision(
     }
 
     return null;
+}
+
+// Swept multi-sphere collision for the whole hull. The returned point is the hull centre at the
+// first contact, so the crash camera keeps using the same reference point as before.
+export function findHullCollision(
+    heightAt: (x: number, z: number) => number,
+    intersectsStructure: (x: number, y: number, z: number, radius: number) => boolean,
+    from: Vector3,
+    to: Vector3,
+    rotation: Quaternion,
+    spheres: readonly HullCollisionSphere[] = HULL_COLLISION_SPHERES,
+): Vector3 | null {
+    let earliest: Vector3 | null = null;
+    let earliestDistance = Infinity;
+    const offset = new Vector3();
+    const sphereFrom = new Vector3();
+    const sphereTo = new Vector3();
+
+    for (const sphere of spheres) {
+        offset.set(sphere.x, sphere.y, sphere.z).applyQuaternion(rotation);
+        sphereFrom.copy(from).add(offset);
+        sphereTo.copy(to).add(offset);
+
+        const hit = findFlightCollision(
+            heightAt,
+            intersectsStructure,
+            sphereFrom,
+            sphereTo,
+            sphere.radius,
+        );
+        if (!hit) {
+            continue;
+        }
+
+        const distance = hit.distanceTo(sphereFrom);
+        if (distance < earliestDistance) {
+            earliestDistance = distance;
+            earliest = hit.clone().sub(offset);
+        }
+    }
+
+    return earliest;
 }
 
 // The ring is a vertical hoop: at a horizontal offset d from its centre its lower arc sits
@@ -596,24 +667,41 @@ export function planRingCourse(
 
         if (!best) {
             // A mountainous sector can leave no candidate at the outer band. Pull that ring toward
-            // the previous one while keeping it inside the map, clear of walls, and under the
-            // ceiling.
+            // the previous one while keeping it inside the map and clear of walls. Never clamp the
+            // centre below the hoop's ground clearance: that buries the ring in the hillside.
             const angle = sectorCentre;
             const distance = worldEdgeDistance(shipSite, angle, limit) * bandFraction;
             const baseX = clamp(shipSite.x + Math.sin(angle) * distance, -limit, limit);
             const baseZ = clamp(shipSite.z + Math.cos(angle) * distance, -limit, limit);
-            const pushed = pushRingClearOfStructures(
-                baseX,
-                baseZ,
-                structures,
-                Math.sin(angle),
-                Math.cos(angle),
-                groundClearance,
-            );
-            const x = clamp(pushed.x, -limit, limit);
-            const z = clamp(pushed.z, -limit, limit);
-            const y = Math.min(ringHeightAboveGround(x, z, previous, heightAt), cap);
-            best = { x, y, z, score: 0 };
+            let fallbackX = baseX;
+            let fallbackZ = baseZ;
+            let fallbackY = Infinity;
+            for (let step = 0; step < RING_FALLBACK_STEPS; step++) {
+                const t = step / (RING_FALLBACK_STEPS - 1);
+                const pushed = pushRingClearOfStructures(
+                    baseX + (previous.x - baseX) * t,
+                    baseZ + (previous.z - baseZ) * t,
+                    structures,
+                    Math.sin(angle),
+                    Math.cos(angle),
+                    groundClearance,
+                );
+                const x = clamp(pushed.x, -limit, limit);
+                const z = clamp(pushed.z, -limit, limit);
+                const y = ringHeightAboveGround(x, z, previous, heightAt);
+                if (y <= cap) {
+                    fallbackX = x;
+                    fallbackZ = z;
+                    fallbackY = y;
+                    break;
+                }
+                if (y < fallbackY) {
+                    fallbackX = x;
+                    fallbackZ = z;
+                    fallbackY = y;
+                }
+            }
+            best = { x: fallbackX, y: fallbackY, z: fallbackZ, score: 0 };
         }
 
         positions.push({ x: best.x, y: best.y, z: best.z });
@@ -713,7 +801,8 @@ export class Finale {
     private readonly ui: FinaleUi;
 
     private phase: 'idle' | FinaleStage = 'idle';
-    private baseFov = 62;
+    private baseFov = 0;
+    private readonly configuredBaseFov: number | null;
     private maxAltitude = 0;
     private celebrationElapsed = 0;
     private outroHold = 0;
@@ -734,6 +823,8 @@ export class Finale {
     private readonly flightStep = new Vector3();
     private readonly hullCentre = new Vector3();
     private readonly previousHullCentre = new Vector3();
+    private readonly hullQuaternion = new Quaternion();
+    private readonly hullEuler = new Euler(0, 0, 0, 'YXZ');
     private readonly cameraTarget = new Vector3();
     private readonly crashPoint = new Vector3();
     private yaw = 0;
@@ -799,6 +890,7 @@ export class Finale {
         this.audio = options.audio;
         this.difficulty = options.difficulty;
         this.ui = options.ui;
+        this.configuredBaseFov = options.baseFov ?? null;
 
         this.ringRoot.name = 'finale-rings';
         this.ringRoot.visible = false;
@@ -817,7 +909,7 @@ export class Finale {
             return;
         }
 
-        this.baseFov = this.camera.fov;
+        this.baseFov = this.configuredBaseFov ?? this.camera.fov;
         this.maxAltitude = mountainCeiling((x, z) => this.terrain.heightAt(x, z));
         this.ship.setRepaired();
         this.phase = 'celebration';
@@ -1152,11 +1244,14 @@ export class Finale {
             this.flightStep.y + HULL_CENTRE_HEIGHT,
             this.flightStep.z,
         );
-        const collision = findFlightCollision(
+        this.hullEuler.set(-this.pitch, this.yaw, this.roll);
+        this.hullQuaternion.setFromEuler(this.hullEuler);
+        const collision = findHullCollision(
             (x, z) => this.terrain.heightAt(x, z),
             (x, y, z, radius) => this.terrain.intersectsStructure(x, y, z, radius),
             this.previousHullCentre,
             this.hullCentre,
+            this.hullQuaternion,
         );
         if (collision) {
             this.crash(collision);
@@ -1368,6 +1463,7 @@ export class Finale {
                 WATER_LEVEL,
             ) + 2.2,
         );
+        this.shortenCameraForOcclusion(this.hullCentre);
 
         this.cameraTarget.set(
             this.hullCentre.x + this.flightForward.x * 12,
@@ -1413,6 +1509,7 @@ export class Finale {
                 1 - Math.exp(-FLIGHT_CAMERA_LAG * dt),
             );
         }
+        this.shortenCameraForOcclusion(this.hullCentre);
 
         this.cameraTarget.set(
             this.hullCentre.x + this.flightForward.x * 12,
@@ -1423,10 +1520,46 @@ export class Finale {
 
         const speedFraction =
             (this.speed - MIN_SHIP_SPEED) / (this.maxShipSpeed - MIN_SHIP_SPEED);
-        const targetFov = this.baseFov + speedFraction * FLIGHT_FOV_BOOST;
+        const targetFov = Math.min(
+            MAX_CAMERA_FOV,
+            this.baseFov + speedFraction * FLIGHT_FOV_BOOST,
+        );
         if (Math.abs(this.camera.fov - targetFov) > 0.01) {
             this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-3 * dt));
             this.camera.updateProjectionMatrix();
+        }
+    }
+
+    // Pull the cinematic camera toward the hull when terrain or a tower sits between the two.
+    private shortenCameraForOcclusion(anchor: Vector3): void {
+        const dx = this.camera.position.x - anchor.x;
+        const dy = this.camera.position.y - anchor.y;
+        const dz = this.camera.position.z - anchor.z;
+        const distance = Math.hypot(dx, dy, dz);
+        if (distance < 1e-4) {
+            return;
+        }
+
+        const steps = Math.max(1, Math.ceil(distance / 1.5));
+        let safeT = 1;
+        for (let step = 1; step <= steps; step++) {
+            const t = step / steps;
+            const x = anchor.x + dx * t;
+            const y = anchor.y + dy * t;
+            const z = anchor.z + dz * t;
+            const ground = Math.max(this.terrain.heightAt(x, z), WATER_LEVEL) + 0.6;
+            if (y < ground || this.terrain.intersectsStructure(x, y, z, 0.8)) {
+                safeT = (step - 1) / steps;
+                break;
+            }
+        }
+
+        if (safeT < 1) {
+            this.camera.position.set(
+                anchor.x + dx * safeT,
+                anchor.y + dy * safeT,
+                anchor.z + dz * safeT,
+            );
         }
     }
 
@@ -1471,7 +1604,7 @@ export class Finale {
         this.applyShipTransform();
 
         this.flightEffects.stop();
-        this.camera.fov = Math.min(110, this.baseFov + 8);
+        this.camera.fov = Math.min(MAX_CAMERA_FOV, this.baseFov + 8);
         this.camera.updateProjectionMatrix();
     }
 
@@ -1496,7 +1629,10 @@ export class Finale {
             0,
             1,
         );
-        const targetFov = this.baseFov + 8 + HYPER_FOV_BOOST * fovFraction;
+        const targetFov = Math.min(
+            MAX_CAMERA_FOV,
+            this.baseFov + 8 + HYPER_FOV_BOOST * fovFraction,
+        );
         this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-4 * dt));
         this.camera.updateProjectionMatrix();
 

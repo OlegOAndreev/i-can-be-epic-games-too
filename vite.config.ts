@@ -23,12 +23,23 @@ export default {
         headers: isolationHeaders,
     },
 
-    worker: {
-        format: 'es',
-    },
-
     build: {
-        chunkSizeWarningLimit: 1500,
+        rollupOptions: {
+            output: {
+                // Three is large and changes less often than game code, so keep it in a
+                // long-lived vendor chunk. The Stats module stays out so it can load with the
+                // other optional debug tools instead of on every visit.
+                manualChunks(id) {
+                    if (id.includes('node_modules/three/examples/jsm/libs/stats.module.js')) {
+                        return undefined;
+                    }
+                    if (id.includes('node_modules/three/')) {
+                        return 'three';
+                    }
+                    return undefined;
+                },
+            },
+        },
     },
 
     // CI workers are assumed to be about 5x slower than a dev machine. Vitest defaults to a
@@ -45,12 +56,7 @@ export default {
                     dest: 'basis',
                     rename: { stripBase: true },
                 },
-                {
-                    src: 'assets/*.json',
-                    dest: '.',
-                },
             ],
-            silent: true,
         }),
     ],
 } satisfies UserConfig;

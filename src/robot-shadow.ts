@@ -22,7 +22,10 @@ const SUN_SHADOW_LOOKUP =
 // The robot samples this map instead of the main sun's, so it receives shadows from the world but
 // never from its own parts. The main sun still includes the robot so its cast shadow lands on the
 // ground and on nearby objects.
-export function createRobotShadowSun(mainSun: SunLight, preset: ShadowPreset): SunLight {
+export function createRobotShadowSun(
+    mainSun: SunLight,
+    preset: ShadowPreset,
+): SunLight {
     const sun = new SunLight(0x000000, 0);
     sun.name = 'robot-shadow-sun';
     sun.position.copy(mainSun.position);

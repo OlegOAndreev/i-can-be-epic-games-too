@@ -19,7 +19,7 @@ function normalizeAngle(angle: number): number {
 
 describe('robot animals', () => {
     it('spawns deer and wolves with green eyes on dry land', () => {
-        const terrain = new Terrain(20260419);
+        const terrain = new Terrain(20260419, { meshes: false });
         const animals = new RobotAnimals(terrain);
         const groups = animalGroups(animals);
 
@@ -74,7 +74,7 @@ describe('robot animals', () => {
     });
 
     it('roams, recycles, and wolves stop to face the player', () => {
-        const terrain = new Terrain(20260419);
+        const terrain = new Terrain(20260419, { meshes: false });
         const animals = new RobotAnimals(terrain);
         const groups = animalGroups(animals);
         const starts = groups.map((group) => group.position.clone());
@@ -116,7 +116,7 @@ describe('robot animals', () => {
     });
 
     it('makes deer packs run away from the player', () => {
-        const terrain = new Terrain(20260419);
+        const terrain = new Terrain(20260419, { meshes: false });
         const animals = new RobotAnimals(terrain);
         const groups = animalGroups(animals);
         const deer = groups.filter((group) => group.userData.kind === 'deer');
@@ -163,7 +163,7 @@ describe('robot animals', () => {
     });
 
     it('wags wolf tails while the pack watches the player', () => {
-        const terrain = new Terrain(20260419);
+        const terrain = new Terrain(20260419, { meshes: false });
         const animals = new RobotAnimals(terrain);
         const groups = animalGroups(animals);
         const wolf = groups.find((group) => group.userData.kind === 'wolf')!;

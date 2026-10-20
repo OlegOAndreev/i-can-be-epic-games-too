@@ -67,10 +67,23 @@ export class Input {
     private gamepadJumpHeld = false;
     private gamepadAttackHeld = false;
     private gamepadChargedAttackHeld = false;
-    private gamepadFlight: FlightInput = {
+    private readonly gamepadFlight: FlightInput = {
         steerX: 0,
         steerY: 0,
     };
+    // Per-frame results reuse these objects so polling input does not allocate.
+    private readonly gamepadInput: GamepadInput = {
+        forward: 0,
+        right: 0,
+        jump: false,
+        attack: false,
+        chargedAttack: false,
+        lookX: 0,
+        lookY: 0,
+    };
+    private readonly playerInput: PlayerInput = { forward: 0, right: 0, jump: false };
+    private readonly flightInput: FlightInput = { steerX: 0, steerY: 0 };
+    private readonly lookInput = { x: 0, y: 0 };
     private resumeOnEscapeRelease = false;
     private escapeBlockedUntil = 0;
 
@@ -110,8 +123,8 @@ export class Input {
     // so look deltas are accumulated here and consumed together with the mouse deltas.
     update(dt: number): void {
         const gamepad = getActiveGamepad();
-        const gamepadInput = readGamepadInput(gamepad);
-        this.gamepadFlight = readFlightGamepadInput(gamepad);
+        const gamepadInput = readGamepadInputInto(gamepad, this.gamepadInput);
+        readFlightGamepadInputInto(gamepad, this.gamepadFlight);
 
         this.gamepadForward = gamepadInput.forward;
         this.gamepadRight = gamepadInput.right;
@@ -139,8 +152,12 @@ export class Input {
     }
 
     getPlayerInput(): PlayerInput {
+        const input = this.playerInput;
         if (!this.pointerLocked) {
-            return { forward: 0, right: 0, jump: false };
+            input.forward = 0;
+            input.right = 0;
+            input.jump = false;
+            return input;
         }
 
         const forward =
@@ -151,31 +168,31 @@ export class Input {
             Number(this.keys.has('KeyD') || this.keys.has('ArrowRight')) -
             Number(this.keys.has('KeyA') || this.keys.has('ArrowLeft')) +
             this.gamepadRight;
-        const jump = this.jumpQueued;
+        input.forward = clamp(forward, -1, 1);
+        input.right = clamp(right, -1, 1);
+        input.jump = this.jumpQueued;
         this.jumpQueued = false;
-
-        return {
-            forward: clamp(forward, -1, 1),
-            right: clamp(right, -1, 1),
-            jump,
-        };
+        return input;
     }
 
     // Flight uses the same mouse deltas and the left stick. A and D deliberately have no effect on
     // the ship, which accelerates automatically.
     getFlightInput(): FlightInput {
+        const input = this.flightInput;
         if (!this.pointerLocked) {
-            return { steerX: 0, steerY: 0 };
+            input.steerX = 0;
+            input.steerY = 0;
+        } else {
+            input.steerX = this.gamepadFlight.steerX;
+            input.steerY = this.gamepadFlight.steerY;
         }
-
-        return {
-            steerX: this.gamepadFlight.steerX,
-            steerY: this.gamepadFlight.steerY,
-        };
+        return input;
     }
 
     consumeLook(): { x: number; y: number } {
-        const look = { x: this.lookX, y: this.lookY };
+        const look = this.lookInput;
+        look.x = this.lookX;
+        look.y = this.lookY;
         this.lookX = 0;
         this.lookY = 0;
         return look;
@@ -334,7 +351,8 @@ export class Input {
             this.gamepadRight = 0;
             this.gamepadAttackHeld = false;
             this.gamepadChargedAttackHeld = false;
-            this.gamepadFlight = { steerX: 0, steerY: 0 };
+            this.gamepadFlight.steerX = 0;
+            this.gamepadFlight.steerY = 0;
             this.lookX = 0;
             this.lookY = 0;
             this.resumeOnEscapeRelease = false;
@@ -364,55 +382,84 @@ function getActiveGamepad(): Gamepad | null {
 // Flight input is deliberately separate from the walking controls: the left stick steers the ship,
 // which accelerates automatically.
 export function readFlightGamepadInput(gamepad: Gamepad | null): FlightInput {
+    return readFlightGamepadInputInto(gamepad, { steerX: 0, steerY: 0 });
+}
+
+function readFlightGamepadInputInto(gamepad: Gamepad | null, out: FlightInput): FlightInput {
     if (!gamepad) {
-        return { steerX: 0, steerY: 0 };
+        out.steerX = 0;
+        out.steerY = 0;
+        return out;
     }
 
-    const move = readStick(gamepad, 0, 1);
-    return {
-        steerX: move.x,
-        steerY: -move.y,
-    };
+    readStickInto(gamepad, 0, 1, stickScratch);
+    out.steerX = stickScratch.x;
+    out.steerY = -stickScratch.y;
+    return out;
 }
 
 export function readGamepadInput(gamepad: Gamepad | null): GamepadInput {
+    return readGamepadInputInto(gamepad, {
+        forward: 0,
+        right: 0,
+        jump: false,
+        attack: false,
+        chargedAttack: false,
+        lookX: 0,
+        lookY: 0,
+    });
+}
+
+function readGamepadInputInto(gamepad: Gamepad | null, out: GamepadInput): GamepadInput {
     if (!gamepad) {
-        return {
-            forward: 0,
-            right: 0,
-            jump: false,
-            attack: false,
-            chargedAttack: false,
-            lookX: 0,
-            lookY: 0,
-        };
+        out.forward = 0;
+        out.right = 0;
+        out.jump = false;
+        out.attack = false;
+        out.chargedAttack = false;
+        out.lookX = 0;
+        out.lookY = 0;
+        return out;
     }
 
-    const move = readStick(gamepad, 0, 1);
-    const look = readStick(gamepad, 2, 3);
+    readStickInto(gamepad, 0, 1, stickScratch);
+    const moveX = stickScratch.x;
+    const moveY = stickScratch.y;
+    readStickInto(gamepad, 2, 3, stickScratch);
+    const lookX = stickScratch.x;
+    const lookY = stickScratch.y;
     const dpadForward = Number(isPressed(gamepad, DPAD_UP)) - Number(isPressed(gamepad, DPAD_DOWN));
     const dpadRight = Number(isPressed(gamepad, DPAD_RIGHT)) - Number(isPressed(gamepad, DPAD_LEFT));
 
-    return {
-        forward: clamp(-move.y + dpadForward, -1, 1),
-        right: clamp(move.x + dpadRight, -1, 1),
-        jump: isPressed(gamepad, GAMEPAD_JUMP_BUTTON),
-        attack: isPressed(gamepad, GAMEPAD_ATTACK_BUTTON),
-        chargedAttack: isPressed(gamepad, GAMEPAD_CHARGED_ATTACK_BUTTON),
-        lookX: look.x,
-        lookY: look.y,
-    };
+    out.forward = clamp(-moveY + dpadForward, -1, 1);
+    out.right = clamp(moveX + dpadRight, -1, 1);
+    out.jump = isPressed(gamepad, GAMEPAD_JUMP_BUTTON);
+    out.attack = isPressed(gamepad, GAMEPAD_ATTACK_BUTTON);
+    out.chargedAttack = isPressed(gamepad, GAMEPAD_CHARGED_ATTACK_BUTTON);
+    out.lookX = lookX;
+    out.lookY = lookY;
+    return out;
 }
 
-function readStick(gamepad: Gamepad, xAxis: number, yAxis: number): { x: number; y: number } {
+const stickScratch = { x: 0, y: 0 };
+
+function readStickInto(
+    gamepad: Gamepad,
+    xAxis: number,
+    yAxis: number,
+    out: { x: number; y: number },
+): void {
     const x = gamepad.axes[xAxis] ?? 0;
     const y = gamepad.axes[yAxis] ?? 0;
     const magnitude = Math.hypot(x, y);
     if (magnitude <= GAMEPAD_DEADZONE) {
-        return { x: 0, y: 0 };
+        out.x = 0;
+        out.y = 0;
+        return;
     }
     const scale = Math.min(1, (magnitude - GAMEPAD_DEADZONE) / (1 - GAMEPAD_DEADZONE)) / magnitude;
-    return { x: x * scale, y: y * scale };
+    out.x = x * scale;
+    out.y = y * scale;
 }
 
 function isPressed(gamepad: Gamepad, index: number): boolean {

@@ -15,9 +15,10 @@ import {
     Vector3,
 } from 'three';
 
-import type { GameAudio } from './audio';
+import type { GameAudio, RobotBeepHandle } from './audio';
 import type { Difficulty } from './enemies';
 import { getRadialGlowTexture } from './glow';
+import { disposeGeometry, mergeMeshesByMaterial, registerSharedGeometry } from './mesh-optimize';
 import { mulberry32 } from './noise';
 import { PLAYER_HEIGHT } from './player';
 import type { CylinderCollider, Terrain } from './terrain';
@@ -113,6 +114,30 @@ const LABEL_MAX_WIDTH = 940;
 const LABEL_MAX_LINES = 7;
 const PEACEFUL_EXCLUDED_TAGS = ['enemies'] as const;
 
+// Validates the editable dialogue layout and drops malformed lines. Exposed so the bundled JSON
+// can reuse the same parsing at startup without a network round trip.
+export function parseRobotDialogue(data: unknown): RobotDialogue {
+    if (!isRecord(data)) {
+        return { intro: [], outro: [] };
+    }
+
+    const readLines = (key: string): DialogueLine[] => {
+        const lines = data[key];
+        return Array.isArray(lines)
+            ? lines.filter(isDialogueLine).map((line) => ({
+                  speaker: line.speaker,
+                  text: line.text,
+                  ...(Array.isArray(line.tags)
+                      ? { tags: line.tags.filter((tag) => typeof tag === 'string') }
+                      : {}),
+                  ...(line.givesWrench === true ? { givesWrench: true } : {}),
+              }))
+            : [];
+    };
+
+    return { intro: readLines('intro'), outro: readLines('outro') };
+}
+
 // Loads the intro and outro from assets/ so the story can be edited without touching the code. A
 // failed fetch leaves the robots silent instead of blocking the world from loading.
 export async function loadRobotDialogue(url: string): Promise<RobotDialogue> {
@@ -122,26 +147,7 @@ export async function loadRobotDialogue(url: string): Promise<RobotDialogue> {
             throw new Error(`${response.status} ${response.statusText}`);
         }
 
-        const data: unknown = await response.json();
-        if (!isRecord(data)) {
-            return { intro: [], outro: [] };
-        }
-
-        const readLines = (key: string): DialogueLine[] => {
-            const lines = data[key];
-            return Array.isArray(lines)
-                ? lines.filter(isDialogueLine).map((line) => ({
-                      speaker: line.speaker,
-                      text: line.text,
-                      ...(Array.isArray(line.tags)
-                          ? { tags: line.tags.filter((tag) => typeof tag === 'string') }
-                          : {}),
-                      ...(line.givesWrench === true ? { givesWrench: true } : {}),
-                  }))
-                : [];
-        };
-
-        return { intro: readLines('intro'), outro: readLines('outro') };
+        return parseRobotDialogue(await response.json());
     } catch (error) {
         console.warn('Robot dialogue failed to load.', error);
         return { intro: [], outro: [] };
@@ -168,6 +174,7 @@ export class NpcRobots {
     private gapTimer = 0;
     private activeActor: RobotActor | null = null;
     private activeLine: DialogueLine | null = null;
+    private speechBeeps: RobotBeepHandle | null = null;
     private excludedTags = new Set<string>();
     private wrenchClaimed = false;
     private waving = false;
@@ -210,6 +217,7 @@ export class NpcRobots {
 
         if (this.activeLine && this.isExcluded(this.activeLine)) {
             this.presenter?.hideLine();
+            this.stopSpeechBeeps();
             this.activeActor = null;
             this.activeLine = null;
             this.gapTimer = 0;
@@ -220,6 +228,7 @@ export class NpcRobots {
     // repaired. Starting the outro also breaks out of any intro line still on screen.
     playOutro(lines: DialogueLine[]): void {
         this.presenter?.hideLine();
+        this.stopSpeechBeeps();
         this.dialogue = lines;
         this.lineIndex = 0;
         this.lineTimer = 0;
@@ -233,6 +242,7 @@ export class NpcRobots {
     // Stops the current line immediately, used when the player skips the celebration cutscene.
     stopDialogue(): void {
         this.presenter?.hideLine();
+        this.stopSpeechBeeps();
         this.activeActor = null;
         this.activeLine = null;
         this.lineIndex = this.dialogue.length;
@@ -304,6 +314,7 @@ export class NpcRobots {
             this.lineTimer -= dt;
             if (this.lineTimer <= 0) {
                 this.presenter?.hideLine();
+                this.stopSpeechBeeps();
                 this.activeActor = null;
                 this.activeLine = null;
                 this.gapTimer = LINE_GAP;
@@ -329,11 +340,12 @@ export class NpcRobots {
 
     dispose(): void {
         this.presenter?.hideLine();
+        this.stopSpeechBeeps();
         this.group.removeFromParent();
         this.colliders.length = 0;
         this.group.traverse((child) => {
             if (child instanceof Mesh) {
-                child.geometry.dispose();
+                disposeGeometry(child.geometry);
             }
             if (child instanceof Mesh || child instanceof Sprite) {
                 const materials = Array.isArray(child.material) ? child.material : [child.material];
@@ -358,6 +370,7 @@ export class NpcRobots {
     }
 
     private playLine(line: DialogueLine): void {
+        this.stopSpeechBeeps();
         const actor = this.actorsById.get(line.speaker) ?? this.actors[0];
         this.activeActor = actor;
         this.activeLine = line;
@@ -374,13 +387,18 @@ export class NpcRobots {
         // has a rhythm instead of ticking like a metronome.
         const beepTimes = buildRobotBeepTimes(line.text, this.lineTimer);
 
-        this.audio.playRobotBeeps(
+        this.speechBeeps = this.audio.playRobotBeeps(
             actor.voicePitch,
             beepTimes,
             0.25,
             textSeed(line.text) ^ actor.voicePitch,
             actor.group.position,
         );
+    }
+
+    private stopSpeechBeeps(): void {
+        this.speechBeeps?.stop();
+        this.speechBeeps = null;
     }
 
     private buildFormation(terrain: Terrain): void {
@@ -410,7 +428,7 @@ export class NpcRobots {
         groundY: number,
         spawn: { x: number; z: number },
     ): RobotActor {
-        const model = createRobotModel(spot.id);
+        const model = createRobotModel(spot.id, false, true);
         const naturalHeight = modelHeight(model.visual);
         model.visual.scale.setScalar(spot.height / naturalHeight);
 
@@ -521,22 +539,24 @@ export class SpeechLabel {
     }
 }
 
-function createRobotModel(id: string, hostile = false): RobotModel {
+function createRobotModel(id: string, hostile = false, mergeStatic = false): RobotModel {
     if (id === 'matron') {
-        return buildMatronModel(hostile);
+        return buildMatronModel(hostile, mergeStatic);
     }
     if (id === 'walle') {
-        return buildTrackedModel(hostile);
+        return buildTrackedModel(hostile, mergeStatic);
     }
-    return buildProbeModel(hostile);
+    return buildProbeModel(hostile, mergeStatic);
 }
 
 // The same three caretaker bodies, repainted with a hostile red eye and red accent glow.
 export function createEnemyRobotModel(id: RobotKind): RobotModel {
-    return createRobotModel(id, true);
+    return createRobotModel(id, true, true);
 }
 
 // A neutral caretaker body for the ones that stopped long ago. The caller decides how to pose it.
+// Remains deliberately skip static merging because dimRobotModel() scales emissive intensity once
+// per mesh that uses a material; merging would change how strongly those shared glows are dimmed.
 export function createCaretakerModel(id: RobotKind): RobotModel {
     return createRobotModel(id);
 }
@@ -561,7 +581,7 @@ export function dimRobotModel(root: Group, factor = 0.04): void {
 }
 
 // Broad, rounded caretaker with a bell-shaped lower body, wide shoulders, and a glowing heart.
-function buildMatronModel(hostile: boolean): RobotModel {
+function buildMatronModel(hostile: boolean, mergeStatic = false): RobotModel {
     const visual = new Group();
     const body = new Group();
     visual.add(body);
@@ -639,6 +659,19 @@ function buildMatronModel(hostile: boolean): RobotModel {
     addBox(body, 0.72, 0.58, 0.26, metal, 0, 2.02, -0.42);
     addBox(body, 0.48, 0.2, 0.05, accent, 0, 2.12, -0.56);
 
+    if (mergeStatic) {
+        // Collapse static parts inside each animated pivot. The visual, body, head, and arms keep
+        // their own transforms, so every existing animation still drives the same group.
+        mergeMeshesByMaterial(visual, { skip: (object) => object === body });
+        mergeMeshesByMaterial(body, {
+            skip: (object) => object === head || arms.includes(object as Group),
+        });
+        mergeMeshesByMaterial(head);
+        for (const arm of arms) {
+            mergeMeshesByMaterial(arm);
+        }
+    }
+
     prepareMeshes(visual);
 
     return {
@@ -664,7 +697,7 @@ function buildMatronModel(hostile: boolean): RobotModel {
 }
 
 // Squat maintenance unit on continuous tracks, with a scanning visor and a stubby tool arm.
-function buildTrackedModel(hostile: boolean): RobotModel {
+function buildTrackedModel(hostile: boolean, mergeStatic = false): RobotModel {
     const visual = new Group();
     const hull = new Group();
     visual.add(hull);
@@ -723,6 +756,15 @@ function buildTrackedModel(hostile: boolean): RobotModel {
     upperTool.rotation.x = 0.45;
     addBox(toolArm, 0.14, 0.1, 0.26, metal, 0, -0.3, 0.21);
 
+    if (mergeStatic) {
+        mergeMeshesByMaterial(visual, { skip: (object) => object === hull });
+        mergeMeshesByMaterial(hull, {
+            skip: (object) => object === head || object === toolArm,
+        });
+        mergeMeshesByMaterial(head);
+        mergeMeshesByMaterial(toolArm);
+    }
+
     prepareMeshes(visual);
 
     return {
@@ -747,7 +789,7 @@ function buildTrackedModel(hostile: boolean): RobotModel {
 
 // Hovering probe: a dark spherical sensor pod, a small dome, a red photoreceptor, dangling legs,
 // and a pair of thin manipulators.
-function buildProbeModel(hostile: boolean): RobotModel {
+function buildProbeModel(hostile: boolean, mergeStatic = false): RobotModel {
     const visual = new Group();
     const body = new Group();
     visual.add(body);
@@ -832,6 +874,14 @@ function buildProbeModel(hostile: boolean): RobotModel {
         addBox(arm, 0.08, 0.05, 0.12, panel, side * 0.12, -0.57, 0.34);
     }
 
+    if (mergeStatic) {
+        const pivots = new Set<Group>([head, ...legs, ...manipulators.map(({ group }) => group)]);
+        mergeMeshesByMaterial(visual, { skip: (object) => pivots.has(object as Group) });
+        for (const pivot of pivots) {
+            mergeMeshesByMaterial(pivot);
+        }
+    }
+
     prepareMeshes(visual);
 
     return {
@@ -860,6 +910,8 @@ function buildProbeModel(hostile: boolean): RobotModel {
 // writes neither colour nor depth, but the shadow map replaces the material with a depth material,
 // so the proxy still casts.
 const SHADOW_PROXY_MATERIAL = new MeshBasicMaterial({ colorWrite: false, depthWrite: false });
+// Every box-shaped robot part scales this one geometry instead of allocating its own.
+const UNIT_BOX_GEOMETRY = registerSharedGeometry(new BoxGeometry(1, 1, 1));
 
 export function prepareMeshes(root: Group): void {
     root.traverse((child) => {
@@ -881,14 +933,15 @@ export function prepareMeshes(root: Group): void {
     const size = bounds.getSize(new Vector3());
     const center = bounds.getCenter(new Vector3());
     const proxy = new Mesh(
-        new BoxGeometry(
-            Math.max(0.05, size.x),
-            Math.max(0.05, size.y),
-            Math.max(0.05, size.z),
-        ),
+        UNIT_BOX_GEOMETRY,
         SHADOW_PROXY_MATERIAL,
     );
     proxy.name = 'shadow-proxy';
+    proxy.scale.set(
+        Math.max(0.05, size.x),
+        Math.max(0.05, size.y),
+        Math.max(0.05, size.z),
+    );
     proxy.position.copy(root.worldToLocal(center));
     proxy.castShadow = true;
     proxy.receiveShadow = false;
@@ -921,7 +974,8 @@ export function addBox(
     y: number,
     z: number,
 ): Mesh {
-    const mesh = new Mesh(new BoxGeometry(width, height, depth), material);
+    const mesh = new Mesh(UNIT_BOX_GEOMETRY, material);
+    mesh.scale.set(width, height, depth);
     mesh.position.set(x, y, z);
     parent.add(mesh);
     return mesh;

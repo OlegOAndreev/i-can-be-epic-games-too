@@ -7,6 +7,11 @@ import {
 
 import { mulberry32 } from './noise';
 
+// The lobe and chip deformation pushes the unit rock out to roughly 1.35x its nominal radius
+// (measured across all variants). Colliders use a little extra margin (the measured ~1.42x factor
+// over the old 0.95 estimate) so rotation and the coarser cylinder broadphase cannot expose it.
+export const ROCK_COLLIDER_RADIUS_FACTOR = 1.42;
+
 // Builds a lumpy, asymmetric rock. Each variant starts from a different polyhedron and uses
 // different lobe frequencies, phases, squash, and shear, so the world does not repeat one
 // silhouette. Shared by boulders and by the fragments they break into.

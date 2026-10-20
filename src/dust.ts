@@ -6,6 +6,8 @@ const DUST_NEUTRAL = new Color(0xb9ac91);
 const MAX_PARTICLES_PER_LANDING = 14;
 const MAX_PARTICLES_PER_HARD_LANDING = 46;
 const TEXTURE_VARIANTS = 3;
+// Hard landings throw up 46 puffs at once; this cap only binds when several clouds overlap.
+const MAX_ACTIVE_PARTICLES = 160;
 
 interface DustParticle {
     sprite: Sprite;
@@ -42,6 +44,7 @@ export class DustPuffs {
     private scene: Scene;
     private textures: CanvasTexture[];
     private particles: DustParticle[] = [];
+    private readonly pool: DustParticle[] = [];
 
     constructor(scene: Scene) {
         this.scene = scene;
@@ -160,7 +163,7 @@ export class DustPuffs {
 
             if (particle.age >= particle.lifetime) {
                 this.scene.remove(particle.sprite);
-                particle.material.dispose();
+                this.pool.push(particle);
                 this.particles.splice(i, 1);
                 continue;
             }
@@ -184,51 +187,84 @@ export class DustPuffs {
     clear(): void {
         for (const particle of this.particles) {
             this.scene.remove(particle.sprite);
-            particle.material.dispose();
+            this.pool.push(particle);
         }
         this.particles = [];
     }
 
+    dispose(): void {
+        this.clear();
+        for (const particle of this.pool) {
+            particle.material.dispose();
+        }
+        this.pool.length = 0;
+        for (const texture of this.textures) {
+            texture.dispose();
+        }
+        this.textures = [];
+    }
+
     private createParticle(position: Vector3, groundColor: Color, options: PuffOptions): void {
-        const color = groundColor
-            .clone()
+        if (this.particles.length >= MAX_ACTIVE_PARTICLES) {
+            const oldest = this.particles[0];
+            this.scene.remove(oldest.sprite);
+            this.pool.push(oldest);
+            this.particles.splice(0, 1);
+        }
+
+        let particle = this.pool.pop();
+        if (!particle) {
+            const material = new SpriteMaterial({
+                map: this.textures[0],
+                transparent: true,
+                depthWrite: false,
+            });
+            const sprite = new Sprite(material);
+            particle = {
+                sprite,
+                material,
+                velocity: new Vector3(),
+                spin: 0,
+                age: 0,
+                lifetime: 1,
+                startScaleX: 1,
+                startScaleY: 1,
+                endScaleX: 1,
+                endScaleY: 1,
+                opacity: 1,
+            };
+        }
+
+        particle.material.map =
+            this.textures[Math.floor(Math.random() * this.textures.length)];
+        particle.material.color
+            .copy(groundColor)
             .lerp(DUST_NEUTRAL, options.neutralMix)
             .offsetHSL(0, -0.04, options.lightnessLift + (Math.random() - 0.5) * 0.06);
-        const material = new SpriteMaterial({
-            map: this.textures[Math.floor(Math.random() * this.textures.length)],
-            color,
-            transparent: true,
-            opacity: options.opacity,
-            depthWrite: false,
-            rotation: Math.random() * Math.PI * 2,
-        });
-
-        const sprite = new Sprite(material);
-        sprite.position.set(
+        particle.material.opacity = options.opacity;
+        particle.material.rotation = Math.random() * Math.PI * 2;
+        particle.sprite.position.set(
             position.x + Math.cos(options.angle) * options.radius,
             position.y + options.heightOffset,
             position.z + Math.sin(options.angle) * options.radius,
         );
-        sprite.scale.set(options.startScaleX, options.startScaleY, 1);
-        this.scene.add(sprite);
+        particle.sprite.scale.set(options.startScaleX, options.startScaleY, 1);
+        particle.velocity.set(
+            Math.cos(options.angle) * options.horizontalSpeed,
+            options.upwardSpeed,
+            Math.sin(options.angle) * options.horizontalSpeed,
+        );
+        particle.spin = (Math.random() - 0.5) * 1.8;
+        particle.age = 0;
+        particle.lifetime = options.lifetime;
+        particle.startScaleX = options.startScaleX;
+        particle.startScaleY = options.startScaleY;
+        particle.endScaleX = options.startScaleX * options.growth;
+        particle.endScaleY = options.startScaleY * options.growth;
+        particle.opacity = options.opacity;
 
-        this.particles.push({
-            sprite,
-            material,
-            velocity: new Vector3(
-                Math.cos(options.angle) * options.horizontalSpeed,
-                options.upwardSpeed,
-                Math.sin(options.angle) * options.horizontalSpeed,
-            ),
-            spin: (Math.random() - 0.5) * 1.8,
-            age: 0,
-            lifetime: options.lifetime,
-            startScaleX: options.startScaleX,
-            startScaleY: options.startScaleY,
-            endScaleX: options.startScaleX * options.growth,
-            endScaleY: options.startScaleY * options.growth,
-            opacity: material.opacity,
-        });
+        this.scene.add(particle.sprite);
+        this.particles.push(particle);
     }
 }
 

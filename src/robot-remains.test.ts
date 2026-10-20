@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 import type { GameAudio } from './audio';
 import { RobotRemains } from './robot-remains';
 import { Terrain, WATER_LEVEL } from './terrain';
+
+const FAST_TERRAIN = { meshes: false, decorations: false } as const;
 import { getSurfaceTextures } from './textures';
 
 // The speech labels use a canvas at runtime. Prime the terrain textures before replacing the
@@ -26,7 +28,7 @@ function stubAudio(): GameAudio {
 
 describe('robot remains', () => {
     it('places every encounter deterministically from the world seed', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const first = new RobotRemains(terrain, stubAudio());
         const sites = first.getSites();
         const ids = sites.map((site) => site.id);
@@ -89,7 +91,7 @@ describe('robot remains', () => {
     });
 
     it('powers down the last sweeper once and awards its cell', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const remains = new RobotRemains(terrain, stubAudio());
         const sweeper = remains.getSites().find((site) => site.id === 'sweeper');
         expect(sweeper).toBeDefined();
@@ -112,7 +114,7 @@ describe('robot remains', () => {
     });
 
     it('plays the tidewalker and drowned transmissions only once', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const remains = new RobotRemains(terrain, stubAudio());
         const tidewalker = remains.getSites().find((site) => site.id === 'tidewalker');
         const drowned = remains.getSites().find((site) => site.id === 'drowned');
@@ -137,7 +139,7 @@ describe('robot remains', () => {
     });
 
     it('harvests the sleeper battery and the ossuary core once each', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const remains = new RobotRemains(terrain, stubAudio());
         const battery = remains.getSites().find((site) => site.id === 'sleeper');
         const cache = remains.getSites().find((site) => site.id === 'ossuary');
@@ -169,7 +171,7 @@ describe('robot remains', () => {
     });
 
     it('prevents harvested batteries and cores from being taken after a reload', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const remains = new RobotRemains(terrain, stubAudio());
         const battery = remains.getSites().find((site) => site.id === 'sleeper');
         const cache = remains.getSites().find((site) => site.id === 'ossuary');

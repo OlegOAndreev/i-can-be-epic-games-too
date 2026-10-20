@@ -2,7 +2,7 @@
 // The biome layers are also packed into KTX2 arrays for GPU-compressed loading.
 // Requires Khronos KTX-Software's `ktx` CLI.
 // Run with: npm run generate:textures
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -11,6 +11,7 @@ import { createCanvas } from '@napi-rs/canvas';
 import { hash2, smoothstep } from '../src/math-utils.ts';
 import { mulberry32 } from '../src/noise.ts';
 import { createKtx2, ensureKtx } from './ktx.ts';
+import { writeFileAtomic } from './write-file.ts';
 
 const GRASS_SIZE = 512;
 const SAND_SIZE = 512;
@@ -698,7 +699,7 @@ function renderTexture(
     paint(context, size);
 
     const filePath = join(OUTPUT_DIRECTORY, `${name}.png`);
-    writeFileSync(filePath, canvas.toBuffer('image/png'));
+    writeFileAtomic(filePath, canvas.toBuffer('image/png'));
     console.log(`Generated ${filePath} (${size}x${size})`);
     return filePath;
 }

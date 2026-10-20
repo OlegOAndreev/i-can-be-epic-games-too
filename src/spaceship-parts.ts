@@ -201,14 +201,20 @@ export class SpaceshipParts {
 
             const dx = playerPosition.x - part.site.x;
             const dz = playerPosition.z - part.site.z;
-            const distance = Math.hypot(dx, dz);
-            const verticalDistance = Math.abs(playerPosition.y - part.site.y);
+            const dy = playerPosition.y - part.site.y;
+            const horizontalDistance = Math.hypot(dx, dz);
+            const distance = Math.hypot(dx, dz, dy);
 
-            if (distance <= PICKUP_DISTANCE && verticalDistance <= PICKUP_VERTICAL_RANGE) {
+            if (
+                horizontalDistance <= PICKUP_DISTANCE &&
+                Math.abs(dy) <= PICKUP_VERTICAL_RANGE
+            ) {
                 this.collect(part);
                 continue;
             }
 
+            // The detector and glow measure the true 3D distance, matching how a piece above the
+            // player's head can still be within pickup reach.
             this.updateGlow(part, distance);
             if (distance < nearestDistance) {
                 nearestDistance = distance;

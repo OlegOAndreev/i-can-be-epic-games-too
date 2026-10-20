@@ -21,6 +21,8 @@ import {
 } from './player-model';
 import { Terrain, WATER_LEVEL } from './terrain';
 
+const FAST_TERRAIN = { meshes: false, decorations: false } as const;
+
 const SETTINGS: PlayerSettings = {
     moveSpeed: 10.5,
     jumpSpeed: 12,
@@ -55,7 +57,7 @@ describe('isFullySubmerged', () => {
 
 describe('wrench attack', () => {
     it('charges for one second and only reports a charged release afterwards', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const noInput = { forward: 0, right: 0, jump: false };
 
         const quick = new Player(terrain, SETTINGS);
@@ -84,7 +86,7 @@ describe('wrench attack', () => {
     });
 
     it('keeps charging without the input being held', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         player.setWrenchEquipped(true);
 
@@ -101,7 +103,7 @@ describe('wrench attack', () => {
     });
 
     it('keeps white electric bolts arcing around a charged wrench', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const noInput = { forward: 0, right: 0, jump: false };
         player.setWrenchEquipped(true);
@@ -146,7 +148,7 @@ describe('wrench attack', () => {
     });
 
     it('exposes two separate wrench tips for the swing trails', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
 
         const left = player.getWrenchTipWorldPosition(0, new Vector3());
@@ -157,7 +159,7 @@ describe('wrench attack', () => {
     });
 
     it('anchors the regular hit trail between the wrench jaw ends', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
 
         const left = player.getWrenchTipWorldPosition(0, new Vector3());
@@ -170,7 +172,7 @@ describe('wrench attack', () => {
     });
 
     it('only starts a swing when the wrench is equipped', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
 
         expect(player.swingWrench()).toBe(false);
@@ -182,7 +184,7 @@ describe('wrench attack', () => {
     });
 
     it('reports when a swing plays to completion, not when it is interrupted', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         player.setWrenchEquipped(true);
         const noInput = { forward: 0, right: 0, jump: false };
@@ -208,7 +210,7 @@ describe('wrench attack', () => {
     });
 
     it('keeps the charged swing running past the regular swing duration', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const noInput = { forward: 0, right: 0, jump: false };
         player.setWrenchEquipped(true);
@@ -243,7 +245,7 @@ describe('wrench circle', () => {
     });
 
     it('circles the wrench arm while the body stays still', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const wrench = player.group.getObjectByName('wrench');
         expect(wrench).toBeDefined();
@@ -282,7 +284,7 @@ describe('wrench circle', () => {
     });
 
     it('spins the whole robot with the wrench pointed forward when the strike is charged', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const noInput = { forward: 0, right: 0, jump: false };
         const wrench = player.group.getObjectByName('wrench');
@@ -372,7 +374,7 @@ describe('Player model merging', () => {
 
 describe('Player opacity', () => {
     it('fades between full and 10% opacity', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const materials = new Set<MeshStandardMaterial>();
 
@@ -411,6 +413,43 @@ describe('Player opacity', () => {
 
         terrain.dispose();
     });
+
+    it('moves the body out of the transparent pass while it is fully opaque', () => {
+        const terrain = new Terrain(1234, FAST_TERRAIN);
+        const player = new Player(terrain, SETTINGS);
+        const materials = new Set<MeshStandardMaterial>();
+
+        player.group.traverse((child) => {
+            if (!(child instanceof Mesh)) {
+                return;
+            }
+            const childMaterials = Array.isArray(child.material) ? child.material : [child.material];
+            for (const material of childMaterials) {
+                if (material instanceof MeshStandardMaterial) {
+                    materials.add(material);
+                }
+            }
+        });
+
+        player.setOpacity(1);
+        for (const material of materials) {
+            expect(material.transparent).toBe(false);
+        }
+
+        player.setOpacity(0.6);
+        for (const material of materials) {
+            expect(material.transparent).toBe(true);
+            expect(material.opacity).toBeCloseTo(0.6);
+        }
+
+        player.setOpacity(1);
+        for (const material of materials) {
+            expect(material.transparent).toBe(false);
+            expect(material.opacity).toBe(1);
+        }
+
+        terrain.dispose();
+    });
 });
 
 describe('Player underwater rendering', () => {
@@ -442,7 +481,7 @@ describe('Player underwater rendering', () => {
 
 describe('Player lightning flash', () => {
     it('turns the robot white and restores its materials afterwards', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const materials: MeshStandardMaterial[] = [];
 
@@ -479,7 +518,7 @@ describe('Player lightning flash', () => {
 });
 describe('Player hard landings', () => {
     it('falls on its face after a high fall and ignores input until it gets up', () => {
-        const terrain = new Terrain(424242);
+        const terrain = new Terrain(424242, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const { x, z } = terrain.spawn;
         const ground = terrain.heightAt(x, z);
@@ -520,7 +559,7 @@ describe('Player hard landings', () => {
     });
 
     it('does not knock the robot down after a fall from a small hill', () => {
-        const terrain = new Terrain(424242);
+        const terrain = new Terrain(424242, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const { x, z } = terrain.spawn;
         const ground = terrain.heightAt(x, z);
@@ -554,7 +593,7 @@ describe('Player detector antenna', () => {
     const noInput = { forward: 0, right: 0, jump: false };
 
     it('runs one antenna pulse per beep and scales it to the beep interval', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const slow = new Player(terrain, SETTINGS);
         const fast = new Player(terrain, SETTINGS);
         const slowRing = slow.group.getObjectByName('antenna-detector-ring') as Sprite;
@@ -588,7 +627,7 @@ describe('Player detector antenna', () => {
     });
 
     it('keeps a faint glow when the detector is quiet', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const glow = player.group.getObjectByName('antenna-detector-glow') as Sprite;
         expect(glow).toBeInstanceOf(Sprite);
@@ -610,7 +649,7 @@ describe('Player detector antenna', () => {
     });
 
     it('fades the antenna back down when the beeps stop', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const ring = player.group.getObjectByName('antenna-detector-ring') as Sprite;
 
@@ -628,7 +667,7 @@ describe('Player detector antenna', () => {
     });
 
     it('draws the detector pulse above alpha-blended grass', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const ring = player.group.getObjectByName('antenna-detector-ring') as Sprite;
 
@@ -640,7 +679,7 @@ describe('Player detector antenna', () => {
     });
 
     it('brightens the ring as the tracked piece gets closer', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const near = new Player(terrain, SETTINGS);
         const far = new Player(terrain, SETTINGS);
         const nearRing = near.group.getObjectByName('antenna-detector-ring') as Sprite;
@@ -666,7 +705,7 @@ describe('Player detector antenna', () => {
 
 describe('crown shock', () => {
     it('throws the robot back inside the same electric burst as a hit caretaker', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const noInput = { forward: 0, right: 0, jump: false };
         const burst = player.group.getObjectByName('player-shock-effect') as Group;
@@ -696,7 +735,7 @@ describe('crown shock', () => {
 
 describe('Player destruction', () => {
     it('topples, extinguishes its lights, and restores them when revived', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
         const visual = player.group.children[0] as Group;
         const materials: MeshStandardMaterial[] = [];
@@ -748,7 +787,7 @@ describe('Player destruction', () => {
     });
 
     it('respawns at the given ramp foot facing its high end', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
 
         player.respawnAt(new Vector3(1, 2, 3), Math.PI / 2);
@@ -766,7 +805,7 @@ describe('Player destruction', () => {
 
 describe('Player snapshot', () => {
     it('captures and restores position, view and motion', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
 
         player.restoreSnapshot({

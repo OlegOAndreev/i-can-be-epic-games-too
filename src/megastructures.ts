@@ -72,7 +72,10 @@ const CROWN_RAMP_SEGMENTS_PER_TURN = 24;
 // progressive, so the stack is deliberately uneven: a storey can be wider than the one below,
 // leaving its floor cantilevered over the smaller storey. A generous limit keeps consecutive
 // floors visibly different in area instead of reading as a regular stepped tower.
-const TOWER_MAX_SIDE_INSET = 0.24;
+// Consecutive storeys can inset from opposite sides, so the worst-case overlap is
+// `1 - 4 * inset`. Keep that overlap long enough for the ramp run after wall and landing depth
+// are subtracted; otherwise a floor can produce an unwalkable (>1.5 slope) ramp.
+const TOWER_MAX_SIDE_INSET = 0.1;
 // Gap kept between the crown spiral's outer edge and the inside of the top storey's walls.
 const CROWN_WALL_CLEARANCE = 0.4;
 // The crown must not overhang the top ramp's hole at head height, or the player's head would
@@ -617,6 +620,8 @@ export class Megastructures {
         );
         this.group.add(this.boltLight);
 
+        // Robot animals and terrain decorations now derive their own streams, so this layout
+        // stream no longer aliases another system that used the same mixed seed constant.
         const rng = mulberry32(seed ^ 0x51ed270b);
 
         for (let attempt = 0; attempt < SITE_ATTEMPTS && this.sites.length < SITE_COUNT; attempt++) {
@@ -1633,8 +1638,8 @@ export class Megastructures {
             topRadius,
         });
 
-        // The walkable cap covers the open top of the cone. The spiral's final flat turn lands around
-        // it, so the player can step from the ramp onto the cap without climbing a lip.
+        // The cap closes the top of the cone. It is deliberately not walkable: the spiral ends
+        // below it, so the player cannot step onto it.
         const platformTopY = coneTopY - 0.02;
         const platformRadius = topRadius + 0.15;
         const platform = new CylinderGeometry(platformRadius, platformRadius, 0.3, 32);
@@ -2321,8 +2326,16 @@ export class Megastructures {
             uvs.push(0, 0);
             return positions.length / 3 - 1;
         };
+        // Stations advance along the helix in the direction of travel, so a fixed quad order only
+        // faces outward for one of the two spiral directions. Reverse every quad for the positive
+        // direction to keep the top face visible from above.
+        const reverseWinding = spiral.direction > 0;
         const addQuad = (a: number, b: number, c: number, d: number): void => {
-            indices.push(a, b, c, a, c, d);
+            if (reverseWinding) {
+                indices.push(a, d, c, a, c, b);
+            } else {
+                indices.push(a, b, c, a, c, d);
+            }
         };
 
         const walkway: number[][] = [];

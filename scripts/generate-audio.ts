@@ -1,16 +1,17 @@
 // Generates the one-shot footstep samples used by the game, including the metallic steps the robot
-// makes on megastructure decks, plus the laser, impact, switch, jump, recovery, power-down, and
-// lightning one-shots. Each sample is written as a WAV fallback and as an Ogg Opus file for
-// browsers that support it.
+// makes on megastructure decks, plus the laser, impact, switch, jump, recovery, power-down,
+// wrench-swing, and lightning one-shots. Each sample is written as a WAV fallback and as an Ogg
+// Opus file for browsers that support it.
 // Requires opusenc from opus-tools (brew install opus-tools).
 // Run with: npm run generate:audio
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { clamp } from '../src/math-utils.ts';
 import { mulberry32 } from '../src/noise.ts';
+import { siblingTempPath, writeFileAtomic } from './write-file.ts';
 
 const SAMPLE_RATE = 44100;
 const TAU = Math.PI * 2;
@@ -841,6 +842,111 @@ function renderShipEngine(seed: number): Float32Array {
     return looped;
 }
 
+// A seamless, soft bed of air rushing past the robot during a long fall. Two lowpassed noise
+// bands breathe at whole-cycle rates so the loop can be folded without a seam.
+function renderFallWind(seed: number): Float32Array {
+    const rng = mulberry32(seed);
+    const duration = 4;
+    const length = Math.round(duration * SAMPLE_RATE);
+    const fadeLength = Math.round(0.25 * SAMPLE_RATE);
+    const total = length + fadeLength;
+    const samples = new Float32Array(total);
+
+    const rumbleAlpha = 1 - Math.exp((-TAU * 110) / SAMPLE_RATE);
+    const rushAlpha = 1 - Math.exp((-TAU * 480) / SAMPLE_RATE);
+    const gustPhase = rng() * TAU;
+    const swellPhase = rng() * TAU;
+    let rumbleNoise = 0;
+    let rushNoise = 0;
+    let rushSmooth = 0;
+    let whistlePhase = 0;
+
+    for (let i = 0; i < total; i++) {
+        const t = i / SAMPLE_RATE;
+
+        const white = rng() * 2 - 1;
+        rumbleNoise += rumbleAlpha * (white - rumbleNoise);
+        rushNoise += rushAlpha * (white - rushNoise);
+        // A second lowpass stage rounds off the top end, leaving a soft rush instead of hiss.
+        rushSmooth += rushAlpha * (rushNoise - rushSmooth);
+
+        // The gusts complete a whole number of cycles over the loop, so their swell survives the
+        // fold at the loop point. The clamped envelope keeps the quieter passages audible.
+        const swell =
+            0.45 +
+            0.3 * Math.sin(TAU * 0.5 * t + gustPhase) +
+            0.25 * Math.sin(TAU * t + swellPhase);
+        const envelope = Math.max(0.08, swell);
+
+        const rush = rushSmooth - rumbleNoise;
+        const hiss = white - rushSmooth;
+
+        // A faint whistle as the air crosses the robot's frame keeps it reading as wind instead of
+        // plain filtered noise. Its slow wobble also completes a whole cycle per loop.
+        const whistleFrequency = 520 + 90 * Math.sin(TAU * 0.25 * t + swellPhase);
+        whistlePhase += (TAU * whistleFrequency) / SAMPLE_RATE;
+        const whistle = Math.sin(whistlePhase) * 0.012;
+
+        samples[i] = (rumbleNoise * 1.5 + rush * 0.55 + hiss * 0.02 + whistle) * envelope;
+    }
+
+    // Fold the extra tail over the head, matching the ship engine, so the loop point falls inside
+    // continuous signal rather than at an arbitrary cut.
+    const looped = new Float32Array(length);
+    for (let i = 0; i < length; i++) {
+        if (i < fadeLength) {
+            const mix = i / fadeLength;
+            looped[i] = samples[i] * mix + samples[length + i] * (1 - mix);
+        } else {
+            looped[i] = samples[i];
+        }
+    }
+
+    return looped;
+}
+
+// A short, soft whoosh for the wrench cutting through empty air. Two heavily lowpassed noise
+// bands keep the sound low and breathy like wind instead of a bright scratch, and a faint low
+// whistle marks the edge of the blade as it passes.
+function renderWrenchSwing(seed: number): Float32Array {
+    const rng = mulberry32(seed);
+    const duration = 0.38;
+    const length = Math.round(duration * SAMPLE_RATE);
+    const samples = new Float32Array(length);
+
+    const rumbleAlpha = 1 - Math.exp((-TAU * 100) / SAMPLE_RATE);
+    const whistleBase = 250 + rng() * 40;
+    let rumble = 0;
+    let rush = 0;
+    let rushSmooth = 0;
+    let whistlePhase = 0;
+
+    for (let i = 0; i < length; i++) {
+        const progress = i / length;
+        // The wrench moves fastest just before the middle of the swing, so the air peaks slightly
+        // early and then settles.
+        const pass = Math.sin(Math.PI * progress ** 0.8) ** 2;
+
+        const white = rng() * 2 - 1;
+        rumble += rumbleAlpha * (white - rumble);
+
+        // The cutoff only reaches about 800 Hz at the peak, leaving a low rush rather than hiss.
+        const rushCutoff = 240 + 560 * pass;
+        const rushAlpha = 1 - Math.exp((-TAU * rushCutoff) / SAMPLE_RATE);
+        rush += rushAlpha * (white - rush);
+        rushSmooth += rushAlpha * (rush - rushSmooth);
+
+        const whistleFrequency = whistleBase + 110 * pass;
+        whistlePhase += (TAU * whistleFrequency) / SAMPLE_RATE;
+        const whistle = Math.sin(whistlePhase) * 0.015 * pass;
+
+        const air = rushSmooth - rumble * 0.6;
+        samples[i] = (rumble * 1.4 + air * 0.85 + whistle) * pass;
+    }
+
+    return samples;
+}
+
 function removeDc(samples: Float32Array): void {
     let sum = 0;
     for (const sample of samples) {
@@ -893,16 +999,23 @@ function writeSample(name: string, samples: Float32Array): void {
     }
 
     const wavPath = join(OUTPUT_DIRECTORY, `${name}.wav`);
-    writeFileSync(wavPath, buffer);
+    writeFileAtomic(wavPath, buffer);
 
     const opusPath = join(OUTPUT_DIRECTORY, `${name}.opus`);
-    execFileSync('opusenc', [
-        '--quiet',
-        '--bitrate',
-        String(OPUS_BITRATE_KBPS),
-        wavPath,
-        opusPath,
-    ]);
+    const opusTempPath = siblingTempPath(opusPath);
+    try {
+        execFileSync('opusenc', [
+            '--quiet',
+            '--bitrate',
+            String(OPUS_BITRATE_KBPS),
+            wavPath,
+            opusTempPath,
+        ]);
+        renameSync(opusTempPath, opusPath);
+    } catch (error) {
+        rmSync(opusTempPath, { force: true });
+        throw error;
+    }
 
     const seconds = samples.length / SAMPLE_RATE;
     const opusSize = statSync(opusPath).size;
@@ -944,6 +1057,16 @@ const shipEngine = renderShipEngine(0x5b19_e0a0);
 removeDc(shipEngine);
 normalize(shipEngine, 0.8);
 writeSample('ship-engine', shipEngine);
+
+const fallWind = renderFallWind(0x4c11_b0a0);
+removeDc(fallWind);
+normalize(fallWind, 0.6);
+writeSample('fall-wind', fallWind);
+
+const wrenchSwing = renderWrenchSwing(0x6b2f_c4a0);
+removeDc(wrenchSwing);
+normalize(wrenchSwing, 0.8);
+writeSample('wrench-swing', wrenchSwing);
 
 for (let index = 0; index < 4; index++) {
     const jumpBop = renderJumpBop(0x2b0b_7000 + index * 0x1111);

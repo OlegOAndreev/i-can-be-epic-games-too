@@ -24,11 +24,14 @@ export class WreckMap {
     private readonly context: CanvasRenderingContext2D;
     private readonly base: HTMLCanvasElement;
     private readonly baseContext: CanvasRenderingContext2D;
+    private readonly staticLayer: HTMLCanvasElement;
+    private readonly staticContext: CanvasRenderingContext2D;
 
     private terrain: Terrain;
     private parts: SpaceshipParts;
     private baseDirty = true;
     private shown = false;
+    private structureState = Number.NaN;
 
     constructor(
         panel: HTMLElement,
@@ -57,6 +60,15 @@ export class WreckMap {
             throw new Error('The wreck map needs a 2D canvas context.');
         }
         this.baseContext = baseContext;
+
+        this.staticLayer = document.createElement('canvas');
+        this.staticLayer.width = CANVAS_SIZE;
+        this.staticLayer.height = CANVAS_SIZE;
+        const staticContext = this.staticLayer.getContext('2d');
+        if (!staticContext) {
+            throw new Error('The wreck map needs a 2D canvas context.');
+        }
+        this.staticContext = staticContext;
     }
 
     get visible(): boolean {
@@ -86,12 +98,38 @@ export class WreckMap {
         if (this.baseDirty) {
             this.renderBase();
             this.baseDirty = false;
+            this.structureState = Number.NaN;
         }
 
-        this.context.drawImage(this.base, 0, 0, CANVAS_SIZE, CANVAS_SIZE);
-        this.drawStructures();
-        this.drawSearchMarks();
+        // The terrain, structures, and search marks only change when a switch flips or a part is
+        // collected, so they live on an offscreen layer and the open map redraws just the arrow.
+        const structureState = this.getStructureState();
+        if (structureState !== this.structureState) {
+            this.renderStaticLayer(structureState);
+        }
+
+        this.context.drawImage(this.staticLayer, 0, 0);
         this.drawPlayer(playerX, playerZ, heading);
+    }
+
+    private getStructureState(): number {
+        let state = 0;
+        for (const structureSwitch of this.terrain.megastructures.switches) {
+            state = state * 3 + (structureSwitch.triggered ? 1 : 0);
+        }
+        for (const site of this.parts.getSites()) {
+            state = state * 2 + (site.collected ? 1 : 0);
+        }
+        return state;
+    }
+
+    private renderStaticLayer(structureState: number): void {
+        const context = this.staticContext;
+        context.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+        context.drawImage(this.base, 0, 0, CANVAS_SIZE, CANVAS_SIZE);
+        this.drawStructures(context);
+        this.drawSearchMarks(context);
+        this.structureState = structureState;
     }
 
     private renderBase(): void {
@@ -157,8 +195,7 @@ export class WreckMap {
         this.baseContext.putImageData(image, 0, 0);
     }
 
-    private drawStructures(): void {
-        const context = this.context;
+    private drawStructures(context: CanvasRenderingContext2D): void {
         context.save();
         context.lineJoin = 'round';
 
@@ -211,18 +248,21 @@ export class WreckMap {
         context.restore();
     }
 
-    private drawSearchMarks(): void {
+    private drawSearchMarks(context: CanvasRenderingContext2D): void {
         for (const site of this.parts.getSites()) {
             if (site.collected) {
                 continue;
             }
             const markRadius = Math.max(14, (site.searchRadius / MAP_VIEW_SIZE) * CANVAS_SIZE);
-            this.drawSearchMark(site, markRadius);
+            this.drawSearchMark(context, site, markRadius);
         }
     }
 
-    private drawSearchMark(site: SpaceshipPartSite, markRadius: number): void {
-        const context = this.context;
+    private drawSearchMark(
+        context: CanvasRenderingContext2D,
+        site: SpaceshipPartSite,
+        markRadius: number,
+    ): void {
         const x = this.toCanvasX(site.searchX);
         const y = this.toCanvasZ(site.searchZ);
 

@@ -13,6 +13,11 @@ body {
         sans-serif;
 }
 
+/* The markup ships in English; keep it off-screen until initI18n() applies the real locale. */
+html.i18n-pending body {
+    visibility: hidden;
+}
+
 #threejs {
     display: block;
     width: 100%;
@@ -133,6 +138,15 @@ h1 {
 #play-button:focus-visible {
     outline: 2px solid #e2762f;
     outline-offset: 2px;
+}
+
+#play-button:disabled {
+    opacity: 0.55;
+    cursor: progress;
+}
+
+#play-button:disabled:hover {
+    background: #e2762f;
 }
 
 .status {
@@ -311,6 +325,15 @@ kbd {
 .menu-button:focus-visible {
     outline: 2px solid #e2762f;
     outline-offset: 2px;
+}
+
+.menu-button:disabled {
+    opacity: 0.55;
+    cursor: progress;
+}
+
+.menu-button:disabled:hover {
+    background: rgba(255, 255, 255, 0.08);
 }
 
 .menu-actions {

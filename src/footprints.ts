@@ -26,6 +26,24 @@ const PRINT_OPACITY = 0.88;
 const TINT_STRENGTH = 0.5;
 const WHITE = new Color(0xffffff);
 
+// Unit footprint layout, shared by every pooled decal. Each spawn rotates these local X/Z pairs
+// into place and lifts them onto the terrain; no geometry is allocated per print.
+const { x: PRINT_TEMPLATE_X, z: PRINT_TEMPLATE_Z } = buildPrintTemplate();
+
+function buildPrintTemplate(): { x: Float32Array; z: Float32Array } {
+    const template = new PlaneGeometry(PRINT_WIDTH, PRINT_LENGTH, 2, 3);
+    template.rotateX(-Math.PI / 2);
+    const vertices = template.getAttribute('position') as BufferAttribute;
+    const x = new Float32Array(vertices.count);
+    const z = new Float32Array(vertices.count);
+    for (let i = 0; i < vertices.count; i++) {
+        x[i] = vertices.getX(i);
+        z[i] = vertices.getZ(i);
+    }
+    template.dispose();
+    return { x, z };
+}
+
 interface Footprint {
     mesh: Mesh;
     material: MeshBasicMaterial;
@@ -39,6 +57,7 @@ export class Footprints {
     private scene: Scene;
     private texture: Texture;
     private prints: Footprint[] = [];
+    private readonly pool: Footprint[] = [];
 
     constructor(scene: Scene, texture: Texture) {
         this.scene = scene;
@@ -52,24 +71,47 @@ export class Footprints {
         groundColor: Color,
         terrain: Terrain,
     ): void {
-        const geometry = new PlaneGeometry(PRINT_WIDTH, PRINT_LENGTH, 2, 3);
-        geometry.rotateX(-Math.PI / 2);
-        // A tiny outward splay keeps the two feet from looking stamped in parallel.
-        geometry.rotateY(Math.atan2(-direction.x, -direction.z) + footSide * 0.07);
+        if (this.prints.length >= MAX_PRINTS) {
+            this.remove(0);
+        }
 
+        const print = this.pool.pop() ?? this.createPrint();
+        const geometry = print.mesh.geometry;
+
+        // A tiny outward splay keeps the two feet from looking stamped in parallel.
+        const angle = Math.atan2(-direction.x, -direction.z) + footSide * 0.07;
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
         const vertices = geometry.getAttribute('position') as BufferAttribute;
         for (let i = 0; i < vertices.count; i++) {
-            const worldX = position.x + vertices.getX(i);
-            const worldZ = position.z + vertices.getZ(i);
-            vertices.setY(i, terrain.heightAt(worldX, worldZ) + GROUND_OFFSET);
+            const localX = PRINT_TEMPLATE_X[i];
+            const localZ = PRINT_TEMPLATE_Z[i];
+            const x = localX * cos + localZ * sin;
+            const z = -localX * sin + localZ * cos;
+            vertices.setXYZ(
+                i,
+                x,
+                terrain.heightAt(position.x + x, position.z + z) + GROUND_OFFSET,
+                z,
+            );
         }
         vertices.needsUpdate = true;
-        geometry.computeVertexNormals();
         geometry.computeBoundingSphere();
 
+        print.material.color.copy(groundColor).lerp(WHITE, TINT_STRENGTH);
+        print.material.opacity = 0;
+        print.mesh.position.set(position.x, 0, position.z);
+        print.age = 0;
+        this.scene.add(print.mesh);
+        this.prints.push(print);
+    }
+
+    private createPrint(): Footprint {
+        const geometry = new PlaneGeometry(PRINT_WIDTH, PRINT_LENGTH, 2, 3);
+        geometry.rotateX(-Math.PI / 2);
         const material = new MeshBasicMaterial({
             map: this.texture,
-            color: groundColor.clone().lerp(WHITE, TINT_STRENGTH),
+            color: 0xffffff,
             transparent: true,
             opacity: 0,
             depthWrite: false,
@@ -77,16 +119,9 @@ export class Footprints {
             polygonOffsetFactor: -3,
             polygonOffsetUnits: -3,
         });
-
         const mesh = new Mesh(geometry, material);
-        mesh.position.set(position.x, 0, position.z);
         mesh.renderOrder = 3;
-        this.scene.add(mesh);
-
-        this.prints.push({ mesh, material, age: 0 });
-        while (this.prints.length > MAX_PRINTS) {
-            this.remove(0);
-        }
+        return { mesh, material, age: 0 };
     }
 
     update(dt: number): void {
@@ -118,8 +153,7 @@ export class Footprints {
     private remove(index: number): void {
         const print = this.prints[index];
         this.scene.remove(print.mesh);
-        print.mesh.geometry.dispose();
-        print.material.dispose();
+        this.pool.push(print);
         this.prints.splice(index, 1);
     }
 }

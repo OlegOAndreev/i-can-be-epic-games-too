@@ -222,39 +222,60 @@ vec2 surfaceWarp = (macroSample.gb - 0.5) * 16.0;
 vec2 warpedSurfaceUv = vSurfaceUv + surfaceWarp;
 float variantJitter = 0.5 + 0.5 * sin(vSurfaceUv.x * 0.055 + sin(vSurfaceUv.y * 0.047) * 1.7);
 
-float grassField = macroSample.r * 1.4 + variantSample.g * 2.6 + variantJitter * 0.9;
-float sandField = macroSample.g * 1.5 + variantSample.b * 2.8 + variantJitter * 0.7;
-float stoneField = macroSample.b * 1.6 + variantSample.r * 2.5 + variantJitter * 0.6;
+// Skip biome samples whose splat weight cannot contribute visibly. The weights sum to one, so
+// at least one branch always runs; low-weight branches are normalized out at the end.
+vec3 surfaceDetail = vec3(0.0);
+float surfaceWeight = 0.0;
 
-vec3 grassDetail = sampleSurfaceVariant(
-    uGrassMaps,
-    warpedSurfaceUv / ${GRASS_TILE.toFixed(1)},
-    uGrassLayers,
-    grassField
-);
-vec2 sandAltUv = mat2(0.8, -0.6, 0.6, 0.8) * warpedSurfaceUv / 67.0 + vec2(0.41, 0.17);
-vec3 sandDetail = mix(
-    sampleSurfaceVariant(uSandMaps, warpedSurfaceUv / ${SAND_TILE.toFixed(1)}, uSandLayers, sandField),
-    sampleSurfaceVariant(uSandMaps, sandAltUv, uSandLayers, sandField + 0.73),
-    0.3
-);
-vec3 stoneDetail = sampleSurfaceVariant(
-    uStoneMaps,
-    warpedSurfaceUv / ${STONE_TILE.toFixed(1)},
-    uStoneLayers,
-    stoneField
-);
+if (vSplat.x > 0.01) {
+    float grassField = macroSample.r * 1.4 + variantSample.g * 2.6 + variantJitter * 0.9;
+    surfaceDetail += sampleSurfaceVariant(
+        uGrassMaps,
+        warpedSurfaceUv / ${GRASS_TILE.toFixed(1)},
+        uGrassLayers,
+        grassField
+    ) * vSplat.x;
+    surfaceWeight += vSplat.x;
+}
 
-vec3 surfaceDetail =
-    grassDetail * vSplat.x +
-    sandDetail * vSplat.y +
-    stoneDetail * vSplat.z;
-surfaceDetail /= max(vSplat.x + vSplat.y + vSplat.z, 0.0001);
+if (vSplat.y > 0.01) {
+    float sandField = macroSample.g * 1.5 + variantSample.b * 2.8 + variantJitter * 0.7;
+    vec3 sandDetail = sampleSurfaceVariant(
+        uSandMaps,
+        warpedSurfaceUv / ${SAND_TILE.toFixed(1)},
+        uSandLayers,
+        sandField
+    );
+    // The second sand scale only hides repetition; drop it once sand is a thin edge blend.
+    if (vSplat.y > 0.12) {
+        vec2 sandAltUv = mat2(0.8, -0.6, 0.6, 0.8) * warpedSurfaceUv / 67.0 + vec2(0.41, 0.17);
+        sandDetail = mix(
+            sandDetail,
+            sampleSurfaceVariant(uSandMaps, sandAltUv, uSandLayers, sandField + 0.73),
+            0.3
+        );
+    }
+    surfaceDetail += sandDetail * vSplat.y;
+    surfaceWeight += vSplat.y;
+}
+
+if (vSplat.z > 0.01) {
+    float stoneField = macroSample.b * 1.6 + variantSample.r * 2.5 + variantJitter * 0.6;
+    surfaceDetail += sampleSurfaceVariant(
+        uStoneMaps,
+        warpedSurfaceUv / ${STONE_TILE.toFixed(1)},
+        uStoneLayers,
+        stoneField
+    ) * vSplat.z;
+    surfaceWeight += vSplat.z;
+}
+
+surfaceDetail /= max(surfaceWeight, 0.0001);
 surfaceDetail *= 0.7 + macroSample.r * 0.6;
 diffuseColor.rgb *= surfaceDetail * 1.3;`,
             );
     };
-    material.customProgramCacheKey = () => 'terrain-surface-textures-v3';
+    material.customProgramCacheKey = () => 'terrain-surface-textures-v4';
 }
 
 // Water blends two scrolling layers, each picking a different style from the water array based on

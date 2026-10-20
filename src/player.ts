@@ -96,6 +96,7 @@ const WRENCH_CHARGED_TURN = Math.PI * 4;
 const WRENCH_CHARGED_LOWER_START = WRENCH_CHARGED_TURN - Math.PI / 6;
 // Small jagged bolts arc along the whole wrench while it charges, matching the enemy hit bolts.
 const WRENCH_BOLT_REFRESH_SECONDS = 0.075;
+const WRENCH_BOLT_VARIANTS = 3;
 const WRENCH_BOLT_COLOR = 0xffffff;
 // The antenna answers each detector beep with the megastructure crown's pulse: a hollow ring starts
 // with its inner edge on the tip's surface and expands outward. The cycle is stretched to the
@@ -144,6 +145,8 @@ export class Player {
     private wrenchSwingStartYaw = 0;
     private wrenchBoltMesh: Mesh;
     private wrenchBoltMaterial: MeshBasicMaterial;
+    private readonly wrenchBoltGeometries: BufferGeometry[];
+    private wrenchBoltVariant = 0;
     private wrenchBoltTimer = 0;
     private wrenchBoltSize = 1;
     private readonly rightArmRestZ: number;
@@ -238,10 +241,10 @@ export class Player {
             fog: false,
             toneMapped: false,
         });
-        this.wrenchBoltMesh = new Mesh(
+        this.wrenchBoltGeometries = Array.from({ length: WRENCH_BOLT_VARIANTS }, () =>
             buildWrenchBoltGeometry(),
-            this.wrenchBoltMaterial,
         );
+        this.wrenchBoltMesh = new Mesh(this.wrenchBoltGeometries[0], this.wrenchBoltMaterial);
         this.wrenchBoltMesh.visible = false;
         boltGroup.add(this.wrenchBoltMesh);
         this.wrench.add(boltGroup);
@@ -475,11 +478,28 @@ export class Player {
 
     setOpacity(opacity: number): void {
         const clamped = Math.min(1, Math.max(0.1, opacity));
-        if (Math.abs(clamped - this.opacity) < 0.005) {
+        // Keep the body in the opaque pass whenever it is fully visible. Only the camera-proximity
+        // fade needs blending, and toggling the flag back re-sorts the meshes into the opaque set.
+        const transparent = clamped < 1;
+        let changed = Math.abs(clamped - this.opacity) >= 0.005;
+        if (!changed) {
+            for (const material of this.robotMaterials) {
+                if (material.transparent !== transparent) {
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        if (!changed) {
             return;
         }
+
         this.opacity = clamped;
         for (const material of this.robotMaterials) {
+            if (material.transparent !== transparent) {
+                material.transparent = transparent;
+                material.needsUpdate = true;
+            }
             material.opacity = clamped;
         }
     }
@@ -670,8 +690,7 @@ export class Player {
             directionZ /= inputLength;
         }
 
-        const terrainHeight = terrain.heightAt(position.x, position.z);
-        const inWater = terrainHeight < WATER_LEVEL - 0.1;
+        const inWater = position.y < WATER_LEVEL - 0.1;
 
         // Momentum fades while touching the ground, but survives while airborne so chained jumps build speed.
         if (this.grounded) {
@@ -1070,8 +1089,8 @@ export class Player {
         this.wrenchBoltTimer -= dt;
         if (this.wrenchBoltTimer <= 0) {
             this.wrenchBoltTimer = WRENCH_BOLT_REFRESH_SECONDS;
-            this.wrenchBoltMesh.geometry.dispose();
-            this.wrenchBoltMesh.geometry = buildWrenchBoltGeometry();
+            this.wrenchBoltVariant = (this.wrenchBoltVariant + 1) % this.wrenchBoltGeometries.length;
+            this.wrenchBoltMesh.geometry = this.wrenchBoltGeometries[this.wrenchBoltVariant];
             this.wrenchBoltMesh.rotation.y = Math.random() * Math.PI;
             this.wrenchBoltSize = 0.9 + Math.random() * 0.2;
         }

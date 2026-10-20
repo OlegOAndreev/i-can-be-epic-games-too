@@ -114,6 +114,8 @@ function createAudio(): { audio: GameAudio; context: FakeAudioContext; effects: 
         effectsGain: effects as unknown as GainNode,
         structureBuzzBuffer: { duration: 1 } as AudioBuffer,
         shipEngineBuffer: { duration: 4 } as AudioBuffer,
+        fallWindBuffer: { duration: 4 } as AudioBuffer,
+        wrenchSwingBuffer: { duration: 0.36 } as AudioBuffer,
     });
 
     const originalCreateBufferSource = context.createBufferSource.bind(context);
@@ -291,5 +293,49 @@ describe('ship engine', () => {
         // A new flight can start the engine again after the old source was released.
         audio.startShipEngine();
         expect(context.sources).toHaveLength(2);
+    });
+});
+
+describe('fall wind', () => {
+    it('fades one looping source in with the fall speed without stacking sources', () => {
+        const { audio, context, sources } = createAudio();
+
+        audio.setFallWindSpeed(0);
+        expect(context.sources).toHaveLength(0);
+
+        audio.setFallWindSpeed(27);
+        expect(context.sources).toHaveLength(1);
+        expect(sources[0].loop).toBe(true);
+
+        // Updating the speed while the loop runs must reuse the same source.
+        audio.setFallWindSpeed(27);
+        expect(context.sources).toHaveLength(1);
+
+        const windGain = (audio as unknown as { fallWindGain: FakeGainNode }).fallWindGain;
+        const halfGain = windGain.gain.target;
+        expect(halfGain).toBeGreaterThan(0);
+        expect(sources[0].playbackRate.target).toBeCloseTo(1.05, 5);
+
+        audio.setFallWindSpeed(34);
+        expect(windGain.gain.target).toBeCloseTo(halfGain * 2, 5);
+        expect(sources[0].playbackRate.target).toBeCloseTo(1.25, 5);
+
+        // Rising or standing still fades the wind out instead of cutting the loop abruptly.
+        audio.setFallWindSpeed(-4);
+        expect(windGain.gain.target).toBeCloseTo(0.0001, 5);
+    });
+});
+
+describe('wrench swing', () => {
+    it('plays the generated whoosh for regular and charged swings', () => {
+        const { audio, context, sources } = createAudio();
+
+        audio.playWrenchSwing();
+        expect(context.sources).toHaveLength(1);
+        expect(sources[0].loop).toBe(false);
+
+        audio.playWrenchSwing(true);
+        expect(context.sources).toHaveLength(2);
+        expect(sources[1].playbackRate.value).toBeLessThan(sources[0].playbackRate.value);
     });
 });

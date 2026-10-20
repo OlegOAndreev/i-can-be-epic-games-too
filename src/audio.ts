@@ -88,6 +88,10 @@ import structureBuzzWavUrl from '../assets/audio/structure-buzz.wav';
 import structureBuzzOpusUrl from '../assets/audio/structure-buzz.opus?url&no-inline';
 import shipEngineWavUrl from '../assets/audio/ship-engine.wav';
 import shipEngineOpusUrl from '../assets/audio/ship-engine.opus?url&no-inline';
+import fallWindWavUrl from '../assets/audio/fall-wind.wav';
+import fallWindOpusUrl from '../assets/audio/fall-wind.opus?url&no-inline';
+import wrenchSwingWavUrl from '../assets/audio/wrench-swing.wav';
+import wrenchSwingOpusUrl from '../assets/audio/wrench-swing.opus?url&no-inline';
 
 import type { MidiMusicPlayback } from './midi-music';
 import { clamp } from './math-utils';
@@ -96,6 +100,73 @@ import { mulberry32 } from './noise';
 export interface MusicPlaybackState {
     track: number;
     offset: number;
+}
+
+// A cancellable robot voice line. Each handle owns the oscillators and filters it scheduled so a
+// new dialogue line, pause, or dispose can silence the old one immediately.
+export interface RobotBeepHandle {
+    stop(): void;
+}
+
+class RobotBeepPlayback implements RobotBeepHandle {
+    private readonly sources: OscillatorNode[] = [];
+    private readonly nodes: AudioNode[] = [];
+    private readonly onStopped: (playback: RobotBeepPlayback) => void;
+    private stopped = false;
+    private endedSources = 0;
+
+    constructor(onStopped: (playback: RobotBeepPlayback) => void) {
+        this.onStopped = onStopped;
+    }
+
+    addNode(node: AudioNode): void {
+        this.nodes.push(node);
+    }
+
+    add(source: OscillatorNode, nodes: AudioNode[]): void {
+        this.sources.push(source);
+        this.nodes.push(...nodes);
+        source.onended = () => {
+            source.disconnect();
+            this.endedSources++;
+            if (this.endedSources >= this.sources.length) {
+                this.release();
+            }
+        };
+    }
+
+    stop(): void {
+        if (this.stopped) {
+            return;
+        }
+        this.stopped = true;
+        for (const source of this.sources) {
+            try {
+                source.stop();
+            } catch {
+                // The source may already have ended.
+            }
+            source.disconnect();
+        }
+        this.releaseNodes();
+        this.onStopped(this);
+    }
+
+    private release(): void {
+        if (this.stopped) {
+            return;
+        }
+        this.stopped = true;
+        this.releaseNodes();
+        this.onStopped(this);
+    }
+
+    private releaseNodes(): void {
+        for (const node of this.nodes) {
+            node.disconnect();
+        }
+        this.nodes.length = 0;
+    }
 }
 
 // decodeAudioData has no format negotiation, so ask a media element once. Ogg Opus is supported by
@@ -172,6 +243,8 @@ const LIGHTNING_STRIKE_URLS = [
 ];
 const STRUCTURE_BUZZ_URL = effectUrl(structureBuzzWavUrl, structureBuzzOpusUrl);
 const SHIP_ENGINE_URL = effectUrl(shipEngineWavUrl, shipEngineOpusUrl);
+const FALL_WIND_URL = effectUrl(fallWindWavUrl, fallWindOpusUrl);
+const WRENCH_SWING_URL = effectUrl(wrenchSwingWavUrl, wrenchSwingOpusUrl);
 const MUSIC_LEVEL = 0.2;
 // The finale fanfare is a full ensemble instead of a sparse drone, so it sits a little louder.
 const ENDING_MUSIC_LEVEL = 0.24;
@@ -182,10 +255,19 @@ const SHIP_ENGINE_IDLE_RATE = 0.82;
 const SHIP_ENGINE_MAX_RATE = 1.7;
 const SHIP_ENGINE_IDLE_CUTOFF = 520;
 const SHIP_ENGINE_MAX_CUTOFF = 3400;
+// The wind loop fades in only once a fall is fast enough to tear wind trails around the robot and
+// reaches full strength at the speed of a drop from a megastructure tower.
+const FALL_WIND_START_SPEED = 20;
+const FALL_WIND_FULL_SPEED = 34;
+const FALL_WIND_GAIN = 0.3;
+const FALL_WIND_IDLE_RATE = 0.85;
+const FALL_WIND_MAX_RATE = 1.25;
+const FALL_WIND_IDLE_CUTOFF = 420;
+const FALL_WIND_MAX_CUTOFF = 2600;
 // The cinematic charge has to carry the buildup on its own, so it is deliberately louder than the
 // short hum the wrench makes while it charges.
 const STRUCTURE_BUZZ_GAIN = 0.3;
-const WRENCH_BUZZ_GAIN = 0.11;
+const WRENCH_BUZZ_GAIN = 0.22;
 // A drained structure keeps its crown buzzing after the strike. The hum is the same generated
 // sample at a settled pitch, looped and panned from the tower so it fades with distance.
 const STRUCTURE_HUM_GAIN = 0.24;
@@ -243,15 +325,26 @@ export class GameAudio {
     private shipEngineFilter: BiquadFilterNode | null = null;
     private shipEngineThrottle = 0;
     private shipEngineVolume = 1;
+    private fallWindBuffer: AudioBuffer | null = null;
+    private wrenchSwingBuffer: AudioBuffer | null = null;
+    private fallWindSource: AudioBufferSourceNode | null = null;
+    private fallWindGain: GainNode | null = null;
+    private fallWindFilter: BiquadFilterNode | null = null;
     private structureBuzzSource: AudioBufferSourceNode | null = null;
     private structureBuzzGain: GainNode | null = null;
     private structureBuzzKind: 'structure' | 'wrench' | null = null;
     private readonly structureHums = new Map<
         number,
-        { source: AudioBufferSourceNode; fadeIn: GainNode; distance: GainNode }
+        {
+            source: AudioBufferSourceNode;
+            fadeIn: GainNode;
+            distance: GainNode;
+            panner: PannerNode;
+        }
     >();
     // Restored structures request their hum before the audio context and sample are ready.
     private readonly pendingStructureHums = new Map<number, Vector3>();
+    private readonly activeRobotBeeps = new Set<RobotBeepPlayback>();
     private footstepIndex = 0;
     private metalFootstepIndex = 0;
     private insideStructure = false;
@@ -308,6 +401,8 @@ export class GameAudio {
 
     suspend(): void {
         this.paused = true;
+        // Scheduled dialogue beeps would otherwise resume later, out of step with the line.
+        this.stopRobotBeeps();
         if (this.context?.state === 'running') {
             void this.context.suspend();
         }
@@ -355,6 +450,9 @@ export class GameAudio {
     setEnabled(name: 'music' | 'sounds', enabled: boolean): void {
         this.settings[name] = enabled;
         if (name === 'music') {
+            // Stop scheduling notes while muted instead of leaving the MIDI scheduler running.
+            this.musicPlayback?.setMuted(!enabled);
+            this.endingMusicPlayback?.setMuted(!enabled);
             this.setMusicLevel(enabled ? MUSIC_LEVEL : 0);
         } else if (this.context && this.effectsGain) {
             this.effectsGain.gain.setTargetAtTime(enabled ? 1 : 0, this.context.currentTime, 0.05);
@@ -505,19 +603,30 @@ export class GameAudio {
         gain = 0.25,
         seed = 1,
         position: Vector3 | null = null,
-    ): void {
-        if (!this.context || !this.effectsGain || !this.settings.sounds || this.paused) {
-            return;
+    ): RobotBeepHandle | null {
+        if (
+            !this.context ||
+            !this.effectsGain ||
+            !this.settings.sounds ||
+            this.paused ||
+            beepTimes.length === 0
+        ) {
+            return null;
         }
 
         const context = this.context;
         const start = context.currentTime + 0.03;
         const rng = mulberry32(seed);
+        const playback = new RobotBeepPlayback((stopped) => {
+            this.activeRobotBeeps.delete(stopped);
+        });
+        this.activeRobotBeeps.add(playback);
         // One panner carries the whole line. Equal-power panning tracks left/right and distance
         // without HRTF's CPU cost and cross-browser timbre differences.
         const output = position ? this.createPanner(context, position) : this.effectsGain;
         if (output !== this.effectsGain) {
             output.connect(this.effectsGain);
+            playback.addNode(output);
         }
 
         for (let i = 0; i < beepTimes.length; i++) {
@@ -548,9 +657,20 @@ export class GameAudio {
             oscillator.connect(filter);
             filter.connect(envelope);
             envelope.connect(output);
+            playback.add(oscillator, [filter, envelope]);
             oscillator.start(time);
             oscillator.stop(time + beepDuration + 0.01);
         }
+
+        return playback;
+    }
+
+    // Stops every dialogue beep that is still scheduled or sounding.
+    stopRobotBeeps(): void {
+        for (const playback of [...this.activeRobotBeeps]) {
+            playback.stop();
+        }
+        this.activeRobotBeeps.clear();
     }
 
     // A short, high-pitched locator pulse. The caller passes 0 at the edge of the detector range
@@ -589,6 +709,17 @@ export class GameAudio {
         overtone.connect(overtoneGain);
         overtoneGain.connect(envelope);
         envelope.connect(this.effectsGain);
+        let remainingSources = 2;
+        const release = (source: OscillatorNode): void => {
+            source.disconnect();
+            remainingSources--;
+            if (remainingSources === 0) {
+                envelope.disconnect();
+                overtoneGain.disconnect();
+            }
+        };
+        oscillator.onended = () => release(oscillator);
+        overtone.onended = () => release(overtone);
         oscillator.start(start);
         oscillator.stop(start + duration + 0.01);
         overtone.start(start);
@@ -807,6 +938,80 @@ export class GameAudio {
         };
     }
 
+    // The rush of air during a long fall. `fallSpeed` is positive while dropping. The sample is a
+    // seamless loop, and gain, pitch, and filter all follow the speed so the wind only builds when
+    // the robot has actually fallen far enough to matter.
+    setFallWindSpeed(fallSpeed: number): void {
+        if (!this.context) {
+            return;
+        }
+
+        const intensity = clamp(
+            (fallSpeed - FALL_WIND_START_SPEED) / (FALL_WIND_FULL_SPEED - FALL_WIND_START_SPEED),
+            0,
+            1,
+        );
+        const now = this.context.currentTime;
+
+        if (intensity <= 0) {
+            this.fallWindGain?.gain.setTargetAtTime(0.0001, now, 0.12);
+            return;
+        }
+
+        if (!this.effectsGain || !this.fallWindBuffer || this.paused) {
+            return;
+        }
+
+        if (!this.fallWindSource) {
+            const context = this.context;
+            const source = context.createBufferSource();
+            source.buffer = this.fallWindBuffer;
+            source.loop = true;
+            source.loopStart = 0;
+            source.loopEnd = this.fallWindBuffer.duration;
+
+            const filter = context.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.Q.value = 0.7;
+
+            const gain = context.createGain();
+            gain.gain.setValueAtTime(0.0001, now);
+
+            source.connect(filter);
+            filter.connect(gain);
+            gain.connect(this.effectsGain);
+            source.start();
+
+            this.fallWindSource = source;
+            this.fallWindFilter = filter;
+            this.fallWindGain = gain;
+        }
+
+        this.fallWindSource.playbackRate.setTargetAtTime(
+            FALL_WIND_IDLE_RATE + (FALL_WIND_MAX_RATE - FALL_WIND_IDLE_RATE) * intensity,
+            now,
+            0.15,
+        );
+        this.fallWindFilter?.frequency.setTargetAtTime(
+            FALL_WIND_IDLE_CUTOFF +
+                (FALL_WIND_MAX_CUTOFF - FALL_WIND_IDLE_CUTOFF) * intensity,
+            now,
+            0.15,
+        );
+        this.fallWindGain?.gain.setTargetAtTime(FALL_WIND_GAIN * intensity, now, 0.15);
+    }
+
+    // The wrench cutting through empty air on a swing. The sample is generated by
+    // scripts/generate-audio.ts; a charged swing plays it slower and louder so it lands heavier.
+    playWrenchSwing(charged = false): void {
+        this.playBuffer(
+            this.wrenchSwingBuffer,
+            null,
+            charged ? 0.28 : 0.07,
+            (charged ? 0.82 : 0.95) + Math.random() * 0.06,
+        );
+    }
+
     // The last servo of a maintenance unit winding down, pre-rendered with generated variations.
     playPowerDown(position: Vector3 | null = null): void {
         this.playBuffer(
@@ -912,6 +1117,24 @@ export class GameAudio {
         this.startPendingStructureHums();
     }
 
+    // Stops every tower hum. Called when the world is rebuilt so old towers cannot keep droning
+    // underneath the new seed.
+    resetStructureHums(): void {
+        for (const hum of this.structureHums.values()) {
+            try {
+                hum.source.stop();
+            } catch {
+                // The buffer source may already have ended.
+            }
+            hum.source.disconnect();
+            hum.fadeIn.disconnect();
+            hum.distance.disconnect();
+            hum.panner.disconnect();
+        }
+        this.structureHums.clear();
+        this.pendingStructureHums.clear();
+    }
+
     // Updates the hum's audibility from the player's horizontal distance to the structure. Inside
     // 60 m it is full volume; it fades slowly to silence by 100 m and stays silent beyond that.
     setStructureHumDistance(towerIndex: number, distance: number): void {
@@ -974,7 +1197,12 @@ export class GameAudio {
         panner.connect(this.effectsGain);
         source.start();
 
-        this.structureHums.set(towerIndex, { source, fadeIn, distance: distanceGain });
+        this.structureHums.set(towerIndex, {
+            source,
+            fadeIn,
+            distance: distanceGain,
+            panner,
+        });
     }
 
     private createPanner(
@@ -1022,16 +1250,24 @@ export class GameAudio {
         source.connect(channelGain);
         channelGain.connect(panner);
 
+        const nodes: AudioNode[] = [channelGain, panner];
         let output: AudioNode = panner;
         if (muffled) {
             const filter = context.createBiquadFilter();
             filter.type = 'lowpass';
             filter.frequency.value = 650;
             panner.connect(filter);
+            nodes.push(filter);
             output = filter;
         }
 
         output.connect(this.effectsGain!);
+        source.onended = () => {
+            source.disconnect();
+            for (const node of nodes) {
+                node.disconnect();
+            }
+        };
 
         source.start();
     }
@@ -1061,14 +1297,22 @@ export class GameAudio {
         volume.gain.value = gain;
         source.connect(volume);
 
+        const nodes: AudioNode[] = [volume];
         let output: AudioNode = volume;
         if (position) {
             const panner = this.createPanner(context, position);
             volume.connect(panner);
+            nodes.push(panner);
             output = panner;
         }
 
         output.connect(this.effectsGain);
+        source.onended = () => {
+            source.disconnect();
+            for (const node of nodes) {
+                node.disconnect();
+            }
+        };
 
         source.start();
     }
@@ -1128,6 +1372,8 @@ export class GameAudio {
             ...LIGHTNING_STRIKE_URLS,
             STRUCTURE_BUZZ_URL,
             SHIP_ENGINE_URL,
+            FALL_WIND_URL,
+            WRENCH_SWING_URL,
         ];
 
         try {
@@ -1186,6 +1432,10 @@ export class GameAudio {
             this.structureBuzzBuffer = effects[cursor] ?? null;
             cursor++;
             this.shipEngineBuffer = effects[cursor] ?? null;
+            cursor++;
+            this.fallWindBuffer = effects[cursor] ?? null;
+            cursor++;
+            this.wrenchSwingBuffer = effects[cursor] ?? null;
             this.startPendingStructureHums();
         } catch (error) {
             console.warn('Sound effects failed to load.', error);
@@ -1226,6 +1476,7 @@ export class GameAudio {
             gain,
             offset,
         );
+        this.musicPlayback.setMuted(!this.settings.music);
         if (this.endingMusicStarted) {
             this.musicPlayback.stop();
             this.musicPlayback = null;
@@ -1261,6 +1512,7 @@ export class GameAudio {
                 return;
             }
             this.endingMusicPlayback = playback;
+            playback.setMuted(!this.settings.music);
             gain.gain.setTargetAtTime(
                 this.settings.music ? ENDING_MUSIC_LEVEL : 0,
                 context.currentTime + 0.05,

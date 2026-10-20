@@ -2,11 +2,13 @@ import { PerspectiveCamera, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
 import { Terrain, WATER_LEVEL } from './terrain';
+
+const FAST_TERRAIN = { meshes: false, decorations: false } as const;
 import { ThirdPersonCamera } from './third-person-camera';
 
 describe('ThirdPersonCamera', () => {
     it('sits at eye height and looks along yaw and pitch in first person', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
         const controller = new ThirdPersonCamera(camera);
         controller.setFirstPerson(true);
@@ -49,7 +51,7 @@ describe('ThirdPersonCamera', () => {
     });
 
     it('keeps looking up when the camera is clamped to the ground', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
         const controller = new ThirdPersonCamera(camera);
         const spawn = terrain.spawn;
@@ -67,7 +69,7 @@ describe('ThirdPersonCamera', () => {
     });
 
     it('pulls the camera in front of a nearby wall instead of pushing it through', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
         const controller = new ThirdPersonCamera(camera);
         const tower = terrain.megastructures.towers[0];
@@ -88,6 +90,40 @@ describe('ThirdPersonCamera', () => {
         ).toBe(false);
 
         terrain.dispose();
+    });
+
+    it('moves the camera distance continuously while approaching a wall', () => {
+        const wallZ = 5;
+        // The wall is an infinite plane; the camera collision radius is measured against it.
+        const terrain = {
+            walkSurfaceAt: () => -1000,
+            heightAt: () => -1000,
+            intersectsStructure: (_x: number, _y: number, z: number, radius = 0) =>
+                z > wallZ - radius,
+        } as unknown as Terrain;
+
+        const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
+        const controller = new ThirdPersonCamera(camera);
+        controller.pitch = 0;
+
+        let previousDistance = Number.NaN;
+        let maxStep = 0;
+        for (let i = 0; i <= 100; i++) {
+            // Walk 1 m toward the wall in 1 cm increments.
+            const playerZ = i * 0.01;
+            const position = new Vector3(0, 10, playerZ);
+            controller.snap();
+            controller.update(1 / 60, position, terrain);
+
+            if (Number.isFinite(previousDistance)) {
+                maxStep = Math.max(maxStep, Math.abs(controller.cameraDistance - previousDistance));
+            }
+            previousDistance = controller.cameraDistance;
+        }
+
+        // The old 0.75 m marching returned distances quantised to that step, so a 1 cm move could
+        // jump the camera by 0.7 m. The refined distance should track the player smoothly.
+        expect(maxStep).toBeLessThan(0.05);
     });
 
     it('follows the player below the water surface', () => {

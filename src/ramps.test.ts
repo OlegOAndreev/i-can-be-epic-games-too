@@ -6,6 +6,8 @@ import { PLAYER_RADIUS, Player } from './player';
 import type { PlayerSettings } from './player';
 import { Terrain } from './terrain';
 
+const FAST_TERRAIN = { meshes: false, decorations: false } as const;
+
 const SETTINGS: PlayerSettings = {
     moveSpeed: 10.5,
     jumpSpeed: 12,
@@ -43,7 +45,7 @@ function towerRamps(terrain: Terrain, towerIndex: number): Ramp[] {
 
 describe('megastructure ramps', () => {
     it('chains every ramp segment at matching landing heights', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
 
         for (let towerIndex = 0; towerIndex < terrain.megastructures.towers.length; towerIndex++) {
             const tower = terrain.megastructures.towers[towerIndex];
@@ -61,7 +63,7 @@ describe('megastructure ramps', () => {
     });
 
     it('turns each ramp 90 degrees and starts it away from the previous exit', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
 
         for (let towerIndex = 0; towerIndex < terrain.megastructures.towers.length; towerIndex++) {
             const ramps = towerRamps(terrain, towerIndex);
@@ -81,7 +83,7 @@ describe('megastructure ramps', () => {
     });
 
     it('keeps the player from walking through the side of a ramp', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
 
         for (let towerIndex = 0; towerIndex < terrain.megastructures.towers.length; towerIndex++) {
@@ -138,7 +140,7 @@ describe('megastructure ramps', () => {
     });
 
     it('keeps the player between the side rails of a ramp', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
 
         for (let towerIndex = 0; towerIndex < terrain.megastructures.towers.length; towerIndex++) {
@@ -193,7 +195,7 @@ describe('megastructure ramps', () => {
     });
 
     it('steps from every ramp onto the floor above', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
 
         for (let towerIndex = 0; towerIndex < terrain.megastructures.towers.length; towerIndex++) {
@@ -235,7 +237,7 @@ describe('megastructure ramps', () => {
         // under the doorway can sit lower. The robot must be able to step on from anywhere it can
         // reach at the entrance, not just the door's centre line.
         for (const seed of [110, 1]) {
-            const terrain = new Terrain(seed);
+            const terrain = new Terrain(seed, FAST_TERRAIN);
             const player = new Player(terrain, SETTINGS);
 
             for (let towerIndex = 0; towerIndex < terrain.megastructures.towers.length; towerIndex++) {
@@ -290,7 +292,7 @@ describe('megastructure ramps', () => {
     }, 75000);
 
     it('is walkable on every ramp segment', () => {
-        const terrain = new Terrain(1234);
+        const terrain = new Terrain(1234, FAST_TERRAIN);
         const player = new Player(terrain, SETTINGS);
 
         for (let towerIndex = 0; towerIndex < terrain.megastructures.towers.length; towerIndex++) {

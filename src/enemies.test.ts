@@ -16,8 +16,11 @@ import type { Difficulty } from './enemies';
 import type { MegastructureTower, Ramp, StructureBox } from './megastructures';
 import { ENEMY_EYE_COLOR } from './npc-robots';
 import { mulberry32 } from './noise';
+import { PLAYER_RADIUS } from './player';
 import { PlayerHealth } from './player-health';
 import { Terrain } from './terrain';
+
+const FAST_TERRAIN = { meshes: false, decorations: false } as const;
 
 function sequence(values: number[]): () => number {
     let index = 0;
@@ -128,6 +131,7 @@ describe('enemy robots', () => {
         expect(enemies.group.visible).toBe(false);
         expect(enemies.getColliders()).toHaveLength(0);
         expect(enemies.getPlayerFloor(player)).toBeNull();
+        expect(enemies.canPlayerRecover(player)).toBe(true);
         expect(enemies.wrenchStrike(player)).toHaveLength(0);
         expect(enemies.wrenchHit(player)).toBeNull();
 
@@ -146,11 +150,13 @@ describe('enemy robots', () => {
         enemies.setDifficulty('medium');
         expect(enemies.group.visible).toBe(true);
         expect(enemies.getPlayerFloor(player)).not.toBeNull();
+        expect(enemies.canPlayerRecover(player)).toBe(false);
         expect(enemies.wrenchStrike(enemy.position.clone())).toHaveLength(1);
 
         enemies.setDifficulty('peaceful');
         expect(enemies.group.visible).toBe(false);
         expect(enemies.getPlayerFloor(player)).toBeNull();
+        expect(enemies.canPlayerRecover(player)).toBe(true);
         expect(enemies.wrenchStrike(enemy.position.clone())).toHaveLength(0);
 
         enemies.dispose();
@@ -226,6 +232,31 @@ describe('enemy robots', () => {
         const miss = rollLaserAim(origin, target, 1.1, 0.65, 0.5, sequence([0.8, 0.5, 0.5]));
         expect(miss.hit).toBe(false);
         expect(miss.end.distanceTo(target)).toBeGreaterThan(0.65);
+    });
+
+    it('keeps visible misses outside the player body', () => {
+        const origin = new Vector3(0, 2, 0);
+        const target = new Vector3(0, 1, -10);
+        const rng = mulberry32(1234);
+        let hits = 0;
+        let misses = 0;
+
+        for (let shot = 0; shot < 500; shot++) {
+            const aim = rollLaserAim(origin, target, 1.1, PLAYER_RADIUS, 0.3, rng);
+            if (aim.hit) {
+                hits++;
+                expect(aim.end.distanceTo(target)).toBeLessThanOrEqual(PLAYER_RADIUS + 1e-6);
+            } else {
+                misses++;
+                // A visible miss must clear the player's horizontal radius.
+                expect(
+                    Math.hypot(aim.end.x - target.x, aim.end.z - target.z),
+                ).toBeGreaterThanOrEqual(PLAYER_RADIUS + 0.2);
+            }
+        }
+
+        expect(hits).toBeGreaterThan(0);
+        expect(misses).toBeGreaterThan(0);
     });
 
     it('strikes the player in half of all shots', () => {
@@ -740,7 +771,7 @@ describe('enemy robots', () => {
     });
 
     it('stands one or two red-eyed robots on every storey below the crown', () => {
-        const terrain = new Terrain(20260419);
+        const terrain = new Terrain(20260419, FAST_TERRAIN);
         const enemies = new EnemyRobots(terrain, { moveSpeed: 10, jumpSpeed: 7, gravity: 20 });
         expect(enemies.getColliders().length).toBeGreaterThan(0);
         expect(enemies.getColliders().every((collider) => collider.kind === 'enemy')).toBe(true);
@@ -1153,6 +1184,47 @@ describe('player floor state', () => {
         }
 
         expect(enemies.getPlayerFloor(onFloor)!.cleared).toBe(true);
+        enemies.dispose();
+    });
+
+    it('keeps an uncleared storey dangerous above the attack band', () => {
+        const { enemies, enemy, storeyBaseY } = singleEnemyLevel('medium');
+        const onFloor = new Vector3(0, storeyBaseY, 0);
+        const aboveAttackBand = new Vector3(0, storeyBaseY + 4.6, 0);
+
+        // A double jump or the window sill leaves the attack zone but not the storey.
+        expect(enemies.getPlayerFloor(aboveAttackBand)).toBeNull();
+        expect(enemies.canPlayerRecover(onFloor)).toBe(false);
+        expect(enemies.canPlayerRecover(aboveAttackBand)).toBe(false);
+        expect(enemies.canPlayerRecover(new Vector3(30, storeyBaseY, 0))).toBe(true);
+
+        const kind = enemy.name.replace('enemy-', '') as keyof typeof ENEMY_HITS_TO_DEFEAT;
+        const required = ENEMY_HITS_TO_DEFEAT[kind];
+        for (let hit = 0; hit < required; hit++) {
+            expect(enemies.wrenchStrike(enemy.position.clone())).toHaveLength(1);
+            if (hit < required - 1) {
+                enemies.update(HIT_IMMUNITY_SECONDS + 0.02, new Vector3(500, 0, 500));
+            }
+        }
+
+        expect(enemies.canPlayerRecover(aboveAttackBand)).toBe(true);
+        enemies.dispose();
+    });
+
+    it('treats the middle of a ramp as safe inside an uncleared storey', () => {
+        const ramp: Ramp = {
+            minX: 0,
+            maxX: 10,
+            minZ: 4,
+            maxZ: 6,
+            minY: 10,
+            maxY: 24,
+            axis: 'x',
+        };
+        const { enemies, storeyBaseY } = singleEnemyLevel('medium', [ramp]);
+
+        expect(enemies.canPlayerRecover(new Vector3(5, 17, 5))).toBe(true);
+        expect(enemies.canPlayerRecover(new Vector3(0, storeyBaseY, 0))).toBe(false);
         enemies.dispose();
     });
 

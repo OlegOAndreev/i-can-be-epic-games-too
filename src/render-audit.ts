@@ -128,6 +128,18 @@ export class RenderAudit {
             : withTimeout(gpuPromise, 1000).then(finish);
     }
 
+    // A lost context can arrive mid-capture; restore the patched renderer methods and drop the
+    // pending report so the next capture starts from a clean state after restoration.
+    handleContextLost(): void {
+        this.unpatchRenderer();
+        this.armed = false;
+        this.active = false;
+        this.reportPending = false;
+        this.gpuPromise = null;
+        this.passes.clear();
+        this.objects.clear();
+    }
+
     private patchRenderer(): void {
         const renderer = this.renderer;
         this.originalRenderBufferDirect = renderer.renderBufferDirect;

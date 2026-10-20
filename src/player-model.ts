@@ -419,6 +419,8 @@ export function buildPlayerModel(): PlayerModel {
             const materials = Array.isArray(child.material) ? child.material : [child.material];
             for (const material of materials) {
                 if (material instanceof MeshStandardMaterial && !robotMaterials.includes(material)) {
+                    // Player.setOpacity() switches these into the opaque pass as soon as it knows the
+                    // proximity fade is inactive, and back to transparent while fading.
                     material.transparent = true;
                     robotMaterials.push(material);
                 }

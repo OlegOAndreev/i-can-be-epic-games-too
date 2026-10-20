@@ -226,6 +226,7 @@ function createMeteor(): Meteor {
 // closer as the player walks.
 export class NightSky {
     private readonly group = new Group();
+    private readonly stars: Points;
     private readonly starMaterial: ShaderMaterial;
     private readonly meteor = createMeteor();
     private readonly point = new Vector3();
@@ -246,11 +247,26 @@ export class NightSky {
             toneMapped: false,
         });
 
-        const stars = new Points(createStarGeometry(), this.starMaterial);
-        stars.frustumCulled = false;
-        this.group.add(stars);
+        this.stars = new Points(createStarGeometry(), this.starMaterial);
+        this.stars.frustumCulled = false;
+        this.group.add(this.stars);
         this.group.add(this.meteor.line, this.meteor.head);
         parent.add(this.group);
+    }
+
+    // Keeps the star point size matched to the renderer's capped pixel ratio and resolution scale.
+    setPixelRatio(pixelRatio: number): void {
+        this.starMaterial.uniforms.uPixelRatio.value = pixelRatio;
+    }
+
+    dispose(): void {
+        this.group.removeFromParent();
+        this.stars.geometry.dispose();
+        this.starMaterial.dispose();
+        this.meteor.line.geometry.dispose();
+        this.meteor.lineMaterial.dispose();
+        this.meteor.headMaterial.map?.dispose();
+        this.meteor.headMaterial.dispose();
     }
 
     update(dt: number, viewDirection: Vector3): void {

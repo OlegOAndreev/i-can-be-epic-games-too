@@ -13,6 +13,7 @@ import {
 import { EnemyDebris } from './enemy-debris';
 import { getRadialGlowTexture } from './glow';
 import { dampAngle } from './math-utils';
+import { disposeGeometry } from './mesh-optimize';
 import type { MegastructureStorey, MegastructureTower, Ramp } from './megastructures';
 import { mulberry32 } from './noise';
 import { createEnemyRobotModel } from './npc-robots';
@@ -124,7 +125,9 @@ const KNOCKBACK_SECONDS = 0.5;
 const KNOCKBACK_SPEED = 30;
 // Aim error radius at the player. Most shots miss visibly.
 const LASER_SPREAD = 1.1;
-const LASER_HIT_RADIUS = PLAYER_RADIUS + 0.15;
+const LASER_HIT_RADIUS = PLAYER_RADIUS;
+// Misses are pushed at least this far sideways so a visible miss never passes through the body.
+const LASER_MISS_CLEARANCE = PLAYER_RADIUS + 0.25;
 // One roll per floor volley, independent of how many robots are shooting. At most one robot on
 // the floor lands a hit in a given volley.
 export const FLOOR_HIT_CHANCE = 0.3;
@@ -169,7 +172,6 @@ interface Enemy {
     // Sticky: set the first time the player stands in the frontal cone with a clear line of sight.
     hasSeenPlayer: boolean;
     defeated: boolean;
-    shockBurst: ShockBurst | null;
     collider: CylinderCollider;
     wanderTarget: { x: number; z: number } | null;
     wanderTimer: number;
@@ -202,6 +204,7 @@ export interface PlayerFloorState {
     // Bottom of the ramp climbing to this floor, where a destroyed robot is reassembled.
     respawn: { position: Vector3; facing: number } | null;
 }
+
 
 // True while the player is on this storey's floor, the top quarter of the ramp arriving from
 // below, or the bottom quarter of the ramp leaving above. The middle half of every ramp is safe.
@@ -317,10 +320,15 @@ export function rollLaserAim(
     const radius = hit
         ? Math.sqrt(rng()) * hitRadius
         : hitRadius + 0.15 + Math.sqrt(rng()) * Math.max(0, spread - hitRadius - 0.15);
+    let sideOffset = Math.cos(angle) * radius;
+    const verticalOffset = Math.sin(angle) * radius;
+    if (!hit && Math.abs(sideOffset) < LASER_MISS_CLEARANCE) {
+        sideOffset = (sideOffset < 0 ? -1 : 1) * LASER_MISS_CLEARANCE;
+    }
     const end = target
         .clone()
-        .addScaledVector(side, Math.cos(angle) * radius)
-        .addScaledVector(vertical, Math.sin(angle) * radius);
+        .addScaledVector(side, sideOffset)
+        .addScaledVector(vertical, verticalOffset);
     if (!hit) {
         end.addScaledVector(direction, LASER_MISS_OVERSHOOT);
     }
@@ -341,6 +349,11 @@ export class EnemyRobots {
     private readonly enemies: Enemy[] = [];
     private readonly levels: EnemyLevel[] = [];
     private readonly blockerColliders: CylinderCollider[] = [];
+    // Hit bursts are shared between enemies of the same size and rebound to whichever chassis was
+    // struck last, so no hit allocates geometry or retains an effect group per robot.
+    private readonly shockBursts: ShockBurst[] = [];
+    private readonly shockBurstPool = new Map<RobotKind, ShockBurst[]>();
+    private readonly shockBurstCursor = new Map<RobotKind, number>();
     private readonly laserCoreGeometry: CylinderGeometry;
     private readonly laserGlowGeometry: CylinderGeometry;
     private readonly laserCoreMaterial: MeshBasicMaterial;
@@ -348,6 +361,7 @@ export class EnemyRobots {
     private readonly laserFlashMaterial: SpriteMaterial;
     private readonly debris: EnemyDebris;
     private readonly rng: () => number;
+    private readonly debrisRng: () => number;
     private enemiesEnabled: boolean;
     private fireInterval: number;
     private hitPointDelta: number;
@@ -358,11 +372,14 @@ export class EnemyRobots {
         this.terrain = terrain;
         this.playerSettings = playerSettings;
         this.rng = mulberry32(terrain.seed ^ 0x3c6ef372);
+        // Debris is cosmetic; keep it off the AI stream so pool exhaustion cannot change combat
+        // rolls.
+        this.debrisRng = mulberry32(terrain.seed ^ 0x85ebca6b);
         this.enemiesEnabled = DIFFICULTY_SETTINGS[difficulty].enemiesEnabled;
         this.fireInterval = DIFFICULTY_SETTINGS[difficulty].fireInterval;
         this.hitPointDelta = DIFFICULTY_SETTINGS[difficulty].hitPointDelta;
         this.group.visible = this.enemiesEnabled;
-        this.debris = new EnemyDebris(terrain, this.rng);
+        this.debris = new EnemyDebris(terrain, this.debrisRng);
         this.group.add(this.debris.group);
         this.laserCoreGeometry = new CylinderGeometry(LASER_CORE_RADIUS, LASER_CORE_RADIUS, 1, 6);
         this.laserGlowGeometry = new CylinderGeometry(LASER_GLOW_RADIUS, LASER_GLOW_RADIUS, 1, 6);
@@ -400,6 +417,11 @@ export class EnemyRobots {
         for (let towerIndex = 0; towerIndex < towers.length; towerIndex++) {
             this.populateTower(terrain, towers[towerIndex], towerIndex, secondEnemyChance);
         }
+        if (this.enemiesEnabled) {
+            for (const kind of ENEMY_KINDS) {
+                this.ensureShockBurstPool(kind);
+            }
+        }
     }
 
     // Returns how many lasers struck the player this frame.
@@ -410,6 +432,9 @@ export class EnemyRobots {
 
         this.elapsed += dt;
         this.debris.update(dt);
+        for (const burst of this.shockBursts) {
+            burst.update(dt);
+        }
         const ramps = this.terrain.megastructures.ramps ?? [];
         const boxes = this.terrain.megastructures.boxes ?? [];
         let hits = 0;
@@ -425,6 +450,10 @@ export class EnemyRobots {
                 playerPosition,
             );
 
+            // Intended exploit: double-jumping above the 3 m attack band (or standing on a
+            // window sill) drops the floor out of its attack state and resets the volley cooldown.
+            // Staying mobile is deliberately a way to avoid fire; do not "fix" the reset without
+            // revisiting that design decision.
             if (!inLevel) {
                 level.active = false;
                 level.timer = this.fireInterval;
@@ -440,9 +469,12 @@ export class EnemyRobots {
 
             const volley = inLevel && level.active && level.timer <= 0;
             if (volley) {
-                level.timer = this.fireInterval;
+                // Preserve the overshoot past zero. Resetting to the full interval discards up to
+                // one frame per volley, making the fire cadence slower at low frame rates.
+                level.timer += this.fireInterval;
             }
             let fired = false;
+            let firingPosition: Vector3 | null = null;
             // Roll once for the floor, not once per enemy, so a crowded floor is not multiple
             // times as dangerous as a floor with a single robot.
             const floorHit = volley && this.rng() < FLOOR_HIT_CHANCE;
@@ -457,7 +489,6 @@ export class EnemyRobots {
                 }
 
                 enemy.invulnerableRemaining = Math.max(0, enemy.invulnerableRemaining - dt);
-                enemy.shockBurst?.update(dt);
 
                 if (enemy.defeated) {
                     // Only the fading hit effect remains at the wreck site; cull it with the floor.
@@ -552,18 +583,32 @@ export class EnemyRobots {
                 }
                 this.showBeam(enemy, origin, aim.end, aim.hit);
                 fired = true;
+                firingPosition ??= enemy.group.position;
                 if (aim.hit) {
                     floorHitAssigned = true;
                     hits++;
                 }
             }
 
-            if (fired && level.enemies.length > 0) {
-                this.onLaserVolley?.(level.enemies[0].group.position);
+            if (fired && firingPosition) {
+                // Position the volley at the robot that actually fired instead of the floor's first spawn.
+                this.onLaserVolley?.(firingPosition);
             }
         }
 
         return hits;
+    }
+
+    // Hides every short-lived effect that the normal update loop would otherwise expire. The
+    // finale freezes enemy AI, so beams, muzzle/impact flashes, and shock bursts must be cleared
+    // explicitly or they stay on screen for the whole cutscene.
+    clearTransientEffects(): void {
+        for (const enemy of this.enemies) {
+            this.hideBeam(enemy);
+        }
+        for (const burst of this.shockBursts) {
+            burst.group.visible = false;
+        }
     }
 
     // The nearest enemy inside the wrench's spin radius, used for proximity checks and tests.
@@ -680,6 +725,68 @@ export class EnemyRobots {
         return null;
     }
 
+    // True when the player is outside every uncleared combat level. The attack-zone query covers
+    // floors and ramp quarters; the storey query covers sills and the space above the attack band.
+    canPlayerRecover(position: Vector3): boolean {
+        if (!this.enemiesEnabled) {
+            return true;
+        }
+
+        const floor = this.getPlayerFloor(position);
+        if (floor && !floor.cleared) {
+            return false;
+        }
+
+        return !this.isInsideUnclearedStorey(position);
+    }
+
+    private isInsideUnclearedStorey(position: Vector3): boolean {
+        if (this.isOverRamp(position)) {
+            return false;
+        }
+
+        for (const level of this.levels) {
+            const storey = level.storey;
+            if (
+                position.x > storey.minX &&
+                position.x < storey.maxX &&
+                position.z > storey.minZ &&
+                position.z < storey.maxZ &&
+                position.y >= level.floorY - 0.05 &&
+                position.y < storey.topY
+            ) {
+                return !level.enemies.every((enemy) => enemy.defeated);
+            }
+        }
+
+        return false;
+    }
+
+    private isOverRamp(position: Vector3): boolean {
+        for (const ramp of this.terrain.megastructures.ramps ?? []) {
+            if (
+                position.x < ramp.minX ||
+                position.x > ramp.maxX ||
+                position.z < ramp.minZ ||
+                position.z > ramp.maxZ
+            ) {
+                continue;
+            }
+
+            const run = ramp.axis === 'x' ? ramp.maxX - ramp.minX : ramp.maxZ - ramp.minZ;
+            const t =
+                ramp.axis === 'x'
+                    ? (position.x - ramp.minX) / Math.max(run, 0.001)
+                    : (position.z - ramp.minZ) / Math.max(run, 0.001);
+            const rampY = ramp.minY + (ramp.maxY - ramp.minY) * t;
+            if (Math.abs(position.y - rampY) <= 0.3) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     // Live cylinders for the player's collision pass. Defeated robots stop blocking immediately.
     getColliders(): readonly CylinderCollider[] {
         this.blockerColliders.length = 0;
@@ -752,15 +859,55 @@ export class EnemyRobots {
         return hits;
     }
 
-    private showHitEffect(enemy: Enemy): void {
-        let burst = enemy.shockBurst;
-        if (!burst) {
-            burst = new ShockBurst({ radius: Math.max(0.9, enemy.height * 0.5) });
-            burst.group.name = 'enemy-hit-effect';
-            burst.group.position.y = enemy.height * 0.55;
-            enemy.group.add(burst.group);
-            enemy.shockBurst = burst;
+    private ensureShockBurstPool(kind: RobotKind): ShockBurst[] {
+        const existing = this.shockBurstPool.get(kind);
+        if (existing) {
+            return existing;
         }
+
+        const radius = Math.max(0.9, ENEMY_HEIGHT[kind] * 0.5);
+        const pool = Array.from({ length: 2 }, () => {
+            const burst = new ShockBurst({ radius });
+            burst.group.name = 'enemy-hit-effect';
+            this.shockBursts.push(burst);
+            return burst;
+        });
+        this.shockBurstPool.set(kind, pool);
+        this.shockBurstCursor.set(kind, 0);
+        return pool;
+    }
+
+    private acquireShockBurst(enemy: Enemy): ShockBurst {
+        const pool = this.ensureShockBurstPool(enemy.kind);
+        const cursor = this.shockBurstCursor.get(enemy.kind) ?? 0;
+        let burst = pool[cursor % pool.length];
+        // Prefer a finished burst so two quick hits on nearby robots both stay visible. If every
+        // burst is still playing, the oldest is rebound to the newest hit.
+        for (let offset = 0; offset < pool.length; offset++) {
+            const candidate = pool[(cursor + offset) % pool.length];
+            if (!candidate.group.visible) {
+                burst = candidate;
+                break;
+            }
+        }
+        this.shockBurstCursor.set(enemy.kind, (cursor + 1) % pool.length);
+
+        // A chassis only ever shows one burst; retire the previous one before rebinding.
+        for (const other of pool) {
+            if (other !== burst && other.group.parent === enemy.group) {
+                other.group.removeFromParent();
+            }
+        }
+        if (burst.group.parent !== enemy.group) {
+            burst.group.removeFromParent();
+            enemy.group.add(burst.group);
+        }
+        burst.group.position.y = enemy.height * 0.55;
+        return burst;
+    }
+
+    private showHitEffect(enemy: Enemy): void {
+        const burst = this.acquireShockBurst(enemy);
 
         // The effect is parented to the rotated enemy, so bring the world-space knockback direction
         // into that local space before aiming the burst.
@@ -778,7 +925,7 @@ export class EnemyRobots {
         this.group.traverse((child) => {
             if (child instanceof Mesh) {
                 if (child.geometry !== this.laserCoreGeometry && child.geometry !== this.laserGlowGeometry) {
-                    child.geometry.dispose();
+                    disposeGeometry(child.geometry);
                 }
                 const materials = Array.isArray(child.material) ? child.material : [child.material];
                 for (const material of materials) {
@@ -799,6 +946,12 @@ export class EnemyRobots {
         this.laserCoreMaterial.dispose();
         this.laserGlowMaterial.dispose();
         this.laserFlashMaterial.dispose();
+        for (const burst of this.shockBursts) {
+            burst.dispose();
+        }
+        this.shockBursts.length = 0;
+        this.shockBurstPool.clear();
+        this.shockBurstCursor.clear();
         this.enemies.length = 0;
         this.levels.length = 0;
         this.blockerColliders.length = 0;
@@ -1341,7 +1494,6 @@ export class EnemyRobots {
             skipNextVolley: false,
             hasSeenPlayer: false,
             defeated: false,
-            shockBurst: null,
             collider,
             wanderTarget: null,
             wanderTimer: 0,

@@ -1,5 +1,6 @@
-import GUI from 'lil-gui';
 import type { Controller } from 'lil-gui';
+import type GUI from 'lil-gui';
+import type Stats from 'three/addons/libs/stats.module.js';
 import {
     ACESFilmicToneMapping,
     AdditiveBlending,
@@ -25,7 +26,9 @@ import {
     WebGLRenderer,
 } from 'three';
 import { SunLight } from 'three/addons/lights/SunLight.js';
-import Stats from 'three/addons/libs/stats.module.js';
+
+import robotDialogueEn from '../assets/robot-dialogue.en.json';
+import robotDialogueRu from '../assets/robot-dialogue.ru.json';
 
 import {
     CascadedSunLightShadow,
@@ -39,7 +42,7 @@ import {
 } from './static-sun-shadow';
 
 import { GameAudio } from './audio';
-import { getById, setupWindowOnError } from './common-utils';
+import { getById, reportError, setupWindowOnError } from './common-utils';
 import { DamageVignette } from './damage-vignette';
 import { DustPuffs } from './dust';
 import { EnemyDebris } from './enemy-debris';
@@ -51,13 +54,14 @@ import type { Difficulty } from './enemies';
 import { DEFAULT_GRASS_RADIUS, GrassField } from './grass';
 import { GroundDents } from './ground-dent';
 import { initI18n, locale, t } from './i18n';
+import type { Locale } from './i18n';
 import { IdleManager } from './idle-manager';
 import { Input } from './input';
 import { clamp } from './math-utils';
 import { MEGASTRUCTURE_LAYER } from './megastructures';
 import type { MegastructureTower } from './megastructures';
 import { NightSky } from './night-sky';
-import { NpcRobots, loadRobotDialogue } from './npc-robots';
+import { NpcRobots, parseRobotDialogue } from './npc-robots';
 import type { DialogueLine, DialoguePresenter, RobotDialogue } from './npc-robots';
 import {
     HARD_LANDING_SPEED,
@@ -69,8 +73,8 @@ import {
 } from './player';
 import type { PlayerSettings } from './player';
 import { PlayerHealth } from './player-health';
-import { Profiler } from './profiler';
-import { RenderAudit } from './render-audit';
+import type { Profiler } from './profiler';
+import type { RenderAudit } from './render-audit';
 import { RobotAnimals } from './robot-animals';
 import { RobotRemains } from './robot-remains';
 import { applyRobotWorldOnlyShadows, createRobotShadowSun, sunShadowIndex } from './robot-shadow';
@@ -132,8 +136,6 @@ const SEED_STORAGE_KEY = 'walking-game.seed';
 const PLAYER_STORAGE_KEY = 'walking-game.player';
 const SETTINGS_STORAGE_KEY = 'walking-game.settings';
 const PLAYER_SAVE_INTERVAL = 10;
-// A completed ship waits for the player to come back before the final cutscene starts.
-const FINALE_RETURN_RADIUS = 24;
 // Full-screen overlays snap to full colour over 240 ms and fade back over 520 ms. The lightning
 // strike lingers while its whiteout timer runs and then clears over 160 ms.
 const SCREEN_FADE_OUT_SECONDS = 0.24;
@@ -155,7 +157,7 @@ const INSIDE_FOOTSTEP_BOOST = 2;
 // Soft ambient fill added to tower interiors, which see no direct sun.
 const INTERIOR_FILL_INTENSITY = 0.35;
 const INTERIOR_FILL_FADE_SPEED = 4;
-// Each megastructure switch collects a quarter of the energy; the counter stops at zero.
+// Any four of the six towers empty the meter; the remaining towers are optional.
 const ENERGY_PER_SWITCH = 25;
 // The strike is visible for a moment before the screen goes fully white.
 const WHITEOUT_DELAY = 0.25;
@@ -205,7 +207,13 @@ const DEFAULT_SETTINGS = {
     resolutionScale: 0.75,
 };
 
+const PLAYER_SAVE_VERSION = 2;
+// The island and its towers stay well inside these bounds; anything outside is a corrupt save.
+const MIN_SAVED_Y = -64;
+const MAX_SAVED_Y = 512;
+
 interface StoredPlayerState {
+    version?: number;
     seed: number;
     x: number;
     y: number;
@@ -258,32 +266,46 @@ function readStoredPlayerState(): StoredPlayerState | null {
         if (raw === null) {
             return null;
         }
-        const state = JSON.parse(raw) as Partial<StoredPlayerState>;
+        const parsed: unknown = JSON.parse(raw);
+        if (typeof parsed !== 'object' || parsed === null) {
+            return null;
+        }
+        const state = parsed as Partial<StoredPlayerState>;
+        // Without a valid world seed there is nothing meaningful to restore.
         if (
             typeof state.seed !== 'number' ||
             !Number.isInteger(state.seed) ||
             state.seed < 1 ||
-            state.seed > 999999 ||
-            !isFiniteNumber(state.x) ||
-            !isFiniteNumber(state.y) ||
-            !isFiniteNumber(state.z) ||
-            Math.abs(state.x) > WORLD_HALF_SIZE ||
-            Math.abs(state.z) > WORLD_HALF_SIZE ||
-            !isFiniteNumber(state.facing) ||
-            !isFiniteNumber(state.cameraYaw) ||
-            !isFiniteNumber(state.cameraPitch) ||
-            Math.abs(state.cameraPitch) > 1.5
+            state.seed > 999999
         ) {
             return null;
         }
+
+        // Version 1 is the original unversioned shape; its field names already match the current
+        // format, so it only needs the clamping below. A newer save keeps every field it shares.
+        const version = isFiniteNumber(state.version)
+            ? Math.max(1, Math.floor(state.version))
+            : 1;
+        // Salvage each field independently instead of discarding the whole save when one value
+        // is corrupt. Position and camera fields have safe neutral defaults.
+        const x = isFiniteNumber(state.x) ? clamp(state.x, -WORLD_HALF_SIZE, WORLD_HALF_SIZE) : 0;
+        const y = isFiniteNumber(state.y) ? clamp(state.y, MIN_SAVED_Y, MAX_SAVED_Y) : 0;
+        const z = isFiniteNumber(state.z) ? clamp(state.z, -WORLD_HALF_SIZE, WORLD_HALF_SIZE) : 0;
+        const facing = isFiniteNumber(state.facing) ? state.facing : 0;
+        const cameraYaw = isFiniteNumber(state.cameraYaw) ? state.cameraYaw : 0;
+        const cameraPitch = isFiniteNumber(state.cameraPitch)
+            ? clamp(state.cameraPitch, -1.5, 1.5)
+            : 0;
+
         return {
+            version,
             seed: state.seed,
-            x: state.x,
-            y: state.y,
-            z: state.z,
-            facing: state.facing,
-            cameraYaw: state.cameraYaw,
-            cameraPitch: state.cameraPitch,
+            x,
+            y,
+            z,
+            facing,
+            cameraYaw,
+            cameraPitch,
             elapsedSeconds:
                 isFiniteNumber(state.elapsedSeconds) && state.elapsedSeconds >= 0
                     ? state.elapsedSeconds
@@ -318,6 +340,7 @@ function storePlayerState(): void {
     try {
         const music = gameAudio.getMusicState();
         const state: StoredPlayerState = {
+            version: PLAYER_SAVE_VERSION,
             seed: worldSettings.seed,
             x: player.group.position.x,
             y: player.group.position.y,
@@ -477,6 +500,10 @@ function parseSeedText(value: string): number | null {
 }
 
 const initialSearchParams = new URLSearchParams(window.location.search);
+const DEBUG_TOOLS_ENABLED =
+    import.meta.env.DEV ||
+    initialSearchParams.has('debug') ||
+    initialSearchParams.has('profile');
 const sharedPlayerState = readSharedPlayerState(initialSearchParams);
 const storedSettings = readStoredSettings();
 const shadowQuality = storedShadowQuality(storedSettings, DEFAULT_SETTINGS.shadowQuality);
@@ -555,6 +582,10 @@ class View {
         height: 0,
         aspect: 0,
     };
+    private canvasWidth = 0;
+    private canvasHeight = 0;
+    private canvasSizeDirty = false;
+    private resizeObserver: ResizeObserver | null = null;
 
     constructor(canvas: HTMLCanvasElement) {
         this.renderer = new WebGLRenderer({
@@ -572,19 +603,66 @@ class View {
         this.scene.fog = this.fog;
         // Megastructures live on their own layer; the main camera renders that layer too.
         this.camera.layers.enable(MEGASTRUCTURE_LAYER);
+        this.observeCanvasSize(canvas);
+    }
+
+    // The browser reports layout changes instead of the render loop reading clientWidth every
+    // frame, which can force a synchronous layout.
+    private observeCanvasSize(canvas: HTMLCanvasElement): void {
+        this.canvasWidth = canvas.clientWidth;
+        this.canvasHeight = canvas.clientHeight;
+        this.canvasSizeDirty = true;
+        if (typeof ResizeObserver === 'undefined') {
+            return;
+        }
+        this.resizeObserver = new ResizeObserver((entries) => {
+            const entry = entries[0];
+            if (!entry) {
+                return;
+            }
+            const width = Math.round(entry.contentRect.width);
+            const height = Math.round(entry.contentRect.height);
+            if (width !== this.canvasWidth || height !== this.canvasHeight) {
+                this.canvasWidth = width;
+                this.canvasHeight = height;
+                this.canvasSizeDirty = true;
+            }
+        });
+        this.resizeObserver.observe(canvas);
     }
 
     updateCanvasSize(canvas: HTMLCanvasElement): void {
-        if (this.viewSize.width === canvas.clientWidth && this.viewSize.height === canvas.clientHeight) {
+        if (!this.resizeObserver) {
+            const width = canvas.clientWidth;
+            const height = canvas.clientHeight;
+            if (width !== this.canvasWidth || height !== this.canvasHeight) {
+                this.canvasWidth = width;
+                this.canvasHeight = height;
+                this.canvasSizeDirty = true;
+            }
+        }
+        if (!this.canvasSizeDirty) {
             return;
         }
-        this.viewSize.width = canvas.clientWidth;
-        this.viewSize.height = canvas.clientHeight;
-        this.viewSize.aspect = this.viewSize.width / this.viewSize.height;
+
+        const width = this.canvasWidth;
+        const height = this.canvasHeight;
+        // A display:none canvas has no usable aspect; keep the last valid projection instead of
+        // dividing by zero and feeding NaN into the camera matrix.
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+        this.canvasSizeDirty = false;
+        if (this.viewSize.width === width && this.viewSize.height === height) {
+            return;
+        }
+        this.viewSize.width = width;
+        this.viewSize.height = height;
+        this.viewSize.aspect = width / height;
 
         this.camera.aspect = this.viewSize.aspect;
         this.camera.updateProjectionMatrix();
-        this.renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
+        this.renderer.setSize(width, height, false);
     }
 }
 
@@ -609,7 +687,6 @@ const playerRespawnPosition = new Vector3();
 let playerRespawnFacing = 0;
 let robotStory: RobotDialogue = { intro: [], outro: [] };
 let finale: Finale | null = null;
-let finalePending = false;
 let grassField: GrassField;
 let dustPuffs: DustPuffs;
 let footprints: Footprints;
@@ -622,15 +699,15 @@ let shoreFoam: ShoreFoam;
 let cameraController: ThirdPersonCamera;
 let input: Input;
 let idleManager: IdleManager | null = null;
-let gui: GUI;
+let gui: GUI | null = null;
 let firstPersonController: { updateDisplay: () => void } | null = null;
 let seedText: { text: string } | null = null;
 let worldSeedController: Controller | null = null;
 let renderReportController: Controller | null = null;
 let renderReportLabelTimer = 0;
-let statsPanel: Stats;
-let profiler: Profiler;
-let renderAudit: RenderAudit;
+let statsPanel: Stats | null = null;
+let profiler: Profiler | null = null;
+let renderAudit: RenderAudit | null = null;
 let sun: SunLight;
 let robotShadowSun: SunLight;
 let staticSunShadow: StaticSunShadow | null = null;
@@ -693,44 +770,73 @@ let playerSaveTimer = 0;
 // Active play time since the current level began. Paused and hidden periods are excluded.
 let levelElapsedSeconds = 0;
 let hasPlayed = false;
+let worldReady = false;
+let webglContextLost = false;
 
-function robotDialogueUrl(lang: string): string {
-    return `${import.meta.env.BASE_URL}assets/robot-dialogue.${lang}.json`;
-}
+const ROBOT_STORIES: Record<Locale, unknown> = {
+    en: robotDialogueEn,
+    ru: robotDialogueRu,
+};
 
-// A missing or broken translation falls back to English instead of leaving the caretakers silent.
-async function loadRobotStory(): Promise<RobotDialogue> {
-    const story = await loadRobotDialogue(robotDialogueUrl(locale()));
+// Bundled for the same reason as the UI strings: no startup fetch, and a missing or malformed
+// translation is caught by the build instead of leaving the caretakers silent.
+function loadRobotStory(): RobotDialogue {
+    const story = parseRobotDialogue(ROBOT_STORIES[locale()]);
     return story.intro.length > 0 || story.outro.length > 0 || locale() === 'en'
         ? story
-        : loadRobotDialogue(robotDialogueUrl('en'));
+        : parseRobotDialogue(ROBOT_STORIES.en);
 }
 
 async function init(): Promise<void> {
     setupWindowOnError();
+    // Translate before touching the WebGL context; the page stays hidden until this resolves.
     await initI18n();
+    canvas = getById<HTMLCanvasElement>('threejs');
+    view = new View(canvas);
+    // Start the largest download before the synchronous dialogue setup, so the network wait
+    // overlaps with work that does not need the textures.
+    const texturesPromise = preloadSurfaceTextures(view.renderer);
+
     speedFormatter = new Intl.NumberFormat(locale(), {
         minimumFractionDigits: 1,
         maximumFractionDigits: 1,
     });
-    const [story] = await Promise.all([
-        loadRobotStory(),
-        preloadSurfaceTextures(),
-    ]);
-    robotStory = story;
+    overlay = getById<HTMLDivElement>('overlay');
+    statusLine = getById<HTMLParagraphElement>('overlay-status');
+    playButton = getById<HTMLButtonElement>('play-button');
+    const newWorldButton = getById<HTMLButtonElement>('new-world-button');
+    statusLine.textContent = t('overlay.loading', 'Loading world…');
+    robotStory = loadRobotStory();
 
-    canvas = getById<HTMLCanvasElement>('threejs');
-    view = new View(canvas);
+    try {
+        await texturesPromise;
+    } catch (error) {
+        throw new Error('Failed to load the surface textures.', { cause: error });
+    }
+
     underwater = new UnderwaterEffect(view.renderer, view.fog);
     // The scene and the underwater overlay are rendered separately, so count both in the profiler.
     view.renderer.info.autoReset = false;
-    profiler = new Profiler(view.renderer, view.camera);
-    renderAudit = new RenderAudit(view.renderer, view.scene, {
-        available: profiler.gpuTimingAvailable,
-        sample: () => profiler.requestGpuSample(),
-    });
-    if (new URLSearchParams(window.location.search).has('profile')) {
-        profiler.toggle();
+    let GuiClass: typeof GUI | null = null;
+    let StatsClass: typeof Stats | null = null;
+    if (DEBUG_TOOLS_ENABLED) {
+        const [guiModule, statsModule, profilerModule, auditModule] = await Promise.all([
+            import('lil-gui'),
+            import('three/addons/libs/stats.module.js'),
+            import('./profiler'),
+            import('./render-audit'),
+        ]);
+        GuiClass = guiModule.default;
+        StatsClass = statsModule.default;
+        const profilerInstance = new profilerModule.Profiler(view.renderer, view.camera);
+        profiler = profilerInstance;
+        renderAudit = new auditModule.RenderAudit(view.renderer, view.scene, {
+            available: profilerInstance.gpuTimingAvailable,
+            sample: () => profilerInstance.requestGpuSample(),
+        });
+        if (initialSearchParams.has('profile')) {
+            profilerInstance.toggle();
+        }
     }
     gameAudio = new GameAudio();
     gameAudio.setVolume(storedNumber(storedSettings, 'volume', 0, 1, DEFAULT_SETTINGS.volume));
@@ -759,6 +865,10 @@ async function init(): Promise<void> {
     createSky();
     createLights();
 
+    statusLine.textContent = t('overlay.building', 'Building the island…');
+    // Terrain construction is synchronous (roughly 0.5–1 s on desktop). Yield one frame so the
+    // loading message above is painted before the main thread disappears into world generation.
+    await nextFrame();
     terrain = new Terrain(worldSettings.seed);
     terrain.onMineralCollected = (collected) => {
         mineralsCollected = collected;
@@ -854,9 +964,6 @@ async function init(): Promise<void> {
     spaceshipParts.onPartCollected = (_id, remaining) => {
         partsRemaining = remaining;
         updatePartsDisplay();
-        if (remaining === 0) {
-            finalePending = true;
-        }
     };
     spaceshipParts.onDetectorBeep = (closeness, interval) => {
         player.pulseDetectorAntenna(closeness, interval);
@@ -923,15 +1030,26 @@ async function init(): Promise<void> {
         });
     }
 
-    createStatsPanel();
-    gui = createGui();
+    // The URL snapshot is a one-shot handoff: once applied, remove it so a later reload prefers
+    // the local save. Pausing and unloading write the current state back into the URL.
+    if (sharedPlayerState !== null) {
+        try {
+            const url = new URL(window.location.href);
+            url.searchParams.delete('state');
+            window.history.replaceState(window.history.state, '', url);
+        } catch {
+            // History can be unavailable in restricted contexts; the game still runs.
+        }
+    }
+
+    if (GuiClass !== null && StatsClass !== null) {
+        createStatsPanel(StatsClass);
+        gui = createGui(GuiClass);
+    }
     applyDebugSettings();
     setupMenuSettings();
     refreshStaticShadows();
 
-    overlay = getById<HTMLDivElement>('overlay');
-    playButton = getById<HTMLButtonElement>('play-button');
-    statusLine = getById<HTMLParagraphElement>('overlay-status');
     seedValue = getById<HTMLSpanElement>('seed-value');
     seedValue.textContent = String(worldSettings.seed);
     storeSeed(worldSettings.seed);
@@ -981,7 +1099,7 @@ async function init(): Promise<void> {
                 toggleFirstPerson();
             }
         },
-        onToggleProfiler: () => profiler.toggle(),
+        onToggleProfiler: () => profiler?.toggle(),
         onToggleMusic: () => toggleMusic(),
         onToggleMap: () => {
             if (input.pointerLocked && !finale?.active) {
@@ -1005,32 +1123,75 @@ async function init(): Promise<void> {
             resumeWalking();
         }
     });
-    getById<HTMLButtonElement>('new-world-button').addEventListener('click', () => {
+    newWorldButton.addEventListener('click', () => {
         randomizeWorld();
         resumeWalking();
     });
     canvas.addEventListener('click', () => {
+        if (!worldReady) {
+            return;
+        }
         gameAudio.start();
         if (!input.pointerLocked) {
             input.requestPointerLock();
         }
     });
 
+    statusLine.textContent = t('overlay.preparing', 'Preparing graphics…');
+    await warmUpRenderer();
+    worldReady = true;
+    playButton.disabled = false;
+    newWorldButton.disabled = false;
+    statusLine.textContent = t('overlay.status');
+
     idleManager = new IdleManager(document, {
         onStartIdle: () => {
             view.renderer.setAnimationLoop(null);
-            storePlayerState();
+            // Idle can land mid-death or mid-finale; do not persist those transient states.
+            if (playerDestroyedRemaining === 0 && !finaleTransitionActive && !finale) {
+                storePlayerState();
+            }
         },
         onStopIdle: () => view.renderer.setAnimationLoop(animate),
         showDebugIndicator: false,
     });
 
+    canvas.addEventListener('webglcontextlost', (event) => {
+        event.preventDefault();
+        webglContextLost = true;
+        // Rendering any effect pass against a lost context throws; stop the loop immediately.
+        view.renderer.setAnimationLoop(null);
+        profiler?.handleContextLost();
+        renderAudit?.handleContextLost();
+        if (!finale && !finaleTransitionActive && playerDestroyedRemaining === 0) {
+            storePlayerState();
+        }
+        statusLine.textContent = t(
+            'status.contextLost',
+            'Graphics context lost — waiting to restore…',
+        );
+    });
+    canvas.addEventListener('webglcontextrestored', () => {
+        webglContextLost = false;
+        profiler?.handleContextRestored();
+        // Render-target contents do not survive context loss; rebuild the baked shadow atlas.
+        if (staticSunShadow?.isBaked()) {
+            staticSunShadow.bake(view.renderer, view.scene);
+        }
+        view.renderer.setAnimationLoop(animate);
+        statusLine.textContent = input.pointerLocked
+            ? t('status.pointerLocked')
+            : t('status.paused');
+    });
+
     window.addEventListener('pagehide', () => {
         storePlayerState();
+        updateUrlWithPlayerState();
         storeSettings();
     });
     window.addEventListener('beforeunload', () => {
         storePlayerState();
+        updateUrlWithPlayerState();
         storeSettings();
     });
     document.addEventListener('visibilitychange', () => {
@@ -1090,7 +1251,25 @@ const SKY_FRAGMENT_SHADER = /* glsl */ `
     }
 `;
 
-init();
+void init().catch((error: unknown) => {
+    const detail = error instanceof Error ? error.stack ?? error.message : String(error);
+    reportError(`Failed to start the game:\n${detail}`);
+    // The error UI is useless if the pre-i18n hidden state is never cleared.
+    document.documentElement.classList.remove('i18n-pending');
+    const status = document.getElementById('overlay-status');
+    if (status) {
+        status.textContent = t(
+            'status.startupFailed',
+            'The world failed to load. See the error below.',
+        );
+    }
+    for (const id of ['play-button', 'new-world-button']) {
+        const button = document.getElementById(id);
+        if (button instanceof HTMLButtonElement) {
+            button.disabled = true;
+        }
+    }
+});
 
 function createSky(): void {
     const radius = 2600;
@@ -1255,14 +1434,43 @@ function refreshStaticShadows(): void {
     staticSunShadow.bake(view.renderer, view.scene);
 }
 
-function createStatsPanel(): void {
-    statsPanel = new Stats();
+// Compile the PBR, shadow, and overlay programs before the menu unlocks, so the first playable
+// frame does not hitch on shader compilation. A failed warm-up is harmless: rendering falls back
+// to compiling each program on demand.
+async function warmUpRenderer(): Promise<void> {
+    view.updateCanvasSize(canvas);
+    syncPixelRatio();
+    try {
+        await view.renderer.compileAsync(view.scene, view.camera);
+    } catch (error) {
+        console.warn('Shader warm-up failed; shaders will compile on first use.', error);
+    }
+    // A real frame also compiles the shadow-depth and full-screen overlay programs that
+    // compileAsync does not reach.
+    renderFrame();
+}
+
+function nextFrame(): Promise<void> {
+    return new Promise((resolve) => {
+        const timeout = window.setTimeout(resolve, 100);
+        requestAnimationFrame(() => {
+            window.clearTimeout(timeout);
+            resolve();
+        });
+    });
+}
+
+function createStatsPanel(StatsConstructor: typeof Stats): void {
+    statsPanel = new StatsConstructor();
     statsPanel.dom.id = 'stats-panel';
     statsPanel.dom.style.cssText = '';
     document.body.appendChild(statsPanel.dom);
 }
 
 function resumeWalking(): void {
+    if (!worldReady) {
+        return;
+    }
     gameAudio.start();
     input.requestPointerLock();
 }
@@ -1377,15 +1585,15 @@ function resetSettingsToDefaults(): void {
     debugSettings.resolutionScale = DEFAULT_SETTINGS.resolutionScale;
     applyDebugSettings();
 
-    gui.controllersRecursive().forEach((controller) => controller.updateDisplay());
+    gui?.controllersRecursive().forEach((controller) => controller.updateDisplay());
     storeSettings();
     if (shadowQualityChanged || antialiasChanged || shadowModeChanged) {
         window.location.reload();
     }
 }
 
-function createGui(): GUI {
-    const guiInstance = new GUI({ title: t('overlay.title', 'Wanderer') });
+function createGui(GuiConstructor: typeof GUI): GUI {
+    const guiInstance = new GuiConstructor({ title: t('overlay.title', 'Wanderer') });
     guiInstance.open();
     guiInstance.onFinishChange(() => storeSettings());
 
@@ -1496,13 +1704,13 @@ function createGui(): GUI {
         .name(t('gui.resolutionScale', 'Resolution scale'))
         .onChange(applyDebugSettings);
     debugFolder
-        .add({ toggleProfiler: () => profiler.toggle() }, 'toggleProfiler')
+        .add({ toggleProfiler: () => profiler?.toggle() }, 'toggleProfiler')
         .name(t('gui.profiler', 'Profiler (P)'));
     renderReportController = debugFolder
         .add(
             {
                 logRenderReport: () => {
-                    renderAudit.captureNextFrame();
+                    renderAudit?.captureNextFrame();
                     showRenderReportStatus(t('gui.renderReportCapturing', 'Capturing…'));
                 },
             },
@@ -1705,26 +1913,15 @@ const finaleUi: FinaleUi = {
 };
 
 function shouldStartFinale(): boolean {
-    const objectivesComplete =
-        partsRemaining === 0 &&
-        mineralsCollected >= MINERAL_GOAL &&
-        energyRemaining <= 0;
-    if (!terrain || !player || !objectivesComplete) {
+    if (!terrain || !player) {
         return false;
-    }
-    if (playerDestroyedRemaining > 0 || playerRecovering) {
-        return false;
-    }
-    if (finalePending) {
-        return true;
     }
 
-    const site = terrain.spaceshipSite;
     return (
-        Math.hypot(
-            player.group.position.x - site.x,
-            player.group.position.z - site.z,
-        ) <= FINALE_RETURN_RADIUS
+        partsRemaining === 0 &&
+        mineralsCollected >= MINERAL_GOAL &&
+        energyRemaining <= 0 &&
+        playerDestroyedRemaining === 0
     );
 }
 
@@ -1784,7 +1981,12 @@ function startFinale(): void {
         return;
     }
 
-    finalePending = false;
+    // The walking camera may still carry the sprint FOV boost. Clear it before the finale records
+    // its base FOV, or the whole flight inherits a permanently wider lens.
+    speedFovBoost = 0;
+    applyCameraFov();
+    // Enemy updates stop for the duration of the finale, so expire their visual effects here.
+    enemyRobots.clearTransientEffects();
     hideDialogueLine();
     wreckMap.setVisible(false);
     damageVignette.reset();
@@ -1800,6 +2002,9 @@ function startFinale(): void {
         outro: robotStory.outro,
         audio: gameAudio,
         difficulty: gameSettings.difficulty,
+        baseFov: viewSettings.firstPerson
+            ? viewSettings.firstPersonFov
+            : viewSettings.thirdPersonFov,
         ui: finaleUi,
     });
     finale.start();
@@ -1835,10 +2040,10 @@ function updateFinaleFrame(dt: number): void {
     nightSky.update(dt, cameraForward);
 
     updateScreenFades(dt);
-    profiler.beginRender();
+    profiler?.beginRender();
     renderFrame();
-    profiler.endFrame();
-    statsPanel.update();
+    profiler?.endFrame();
+    statsPanel?.update();
 }
 
 function resetFinalePresentation(): void {
@@ -1994,7 +2199,6 @@ function rebuildWorld(seed: number): void {
         finale.dispose();
         finale = null;
     }
-    finalePending = false;
     finaleTransitionActive = false;
     finaleTransitionRemaining = 0;
     finaleHoldRemaining = 0;
@@ -2018,6 +2222,7 @@ function rebuildWorld(seed: number): void {
     whiteoutRemaining = 0;
     lightningFlash.setOpacity(0);
     gameAudio.stopStructureBuzz();
+    gameAudio.resetStructureHums();
     gameAudio.playWalkingMusic();
     energyMeter.classList.add('is-hidden');
     partsMeter.classList.add('is-hidden');
@@ -2086,9 +2291,6 @@ function rebuildWorld(seed: number): void {
     spaceshipParts.onPartCollected = (_id, remaining) => {
         partsRemaining = remaining;
         updatePartsDisplay();
-        if (remaining === 0) {
-            finalePending = true;
-        }
     };
     spaceshipParts.onDetectorBeep = (closeness, interval) => {
         player.pulseDetectorAntenna(closeness, interval);
@@ -2101,6 +2303,8 @@ function rebuildWorld(seed: number): void {
     cameraController.setYaw(player.group.rotation.y - Math.PI);
     cameraController.snap();
     storePlayerState();
+    // The address bar may still describe the previous world; update it before the player pauses.
+    updateUrlWithPlayerState();
     seedValue.textContent = String(seed);
 
     grassField.dispose();
@@ -2127,14 +2331,17 @@ function setShadowQuality(quality: ShadowQuality): void {
 }
 
 function renderFrame(): void {
+    if (webglContextLost) {
+        return;
+    }
     view.renderer.info.reset();
-    renderAudit.beginFrame();
+    renderAudit?.beginFrame();
     underwater.render(view.scene, view.camera);
     damageVignette.render();
     deathFade.render();
     finaleFade.render();
     lightningFlash.render();
-    const report = renderAudit.endFrame();
+    const report = renderAudit?.endFrame();
     if (report) {
         void report.then((text) => copyRenderReport(text));
     }
@@ -2180,6 +2387,20 @@ function updateScreenFades(dt: number): void {
     }
 }
 
+function desiredPixelRatio(): number {
+    return Math.min(window.devicePixelRatio, MAX_PIXEL_RATIO) * debugSettings.resolutionScale;
+}
+
+// Reapplies the capped ratio when the window moves between displays or the resolution setting
+// changes, and keeps the star field's point size in sync with it.
+function syncPixelRatio(): void {
+    const ratio = desiredPixelRatio();
+    if (Math.abs(view.renderer.getPixelRatio() - ratio) > 1e-4) {
+        view.renderer.setPixelRatio(ratio);
+    }
+    nightSky.setPixelRatio(ratio);
+}
+
 function applyDebugSettings(): void {
     terrain.setWaterVisible(debugSettings.showWater);
     shoreFoam.setVisible(debugSettings.showShoreFoam);
@@ -2188,9 +2409,7 @@ function applyDebugSettings(): void {
     lastShowTrees = debugSettings.showTrees;
     terrain.setTreesVisible(debugSettings.showTrees);
     view.renderer.shadowMap.enabled = debugSettings.shadows;
-    view.renderer.setPixelRatio(
-        Math.min(window.devicePixelRatio, MAX_PIXEL_RATIO) * debugSettings.resolutionScale,
-    );
+    syncPixelRatio();
     if (showTreesChanged && staticSunShadow !== null && staticSunShadow.isBaked()) {
         staticSunShadow.bake(view.renderer, view.scene);
     }
@@ -2485,7 +2704,9 @@ function drawSpacedText(
 
 function onPointerLockChange(locked: boolean): void {
     overlay.classList.toggle('is-hidden', locked);
-    gui.domElement.style.display = locked ? 'none' : '';
+    if (gui) {
+        gui.domElement.style.display = locked ? 'none' : '';
+    }
 
     if (locked) {
         gameAudio.resume();
@@ -2512,6 +2733,7 @@ function onPointerLockChange(locked: boolean): void {
 // Both attack types hit everything in front of the robot once when the swing starts: enemies,
 // rocks, the megastructure switch, and robot remains. A charged strike deals triple damage.
 function strikeWithWrench(charged: boolean): void {
+    gameAudio.playWrenchSwing(charged);
     const damage = charged ? WRENCH_CHARGED_DAMAGE : 1;
     if (charged) {
         for (const trail of wrenchTrails) {
@@ -2572,11 +2794,9 @@ function updateFloorHealth(dt: number, laserHits: number): void {
         }
     }
 
-    const floor = enemyRobots.getPlayerFloor(player.group.position);
-    // No floor means no hostile can reach the robot, so it repairs outside the enemy areas too.
-    if (!floor || floor.cleared) {
-        playerRecovering = true;
-    }
+    // Re-evaluate every frame: stepping back onto an uncleared floor must stop recovery, and the
+    // storey check keeps sills and the space above the attack band from counting as safe.
+    playerRecovering = enemyRobots.canPlayerRecover(player.group.position) && laserHits === 0;
     if (playerRecovering) {
         playerHealth.recover(dt);
         if (playerHealth.damageFraction === 0) {
@@ -2664,10 +2884,23 @@ function teleportToRandomMegastructure(): void {
 }
 
 function animate(): void {
-    profiler.beginFrame();
+    if (webglContextLost) {
+        return;
+    }
+    profiler?.beginFrame();
     const dt = Math.min(clock.getDelta(), 0.05);
     view.updateCanvasSize(canvas);
+    syncPixelRatio();
     input.update(dt);
+
+    // Pointer lock is the pause state. Freeze simulation and keep the current frame visible;
+    // IdleManager still handles hidden tabs and long-idle render-loop suspension separately.
+    if (!input.pointerLocked) {
+        profiler?.beginRender();
+        renderFrame();
+        profiler?.endFrame();
+        return;
+    }
 
     // Count only active play: the menu pauses the game and hidden tabs stop the render loop.
     if (input.pointerLocked && !document.hidden) {
@@ -2677,7 +2910,10 @@ function animate(): void {
     playerSaveTimer += dt;
     if (playerSaveTimer >= PLAYER_SAVE_INTERVAL) {
         playerSaveTimer = 0;
-        storePlayerState();
+        // Never overwrite a healthy save with a mid-death or mid-finale snapshot.
+        if (playerDestroyedRemaining === 0 && !finaleTransitionActive && !shouldStartFinale()) {
+            storePlayerState();
+        }
     }
 
     if (!finale && shouldStartFinale()) {
@@ -2817,6 +3053,9 @@ function animate(): void {
         player.verticalSpeed,
         view.camera.position,
     );
+    // verticalSpeed is negative while falling, so flip it into the positive fall speed the wind
+    // loop expects. The loop stays silent until the drop is steep enough to matter.
+    gameAudio.setFallWindSpeed(-player.verticalSpeed);
 
     const speed = player.horizontalSpeed;
     const playerPosition = player.group.position;
@@ -2829,7 +3068,7 @@ function animate(): void {
     gameAudio.setStructureReverb(insideStructure);
     const interiorFillTarget = insideStructure ? INTERIOR_FILL_INTENSITY : 0;
     interiorFillLight.intensity += (interiorFillTarget - interiorFillLight.intensity) *
-        Math.min(1, dt * INTERIOR_FILL_FADE_SPEED);
+        (1 - Math.exp(-INTERIOR_FILL_FADE_SPEED * dt));
 
     if (player.isGrounded && inWater && speed > 1.2 && !isFullySubmerged(playerPosition)) {
         wakeFoamTimer -= dt;
@@ -2844,6 +3083,11 @@ function animate(): void {
     if (player.isGrounded && !player.isKnockedDown && speed > 0.8) {
         // The gait has two steps per 2π cycle, so play a footstep at every half cycle. Driving this
         // from the walk phase keeps the cadence locked to the animation speed.
+        // A respawn resets the walk phase; keep the threshold relative to it instead of waiting
+        // for the old absolute value to be reached again.
+        if (nextFootstepPhase > player.walkAnimationPhase + Math.PI) {
+            nextFootstepPhase = player.walkAnimationPhase + Math.PI;
+        }
         if (player.walkAnimationPhase >= nextFootstepPhase) {
             const onMetal =
                 !inWater &&
@@ -2899,7 +3143,11 @@ function animate(): void {
             }
 
             footstepSide *= -1;
-            nextFootstepPhase = player.walkAnimationPhase + Math.PI;
+            // Advance by half a cycle from the previous threshold, preserving the phase overshoot.
+            nextFootstepPhase += Math.PI;
+            while (nextFootstepPhase <= player.walkAnimationPhase) {
+                nextFootstepPhase += Math.PI;
+            }
         }
     } else {
         nextFootstepPhase = player.walkAnimationPhase + Math.PI;
@@ -2914,8 +3162,8 @@ function animate(): void {
     nightSky.update(dt, cameraForward);
 
     updateScreenFades(dt);
-    profiler.beginRender();
+    profiler?.beginRender();
     renderFrame();
-    profiler.endFrame();
-    statsPanel.update();
+    profiler?.endFrame();
+    statsPanel?.update();
 }

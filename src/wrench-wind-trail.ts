@@ -26,6 +26,7 @@ interface TrailPoint {
 // that follows the wrench's jaw gap. The geometry is rebuilt from the recent path each frame so
 // the wisp bends smoothly with the arm instead of breaking into straight spark segments.
 export class WrenchWindTrail {
+    private readonly scene: Scene;
     private readonly mesh: Mesh;
     private readonly material: MeshBasicMaterial;
     private readonly arc: number;
@@ -34,6 +35,7 @@ export class WrenchWindTrail {
     private fadeRemaining = 0;
 
     constructor(scene: Scene, arc: number) {
+        this.scene = scene;
         this.arc = arc;
         this.material = new MeshBasicMaterial({
             color: 0xffffff,
@@ -140,10 +142,17 @@ export class WrenchWindTrail {
         this.material.opacity = TRAIL_OPACITY;
     }
 
-    private clear(): void {
+    clear(): void {
         this.active = false;
         this.points.length = 0;
         this.mesh.visible = false;
         this.material.opacity = 0;
+    }
+
+    dispose(): void {
+        this.clear();
+        this.scene.remove(this.mesh);
+        this.mesh.geometry.dispose();
+        this.material.dispose();
     }
 }
