@@ -904,6 +904,7 @@ async function init(): Promise<void> {
     shoreFoam = new ShoreFoam(view.scene, terrain);
 
     player = new Player(terrain, playerSettings);
+    player.setDifficulty(gameSettings.difficulty);
     playerHealth = new PlayerHealth(gameSettings.difficulty);
     // A regular swing checks enemies only when it starts; the charged spin checks them again as
     // it finishes, catching robots that drifted into reach during the longer animation.
@@ -912,6 +913,8 @@ async function init(): Promise<void> {
             strikeEnemiesWithWrench(true);
         }
     };
+    // Fires for an immediate charge and for one buffered from a press during the previous swing.
+    player.onWrenchChargeStart = () => gameAudio.playStructureBuzz(WRENCH_CHARGE_SECONDS, 'wrench');
     player.onJump = (doubleJump) => gameAudio.playJump(doubleJump);
     player.onDoubleJump = (position) => {
         if (!isFullySubmerged(position)) {
@@ -956,6 +959,34 @@ async function init(): Promise<void> {
                 dustPuffs.spawn(position, impactSpeed, groundColor);
             }
         }
+    };
+    // A jump accepted just before touchdown still leaves the ground contact behind: the same
+    // footprint, impact-scaled dust, and footstep sound as a landing, plus the jump sound.
+    player.onLandingGrace = (position, impactSpeed) => {
+        const inWater = position.y < WATER_LEVEL - 0.02;
+        const onMetal = !inWater && terrain.isOnStructure(position.x, position.z, position.y);
+        const insideStructure = terrain.megastructures.isInside(position.x, position.y, position.z);
+        const boost = insideStructure ? INSIDE_FOOTSTEP_BOOST : 1;
+        const groundColor = terrain.groundColorAt(position.x, position.z);
+
+        if (onMetal) {
+            gameAudio.playMetalFootstep(0, METAL_FOOTSTEP_GAIN * boost);
+            dustPuffs.spawnMetalLanding(position, groundColor);
+            return;
+        }
+
+        gameAudio.playFootstep(0, (inWater ? WATER_FOOTSTEP_GAIN : WALKING_FOOTSTEP_GAIN) * boost, inWater);
+        if (inWater) {
+            if (!isFullySubmerged(position)) {
+                waterSplash.spawn(position, impactSpeed);
+            }
+            return;
+        }
+
+        footstepPosition.set(position.x, terrain.heightAt(position.x, position.z), position.z);
+        dustPuffs.spawn(footstepPosition, impactSpeed, groundColor);
+        footprints.spawn(footstepPosition, windDirection, footstepSide, groundColor, terrain);
+        footstepSide *= -1;
     };
     view.scene.add(player.group);
     applyRobotWorldOnlyShadows(player.group, robotShadowSun, sunShadowIndex(view.scene, robotShadowSun));
@@ -1552,6 +1583,7 @@ function resetSettingsToDefaults(): void {
     playerSettings.jumpSpeed = DEFAULT_SETTINGS.jumpSpeed;
     cameraController.sensitivity = DEFAULT_SETTINGS.sensitivity;
     gameSettings.difficulty = DEFAULT_SETTINGS.difficulty;
+    player.setDifficulty(DEFAULT_SETTINGS.difficulty);
     enemyRobots.setDifficulty(DEFAULT_SETTINGS.difficulty);
     npcRobots.setDifficulty(DEFAULT_SETTINGS.difficulty);
     playerHealth.setDifficulty(DEFAULT_SETTINGS.difficulty);
@@ -1763,6 +1795,7 @@ function wireDifficultySelect(): void {
             return;
         }
         gameSettings.difficulty = value;
+        player.setDifficulty(value);
         enemyRobots.setDifficulty(value);
         npcRobots.setDifficulty(value);
         playerHealth.setDifficulty(value);
@@ -2628,10 +2661,14 @@ function onPointerLockChange(locked: boolean): void {
 }
 
 // Both attack types hit everything in front of the robot once when the swing starts: enemies,
-// rocks, the megastructure switch, and robot remains. A charged strike deals triple damage.
+// rocks, the megastructure switch, and robot remains. A regular swing only covers the forward arc
+// for the current difficulty, while the charged spin sweeps all the way around and deals triple
+// damage.
 function strikeWithWrench(charged: boolean): void {
     gameAudio.playWrenchSwing(charged);
     const damage = charged ? WRENCH_CHARGED_DAMAGE : 1;
+    const facing = charged ? null : player.group.rotation.y;
+    const arc = player.wrenchStrikeArc;
     if (charged) {
         for (const trail of wrenchTrails) {
             trail.start();
@@ -2639,8 +2676,8 @@ function strikeWithWrench(charged: boolean): void {
     } else {
         wrenchHitTrail.start();
     }
-    strikeEnemiesWithWrench(charged);
-    const rockHits = terrain.wrenchStrike(player.group.position, damage);
+    strikeEnemiesWithWrench(charged, facing);
+    const rockHits = terrain.wrenchStrike(player.group.position, damage, facing, arc);
     if (rockHits.length > 0) {
         const impact = rockHits.reduce((nearest, hit) =>
             hit.position.distanceToSquared(player.group.position) <
@@ -2667,9 +2704,9 @@ function strikeWithWrench(charged: boolean): void {
 // Only the charged strike hits enemies twice: once when it starts and again when the animation
 // ends. The second pass catches robots that moved into reach mid-spin; wrenchStrike skips anyone
 // still immune from the first pass, so a robot in range for both checks only takes one hit.
-function strikeEnemiesWithWrench(charged = false): void {
+function strikeEnemiesWithWrench(charged = false, facing: number | null = null): void {
     const damage = charged ? WRENCH_CHARGED_DAMAGE : 1;
-    const enemyHits = enemyRobots.wrenchStrike(player.group.position, damage);
+    const enemyHits = enemyRobots.wrenchStrike(player.group.position, damage, facing, player.wrenchStrikeArc);
     if (enemyHits.length > 0) {
         gameAudio.playEnemyHit(enemyHits[0].position, enemyHits[0].health, charged ? 2 : 1);
     }
@@ -2850,12 +2887,14 @@ function animate(): void {
     if (input.consumeAttackPress() && !player.isWrenchCharging && player.swingWrench()) {
         strikeWithWrench(false);
     }
-    // The charged attack starts filling on its own from a Shift or right-button press.
-    if (input.consumeChargedAttackPress() && player.beginWrenchCharge()) {
-        gameAudio.playStructureBuzz(WRENCH_CHARGE_SECONDS, 'wrench');
+    // The charged attack starts filling on its own from a Shift or right-button press. A press
+    // during the previous swing is remembered by the player and starts the charge when it ends.
+    if (input.consumeChargedAttackPress()) {
+        player.beginWrenchCharge();
     }
-    // Releasing the mouse (Esc) drops an in-progress charge without striking.
-    if (!input.pointerLocked && player.isWrenchCharging) {
+    // Releasing the mouse (Esc) drops an in-progress charge without striking, including a press
+    // still waiting for the previous swing to finish.
+    if (!input.pointerLocked && (player.isWrenchCharging || player.isWrenchChargeBuffered)) {
         player.cancelWrenchCharge();
         gameAudio.stopStructureBuzz('wrench');
     }

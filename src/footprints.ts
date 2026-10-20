@@ -20,8 +20,8 @@ const FADE_OUT_SECONDS = 1.2;
 const MAX_PRINTS = 64;
 const VERTICES_PER_PRINT = 12;
 const INDICES_PER_PRINT = 36;
-// Prints match the boot's proportions and are a quarter smaller than the visible foot.
-const PRINT_SCALE = 0.75;
+// Prints match the boot's proportions and size.
+const PRINT_SCALE = 1;
 const PRINT_WIDTH = FOOT_WIDTH * PLAYER_VISUAL_SCALE * PRINT_SCALE;
 const PRINT_LENGTH = FOOT_LENGTH * PLAYER_VISUAL_SCALE * PRINT_SCALE;
 const GROUND_OFFSET = 0.04;
@@ -53,7 +53,7 @@ interface Footprint {
     alpha: number;
 }
 
-// Short-lived square prints stamped into bare ground as the robot walks. Every print lives in one
+// Short-lived oval prints stamped into bare ground as the robot walks. Every print lives in one
 // merged mesh: active slots are packed from zero, and colour plus opacity ride in the RGBA vertex
 // colour so the whole system costs one draw call.
 export class Footprints {

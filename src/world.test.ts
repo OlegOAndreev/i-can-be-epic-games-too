@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { GrassField } from './grass';
 import { smoothstep } from './math-utils';
 import { Terrain, WATER_LEVEL, WORLD_HALF_SIZE } from './terrain';
-import { FAST_TERRAIN, stepPlayer, testPlayer, testTerrain, triangleCount } from './test-helpers';
+import { FAST_TERRAIN, PLAYER_SETTINGS, stepPlayer, testPlayer, testTerrain, triangleCount } from './test-helpers';
 import type { CylinderCollider } from './terrain';
 
 describe('Terrain', () => {
@@ -606,5 +606,161 @@ describe('Player', () => {
         }
         expect(landingCount).toBe(2);
         expect(player.landingSpeedBoost).toBeGreaterThan(boostDuringDoubleJump);
+    });
+
+    it('accepts a jump pressed just before landing as a ground jump', () => {
+        const terrain = testTerrain(424242);
+        const player = testPlayer(terrain);
+        const cameraYaw = player.group.rotation.y - Math.PI;
+        let groundJumps = 0;
+        let airJumps = 0;
+        let landings = 0;
+        let graceContacts = 0;
+        let gracePosition: Vector3 | null = null;
+        let graceImpactSpeed = 0;
+        player.onJump = (doubleJump) => {
+            if (doubleJump) {
+                airJumps++;
+            } else {
+                groundJumps++;
+            }
+        };
+        player.onLanded = () => {
+            landings++;
+        };
+        player.onLandingGrace = (position, impactSpeed) => {
+            graceContacts++;
+            gracePosition = position.clone();
+            graceImpactSpeed = impactSpeed;
+        };
+
+        const ground = player.group.position.y;
+        const { x, z } = player.group.position;
+        // Falling at 3 m/s from 0.19 m up reaches the ground almost immediately.
+        player.restoreSnapshot({ x, y: ground + 0.19, z, facing: 0, speed: 0, verticalSpeed: -3, grounded: false });
+        player.update(1 / 60, { forward: 0, right: 0, jump: true }, cameraYaw, terrain);
+
+        expect(groundJumps).toBe(1);
+        expect(airJumps).toBe(0);
+        // The robot launches from the ground rather than passing through the landing and its effects.
+        expect(landings).toBe(0);
+        expect(graceContacts).toBe(1);
+        expect(gracePosition!.y).toBeCloseTo(ground, 5);
+        // The callback carries the speed the robot would have hit at, so the dust scales with it.
+        expect(graceImpactSpeed).toBeCloseTo(Math.sqrt(3 * 3 + 2 * PLAYER_SETTINGS.gravity * 0.19), 5);
+        expect(player.isGrounded).toBe(false);
+        expect(player.verticalSpeed).toBeGreaterThan(0);
+        expect(player.group.position.y - ground).toBeLessThan(0.25);
+        // The forgiven landing still awards the forward boost that chained jumps build on.
+        expect(player.landingSpeedBoost).toBeGreaterThan(0);
+
+        // Starting from the ground refills the air jump, so a second press is a double jump.
+        player.update(1 / 60, { forward: 0, right: 0, jump: true }, cameraYaw, terrain);
+        expect(airJumps).toBe(1);
+    });
+
+    it('only forgives the jump while the robot is falling', () => {
+        const terrain = testTerrain(424242);
+        const player = testPlayer(terrain);
+        const cameraYaw = player.group.rotation.y - Math.PI;
+        let groundJumps = 0;
+        let airJumps = 0;
+        player.onJump = (doubleJump) => {
+            if (doubleJump) {
+                airJumps++;
+            } else {
+                groundJumps++;
+            }
+        };
+
+        const ground = player.group.position.y;
+        const { x, z } = player.group.position;
+        // Rising a hand's width above the ground: the press is an air jump, not a ground jump.
+        player.restoreSnapshot({ x, y: ground + 0.1, z, facing: 0, speed: 0, verticalSpeed: 3, grounded: false });
+        player.update(1 / 60, { forward: 0, right: 0, jump: true }, cameraYaw, terrain);
+
+        expect(groundJumps).toBe(0);
+        expect(airJumps).toBe(1);
+    });
+
+    it('scales the landing grace with difficulty', () => {
+        const jumpDuringFall = (difficulty: 'easy' | 'medium', height: number, verticalSpeed: number): boolean => {
+            const terrain = testTerrain(424242);
+            const player = testPlayer(terrain);
+            player.setDifficulty(difficulty);
+            const cameraYaw = player.group.rotation.y - Math.PI;
+            let groundJumps = 0;
+            player.onJump = (doubleJump) => {
+                if (!doubleJump) {
+                    groundJumps++;
+                }
+            };
+
+            const ground = player.group.position.y;
+            const { x, z } = player.group.position;
+            player.restoreSnapshot({
+                x,
+                y: ground + height,
+                z,
+                facing: 0,
+                speed: 0,
+                verticalSpeed,
+                grounded: false,
+            });
+            player.update(1 / 60, { forward: 0, right: 0, jump: true }, cameraYaw, terrain);
+
+            player.group.removeFromParent();
+            return groundJumps === 1;
+        };
+
+        // 2.5 m at 5 m/s down reaches the ground in ~0.29 s: inside easy's 0.4 s window,
+        // outside medium's 0.2 s.
+        expect(jumpDuringFall('easy', 2.5, -5)).toBe(true);
+        expect(jumpDuringFall('medium', 2.5, -5)).toBe(false);
+        // A fall that reaches the ground in ~0.15 s is forgiven even on medium.
+        expect(jumpDuringFall('medium', 0.6, -2)).toBe(true);
+    });
+
+    it('stacks the landing boost when chained jumps all use the landing grace', () => {
+        const terrain = testTerrain(424242);
+        const player = testPlayer(terrain);
+        const cameraYaw = player.group.rotation.y - Math.PI;
+        const gravity = PLAYER_SETTINGS.gravity;
+
+        const timeToGround = (): number => {
+            const ground = terrain.walkSurfaceAt(
+                player.group.position.x,
+                player.group.position.z,
+                player.group.position.y,
+            );
+            const height = player.group.position.y - ground;
+            const velocity = player.verticalSpeed;
+            if (velocity >= 0 || height < 0) {
+                return Number.POSITIVE_INFINITY;
+            }
+            return (velocity + Math.sqrt(velocity * velocity + 2 * gravity * height)) / gravity;
+        };
+
+        let graceJumps = 0;
+        player.onLandingGrace = () => {
+            graceJumps++;
+        };
+
+        const boosts: number[] = [];
+        let previousGraceJumps = 0;
+        for (let frame = 0; frame < 900 && boosts.length < 4; frame++) {
+            // Jump from the ground, then press again whenever the fall enters the grace window.
+            const jump = player.isGrounded || timeToGround() <= 0.19;
+            player.update(1 / 60, { forward: 0, right: 0, jump }, cameraYaw, terrain);
+            if (graceJumps > previousGraceJumps) {
+                previousGraceJumps = graceJumps;
+                boosts.push(player.landingSpeedBoost);
+            }
+        }
+
+        expect(boosts).toHaveLength(4);
+        for (let index = 1; index < boosts.length; index++) {
+            expect(boosts[index]).toBeGreaterThan(boosts[index - 1]);
+        }
     });
 });

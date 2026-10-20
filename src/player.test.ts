@@ -90,6 +90,85 @@ describe('wrench attack', () => {
         expect(player.releaseWrench()).toBe(true);
     });
 
+    it('starts a charged attack pressed during a swing as soon as the swing ends', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        player.setWrenchEquipped(true);
+        let chargeStarts = 0;
+        player.onWrenchChargeStart = () => {
+            chargeStarts++;
+        };
+
+        player.swingWrench();
+        player.update(0.22, NO_INPUT, 0, terrain);
+        expect(player.isWrenchSwinging).toBe(true);
+        // 0.105 s of the swing remains, inside the medium difficulty's 0.2 s buffer.
+        expect(player.beginWrenchCharge()).toBe(false);
+        expect(player.isWrenchChargeBuffered).toBe(true);
+        expect(player.isWrenchCharging).toBe(false);
+
+        player.update(0.12, NO_INPUT, 0, terrain);
+        expect(player.isWrenchSwinging).toBe(false);
+        expect(player.isWrenchCharging).toBe(true);
+        expect(chargeStarts).toBe(1);
+    });
+
+    it('drops a charged attack press that is too early for the difficulty window', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        player.setWrenchEquipped(true);
+        let chargeStarts = 0;
+        player.onWrenchChargeStart = () => {
+            chargeStarts++;
+        };
+
+        player.swingWrench();
+        player.update(0.1, NO_INPUT, 0, terrain);
+        // 0.225 s of the swing remains, beyond the medium difficulty's 0.2 s buffer.
+        expect(player.beginWrenchCharge()).toBe(false);
+        player.update(0.3, NO_INPUT, 0, terrain);
+
+        expect(player.isWrenchSwinging).toBe(false);
+        expect(player.isWrenchCharging).toBe(false);
+        expect(chargeStarts).toBe(0);
+    });
+
+    it('gives easier difficulties a longer charged attack buffer', () => {
+        const chargesAfterEarlyPress = (difficulty: 'easy' | 'medium'): boolean => {
+            const terrain = testTerrain();
+            const player = testPlayer(terrain);
+            player.setDifficulty(difficulty);
+            player.setWrenchEquipped(true);
+
+            player.swingWrench();
+            player.update(0.1, NO_INPUT, 0, terrain);
+            player.beginWrenchCharge();
+            player.update(0.25, NO_INPUT, 0, terrain);
+
+            const charging = player.isWrenchCharging;
+            player.group.removeFromParent();
+            return charging;
+        };
+
+        // 0.225 s of the swing remains: within easy's 0.4 s buffer, outside medium's 0.2 s.
+        expect(chargesAfterEarlyPress('easy')).toBe(true);
+        expect(chargesAfterEarlyPress('medium')).toBe(false);
+    });
+
+    it('widens the regular strike arc on easier difficulties', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+
+        player.setDifficulty('easy');
+        expect(player.wrenchStrikeArc).toBeCloseTo((Math.PI * 4) / 3);
+        player.setDifficulty('peaceful');
+        expect(player.wrenchStrikeArc).toBeCloseTo((Math.PI * 4) / 3);
+        player.setDifficulty('medium');
+        expect(player.wrenchStrikeArc).toBeCloseTo(Math.PI);
+        player.setDifficulty('hard');
+        expect(player.wrenchStrikeArc).toBeCloseTo(Math.PI);
+    });
+
     it('keeps white electric bolts arcing around a charged wrench', () => {
         const terrain = testTerrain();
         const player = testPlayer(terrain);

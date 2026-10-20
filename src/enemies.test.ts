@@ -993,7 +993,7 @@ describe('enemy robots', () => {
         far.enemies.dispose();
     });
 
-    it('hits a nearby enemy from any side, using distance only', () => {
+    it('hits a nearby enemy from any side when no facing is given, as in the charged spin', () => {
         const directions: Array<[number, number]> = [
             [1, 0],
             [-1, 0],
@@ -1001,7 +1001,7 @@ describe('enemy robots', () => {
             [0, -1],
         ];
 
-        // The strike takes no facing input, so the same nearby distance must connect whether the
+        // The charged spin passes no facing, so the same nearby distance must connect whether the
         // robot is ahead, behind, or to either side of the player.
         for (const [dx, dz] of directions) {
             const { enemies, enemy, storeyBaseY } = singleEnemyLevel();
@@ -1016,6 +1016,28 @@ describe('enemy robots', () => {
         const beyondReach = new Vector3(enemy.position.x + 5.5, storeyBaseY, enemy.position.z);
         expect(enemies.wrenchStrike(beyondReach)).toHaveLength(0);
         enemies.dispose();
+    });
+
+    it('limits a regular swing to the configured arc ahead', () => {
+        const hitsAtAngle = (degrees: number, arc: number): number => {
+            const { enemies, enemy } = singleEnemyLevel();
+            const angle = (degrees * Math.PI) / 180;
+            // Facing 0 (+Z), the robot sits at this angle from the player's facing, four metres out.
+            const player = enemy.position.clone();
+            player.x -= Math.sin(angle) * 4;
+            player.z -= Math.cos(angle) * 4;
+            const hits = enemies.wrenchStrike(player, 1, 0, arc).length;
+            enemies.dispose();
+            return hits;
+        };
+
+        const wideArc = (Math.PI * 4) / 3;
+        expect(hitsAtAngle(0, wideArc)).toBe(1);
+        // 100 degrees off the facing is inside easy's 240-degree arc but outside medium's 180.
+        expect(hitsAtAngle(100, wideArc)).toBe(1);
+        expect(hitsAtAngle(100, Math.PI)).toBe(0);
+        // A robot directly behind stays out of even the widest arc.
+        expect(hitsAtAngle(180, wideArc)).toBe(0);
     });
 
     it('knocks a struck enemy away from the player', () => {

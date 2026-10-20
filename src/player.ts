@@ -12,6 +12,7 @@ import {
 import type { Material } from 'three';
 
 import { buildElectricBolts } from './electric-bolts';
+import type { Difficulty } from './enemies';
 import { GLOW_RING_TEXTURE_INNER_RADIUS } from './glow';
 import { clamp, dampAngle, smoothstep } from './math-utils';
 import {
@@ -55,6 +56,32 @@ export interface PlayerSnapshot {
 const MAX_WALKABLE_RISE = 1.5;
 // One extra jump is available while airborne. It is refilled whenever the player is grounded.
 const MAX_AIR_JUMPS = 1;
+// Pressing the charged attack while a swing is still playing is remembered for a moment, so the
+// charge starts the instant the swing ends instead of the press being lost. Easier difficulties
+// forgive more early input.
+const CHARGED_ATTACK_BUFFER_SECONDS: Record<Difficulty, number> = {
+    peaceful: 0.4,
+    easy: 0.4,
+    medium: 0.2,
+    hard: 0.2,
+};
+// A regular wrench swing covers this forward arc, in radians. Easier difficulties widen it so
+// nearby robots and boulders behind the robot stay easier to catch. The charged spin ignores it and
+// always sweeps the full circle.
+const WRENCH_STRIKE_ARC: Record<Difficulty, number> = {
+    peaceful: (Math.PI * 4) / 3,
+    easy: (Math.PI * 4) / 3,
+    medium: Math.PI,
+    hard: Math.PI,
+};
+// A jump pressed while falling this close (in seconds) to touchdown counts as a ground jump, so a
+// press that lands a frame before touchdown still launches the robot instead of being eaten.
+const JUMP_LANDING_GRACE_SECONDS: Record<Difficulty, number> = {
+    peaceful: 0.4,
+    easy: 0.4,
+    medium: 0.2,
+    hard: 0.2,
+};
 export const PLAYER_RADIUS = 0.5;
 export const PLAYER_HEIGHT = 2.0;
 // `position` is the robot's feet. Once the whole body is below the water line, surface splashes and
@@ -129,6 +156,13 @@ export class Player {
     // Fires when a wrench swing plays to completion (not when it is interrupted), with whether
     // the strike was charged.
     onWrenchSwingEnd: ((charged: boolean) => void) | null = null;
+    // Fires whenever a charge begins, including one remembered from a press that arrived while
+    // the previous swing was still playing.
+    onWrenchChargeStart: (() => void) | null = null;
+    // Fires when a jump press is accepted just before touchdown, with the ground contact point
+    // and the speed the robot would have hit at. Main uses it to leave the same footprint, dust,
+    // and sound as a normal landing.
+    onLandingGrace: ((position: Vector3, impactSpeed: number) => void) | null = null;
 
     private visual: Group;
     private upperBody: Group;
@@ -141,6 +175,8 @@ export class Player {
     private wrenchJawCenter: Group;
     private wrenchPop = 0;
     private wrenchAttackElapsed = -1;
+    private wrenchChargeBufferRemaining = 0;
+    private difficulty: Difficulty = 'medium';
     private wrenchCharging = false;
     private wrenchChargeElapsed = 0;
     private wrenchSwingCharged = false;
@@ -294,8 +330,18 @@ export class Player {
         return this.wrenchChargeElapsed >= WRENCH_CHARGE_SECONDS;
     }
 
+    // Forward arc covered by a regular wrench swing, in radians.
+    get wrenchStrikeArc(): number {
+        return WRENCH_STRIKE_ARC[this.difficulty];
+    }
+
     get isWrenchCharging(): boolean {
         return this.wrenchCharging;
+    }
+
+    // True while an early charged attack press is waiting for the current swing to end.
+    get isWrenchChargeBuffered(): boolean {
+        return this.wrenchChargeBufferRemaining > 0;
     }
 
     // True while the current swing is the charged release.
@@ -389,20 +435,27 @@ export class Player {
         );
     }
 
-    // Starts charging the wrench from the charged attack input.
+    // Sets the difficulty that tunes the input leniency. Easier settings accept early presses for
+    // longer and let a jump pressed shortly before touchdown count as a ground jump.
+    setDifficulty(difficulty: Difficulty): void {
+        this.difficulty = difficulty;
+    }
+
+    // Starts charging the wrench from the charged attack input. A press that arrives while a swing
+    // is still playing is remembered for the difficulty's short buffer window and starts the
+    // charge as soon as that swing ends.
     beginWrenchCharge(): boolean {
-        if (
-            this.destroyed ||
-            !this.wrench.visible ||
-            this.knockdownActive ||
-            this.wrenchAttackElapsed >= 0 ||
-            this.wrenchCharging
-        ) {
+        if (this.destroyed || !this.wrench.visible || this.knockdownActive || this.wrenchCharging) {
+            return false;
+        }
+        if (this.wrenchAttackElapsed >= 0) {
+            this.wrenchChargeBufferRemaining = CHARGED_ATTACK_BUFFER_SECONDS[this.difficulty];
             return false;
         }
         this.wrenchCharging = true;
         this.wrenchChargeElapsed = 0;
         this.wrenchBoltTimer = 0;
+        this.onWrenchChargeStart?.();
         return true;
     }
 
@@ -424,6 +477,7 @@ export class Player {
         this.wrenchCharging = false;
         this.wrenchChargeElapsed = 0;
         this.wrenchSwingCharged = false;
+        this.wrenchChargeBufferRemaining = 0;
     }
 
     // Releases a filled charge as a swing. Returns whether the strike was charged, or null when
@@ -464,6 +518,7 @@ export class Player {
         this.wrenchCharging = false;
         this.wrenchChargeElapsed = 0;
         this.wrenchSwingCharged = false;
+        this.wrenchChargeBufferRemaining = 0;
         this.wrenchBoltMesh.visible = false;
         this.rightArm.rotation.x = 0;
         this.rightArm.rotation.z = this.rightArmRestZ;
@@ -658,6 +713,9 @@ export class Player {
         if (this.destroyed) {
             return;
         }
+        if (this.wrenchChargeBufferRemaining > 0) {
+            this.wrenchChargeBufferRemaining = Math.max(0, this.wrenchChargeBufferRemaining - dt);
+        }
         const position = this.group.position;
 
         // A hard landing briefly takes control away while the robot picks itself up. The timer keeps
@@ -763,14 +821,30 @@ export class Player {
             }
         }
 
+        // A press just before touchdown counts as a ground jump. "Before" is measured in time to
+        // impact under the current fall speed, not in metres, so a fast fall is forgiven from
+        // further up. The feet are snapped to the ground first so the takeoff reads exactly like
+        // one started while standing: a normal footstep and jump sound, and no double-jump effects.
+        const landingPrediction = this.predictLanding(ground);
+        const landingGrace = !this.grounded && landingPrediction.time <= JUMP_LANDING_GRACE_SECONDS[this.difficulty];
+
         // The ground jump leaves one air jump available. A second press while airborne consumes it,
         // without touching the landing boost so chained-jump speed carries through the double jump.
         if (!knockedDown && input.jump) {
-            if (this.grounded) {
-                this.verticalVelocity = this.settings.jumpSpeed;
-                this.grounded = false;
-                this.leftArmForward = !this.leftArmForward;
-                this.onJump?.(false);
+            if (this.grounded || landingGrace) {
+                if (landingGrace) {
+                    position.y = ground;
+                    // The robot would have landed a moment later, so award the same forward shove
+                    // and stacked speed bonus a normal landing gives. This keeps chained jumps
+                    // accelerating even when every press is forgiven just before touchdown.
+                    const hardLanding =
+                        landingPrediction.impactSpeed >= HARD_LANDING_SPEED && position.y >= WATER_LEVEL - 0.05;
+                    if (landingPrediction.impactSpeed > LANDING_EFFECT_THRESHOLD && !hardLanding) {
+                        this.applyLandingBoost();
+                    }
+                    this.onLandingGrace?.(position, landingPrediction.impactSpeed);
+                }
+                this.jumpFromGround();
             } else if (this.airJumpsRemaining > 0) {
                 this.airJumpsRemaining--;
                 this.verticalVelocity = this.settings.jumpSpeed;
@@ -811,19 +885,7 @@ export class Player {
                         this.velocity.x *= 0.25;
                         this.velocity.z *= 0.25;
                     } else {
-                        // Each qualifying landing adds a forward impulse and stacks a speed bonus.
-                        this.landingBoost = Math.min(MAX_LANDING_BOOST, this.landingBoost + LANDING_BOOST_GAIN);
-
-                        let forwardX = Math.sin(this.group.rotation.y);
-                        let forwardZ = Math.cos(this.group.rotation.y);
-                        const landingSpeed = Math.hypot(this.velocity.x, this.velocity.z);
-                        if (landingSpeed > 0.5) {
-                            forwardX = this.velocity.x / landingSpeed;
-                            forwardZ = this.velocity.z / landingSpeed;
-                        }
-
-                        this.velocity.x += forwardX * LANDING_BOOST_IMPULSE;
-                        this.velocity.z += forwardZ * LANDING_BOOST_IMPULSE;
+                        this.applyLandingBoost();
                     }
 
                     this.onLanded?.(position, impactSpeed);
@@ -838,6 +900,50 @@ export class Player {
         }
 
         this.animate(dt, horizontalSpeed);
+    }
+
+    private jumpFromGround(): void {
+        // Starting from the ground always refills the air jump, including when the press was
+        // accepted as a landing grace shortly before touchdown.
+        this.airJumpsRemaining = MAX_AIR_JUMPS;
+        this.verticalVelocity = this.settings.jumpSpeed;
+        this.grounded = false;
+        this.leftArmForward = !this.leftArmForward;
+        this.onJump?.(false);
+    }
+
+    // Each qualifying landing adds a forward impulse and stacks a speed bonus, so chained jumps
+    // build momentum. The landing grace uses it too when it substitutes for an actual touchdown.
+    private applyLandingBoost(): void {
+        this.landingBoost = Math.min(MAX_LANDING_BOOST, this.landingBoost + LANDING_BOOST_GAIN);
+
+        let forwardX = Math.sin(this.group.rotation.y);
+        let forwardZ = Math.cos(this.group.rotation.y);
+        const landingSpeed = Math.hypot(this.velocity.x, this.velocity.z);
+        if (landingSpeed > 0.5) {
+            forwardX = this.velocity.x / landingSpeed;
+            forwardZ = this.velocity.z / landingSpeed;
+        }
+
+        this.velocity.x += forwardX * LANDING_BOOST_IMPULSE;
+        this.velocity.z += forwardZ * LANDING_BOOST_IMPULSE;
+    }
+
+    // Ballistic time and impact speed for reaching the given ground height. The time is Infinity
+    // when the robot is rising or already at/below the ground, so those frames cannot trigger the
+    // landing grace.
+    private predictLanding(ground: number): { time: number; impactSpeed: number } {
+        const height = this.group.position.y - ground;
+        const velocity = this.verticalVelocity;
+        const gravity = this.settings.gravity;
+        if (velocity >= 0 || height < 0 || gravity <= 0) {
+            return { time: Number.POSITIVE_INFINITY, impactSpeed: 0 };
+        }
+        const speedSquared = velocity * velocity + 2 * gravity * height;
+        return {
+            time: (velocity + Math.sqrt(speedSquared)) / gravity,
+            impactSpeed: Math.sqrt(speedSquared),
+        };
     }
 
     private animate(dt: number, horizontalSpeed: number): void {
@@ -938,6 +1044,8 @@ export class Player {
                 this.stopWrenchAttack();
             } else if (this.wrenchAttackElapsed >= this.wrenchSwingSeconds) {
                 const charged = this.wrenchSwingCharged;
+                // stopWrenchAttack drops any remembered press, so capture it first.
+                const bufferedCharge = this.wrenchChargeBufferRemaining > 0;
                 if (charged) {
                     // Finish on the exact starting facing so a slow final frame cannot leave the
                     // robot a few degrees off after the full turn.
@@ -945,6 +1053,9 @@ export class Player {
                 }
                 this.stopWrenchAttack();
                 this.onWrenchSwingEnd?.(charged);
+                if (bufferedCharge) {
+                    this.beginWrenchCharge();
+                }
             } else {
                 const progress = this.wrenchAttackElapsed / this.wrenchSwingSeconds;
                 if (this.wrenchSwingCharged) {

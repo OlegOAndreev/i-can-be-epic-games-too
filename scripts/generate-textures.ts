@@ -1213,19 +1213,24 @@ function paintDent(context: CanvasRenderingContext2D, size: number): void {
     }
 }
 
-// A single square boot print in the same damp-earth palette as the impact craters. Nested squares
-// build a soft recessed centre, and the gritty lip, short cracks, and scattered sand match the
-// crater decals without competing with them for attention.
+// A single oval boot print in a bright, sunlit-earth palette. A halo of displaced soil and soft
+// concentric ovals build a fuzzy elliptical print, and the short cracks and scattered sand match
+// the crater decals without competing with them for attention.
 function paintFootprint(context: CanvasRenderingContext2D, size: number): void {
-    // Paint the print into an offscreen canvas first, then blur it on the way in. This keeps the
-    // previous colour density while feathering every edge, including the lip and grit.
+    // Paint the print into an offscreen canvas first, then blur it on the way in. A wide pass
+    // dissolves the edge into the ground, while a tighter, lighter pass keeps the pressed core
+    // and grit readable instead of washing the whole print out.
     const source = createCanvas(size, size);
     const sourceContext = source.getContext('2d');
     paintFootprintShape(sourceContext, size);
 
     context.clearRect(0, 0, size, size);
-    context.filter = `blur(${size * 0.028}px)`;
+    context.filter = `blur(${size * 0.045}px)`;
     context.drawImage(source, 0, 0);
+    context.filter = `blur(${size * 0.012}px)`;
+    context.globalAlpha = 0.7;
+    context.drawImage(source, 0, 0);
+    context.globalAlpha = 1;
     context.filter = 'none';
 }
 
@@ -1233,83 +1238,92 @@ function paintFootprintShape(context: CanvasRenderingContext2D, size: number): v
     const rng = mulberry32(0xf007);
     const centreX = size / 2;
     const centreY = size / 2;
-    const half = size * 0.37;
+    // Slightly narrower than tall in texture space: once the print is mapped onto the
+    // longer-than-wide decal plane, this oval takes on the foot's own proportions.
+    const radiusX = size * 0.315;
+    const radiusY = size * 0.375;
 
     context.clearRect(0, 0, size, size);
 
-    // A soft lip of displaced soil built from several overlapping strokes, so it does not read
-    // as a hard rectangular outline around the print.
-    for (let ring = 0; ring < 6; ring++) {
-        const spread = 1.02 + ring * 0.03;
-        context.strokeStyle = rgba('#9c8764', 0.06);
-        context.lineWidth = size * (0.005 + ring * 0.008);
-        context.strokeRect(centreX - half * spread, centreY - half * spread, half * 2 * spread, half * 2 * spread);
+    // A loose apron of displaced, sunlit soil around the print. Jittered, overlapping ovals keep
+    // the fringe uneven instead of reading as a clean elliptical outline.
+    for (let ring = 0; ring < 10; ring++) {
+        const spread = 1 + ring * 0.028;
+        const jitterX = (rng() * 2 - 1) * size * 0.014;
+        const jitterY = (rng() * 2 - 1) * size * 0.014;
+        context.fillStyle = rgba('#ad9a79', 0.045);
+        context.beginPath();
+        context.ellipse(
+            centreX + jitterX,
+            centreY + jitterY,
+            radiusX * spread,
+            radiusY * spread,
+            rng() * TAU,
+            0,
+            TAU,
+        );
+        context.fill();
     }
 
-    // Nested, shrinking squares darken toward the middle and soften the outer edge without
-    // relying on canvas blur filters.
-    const layers = 32;
-    const rimColor = hexToRgb('#806846');
-    const midColor = hexToRgb('#55402b');
-    const coreColor = hexToRgb('#3b2c1e');
+    // Nested, shrinking ovals darken toward the middle and soften the outer edge without
+    // relying on canvas blur filters. A tiny per-layer jitter keeps the rims from lining up.
+    const layers = 36;
+    const rimColor = hexToRgb('#a7926f');
+    const midColor = hexToRgb('#8a714e');
+    const coreColor = hexToRgb('#6a5237');
     for (let layer = 0; layer < layers; layer++) {
         const t = layer / (layers - 1);
-        const layerHalf = half * (1 - Math.pow(t, 3) * 0.14);
+        const shrink = 1 - Math.pow(t, 3) * 0.24;
         const color = t < 0.5 ? mixRgb(rimColor, midColor, t / 0.5) : mixRgb(midColor, coreColor, (t - 0.5) / 0.5);
+        const jitterX = (rng() * 2 - 1) * size * 0.006 * t;
+        const jitterY = (rng() * 2 - 1) * size * 0.006 * t;
 
-        context.fillStyle = rgbaRgb(color, 0.025 + t * 0.055);
-        context.fillRect(centreX - layerHalf, centreY - layerHalf, layerHalf * 2, layerHalf * 2);
+        context.fillStyle = rgbaRgb(color, 0.02 + t * 0.045);
+        context.beginPath();
+        context.ellipse(
+            centreX + jitterX,
+            centreY + jitterY,
+            radiusX * shrink,
+            radiusY * shrink,
+            0,
+            0,
+            TAU,
+        );
+        context.fill();
     }
 
-    // Short cracks running out from the edges where the sand was compressed.
+    // Short cracks running out from the compressed rim.
     context.lineCap = 'round';
-    for (let i = 0; i < 7; i++) {
-        const side = Math.floor(rng() * 4);
-        const along = (rng() * 2 - 1) * half * 0.75;
-        let x: number;
-        let y: number;
-        let angle: number;
-
-        if (side === 0) {
-            x = centreX + along;
-            y = centreY - half * 0.95;
-            angle = -Math.PI / 2;
-        } else if (side === 1) {
-            x = centreX + along;
-            y = centreY + half * 0.95;
-            angle = Math.PI / 2;
-        } else if (side === 2) {
-            x = centreX - half * 0.95;
-            y = centreY + along;
-            angle = Math.PI;
-        } else {
-            x = centreX + half * 0.95;
-            y = centreY + along;
-            angle = 0;
-        }
-
+    for (let i = 0; i < 8; i++) {
+        const angle = rng() * TAU;
+        let x = centreX + Math.cos(angle) * radiusX * 0.92;
+        let y = centreY + Math.sin(angle) * radiusY * 0.92;
+        let heading = angle + (rng() - 0.5) * 0.4;
         const steps = 2 + Math.floor(rng() * 3);
-        const stepLength = size * (0.018 + rng() * 0.022);
-        context.strokeStyle = rgba('#2c2015', 0.3 + rng() * 0.3);
-        context.lineWidth = size * (0.004 + rng() * 0.004);
+        const stepLength = size * (0.014 + rng() * 0.018);
+
+        context.strokeStyle = rgba('#493623', 0.14 + rng() * 0.2);
+        context.lineWidth = size * (0.003 + rng() * 0.003);
         context.beginPath();
         context.moveTo(x, y);
         for (let step = 0; step < steps; step++) {
-            angle += (rng() - 0.5) * 0.6;
-            x += Math.cos(angle) * stepLength;
-            y += Math.sin(angle) * stepLength;
+            heading += (rng() - 0.5) * 0.6;
+            x += Math.cos(heading) * stepLength;
+            y += Math.sin(heading) * stepLength;
             context.lineTo(x, y);
         }
         context.stroke();
     }
 
-    // Loose grit pressed into and scattered around the square.
-    for (let i = 0; i < 46; i++) {
-        const x = centreX + (rng() * 2 - 1) * half * 1.1;
-        const y = centreY + (rng() * 2 - 1) * half * 1.1;
-        const radius = size * (0.0025 + rng() * 0.006);
+    // Loose grit pressed into the print and dusted just past the rim.
+    for (let i = 0; i < 52; i++) {
+        const angle = rng() * TAU;
+        const distance = Math.sqrt(rng()) * 1.06;
+        const x = centreX + Math.cos(angle) * radiusX * distance;
+        const y = centreY + Math.sin(angle) * radiusY * distance;
+        const radius = size * (0.0025 + rng() * 0.0055);
 
-        context.fillStyle = rgba(rng() < 0.55 ? '#a08a66' : '#241a11', 0.18 + rng() * 0.42);
+        context.fillStyle = rgba(rng() < 0.6 ? '#b39f7d' : '#56422b', 0.14 + rng() * 0.32);
         context.beginPath();
         context.ellipse(x, y, radius * (0.7 + rng() * 0.8), radius * (0.4 + rng() * 0.6), rng() * TAU, 0, TAU);
         context.fill();

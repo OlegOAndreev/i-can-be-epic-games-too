@@ -38,8 +38,8 @@ describe('footprints', () => {
             minZ = Math.min(minZ, positions.getZ(i));
             maxZ = Math.max(maxZ, positions.getZ(i));
         }
-        expect(maxX - minX).toBeCloseTo(FOOT_WIDTH * PLAYER_VISUAL_SCALE * 0.75);
-        expect(maxZ - minZ).toBeCloseTo(FOOT_LENGTH * PLAYER_VISUAL_SCALE * 0.75);
+        expect(maxX - minX).toBeCloseTo(FOOT_WIDTH * PLAYER_VISUAL_SCALE);
+        expect(maxZ - minZ).toBeCloseTo(FOOT_LENGTH * PLAYER_VISUAL_SCALE);
         expect(material.map).toBe(texture);
         expect(colors.itemSize).toBe(4);
         expect(colors.getW(0)).toBeCloseTo(0);

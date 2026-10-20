@@ -2,6 +2,7 @@ import { InstancedMesh, Matrix4, Mesh, MeshStandardMaterial, Quaternion, Sprite,
 import { describe, expect, it } from 'vitest';
 
 import { testTerrain, triangleCount, visibleMeshes } from './test-helpers';
+import type { RockWrenchHit } from './terrain';
 
 describe('rock damage', () => {
     it('sprays sparks, dents the rock, and breaks it into rubble', () => {
@@ -98,6 +99,39 @@ describe('rock damage', () => {
         expect(hits.some((hit) => Math.hypot(hit.position.x - rock.x, hit.position.z - rock.z) < rock.radius)).toBe(
             true,
         );
+    });
+
+    it('limits boulders to the configured forward arc for a regular swing', () => {
+        const setup = (degrees: number) => {
+            const terrain = testTerrain(13579, { meshes: false });
+            const rocks = terrain.colliders.filter((collider) => collider.kind === 'rock');
+            const rock = rocks.reduce((widest, collider) => (collider.radius > widest.radius ? collider : widest));
+            // Facing 0 (+Z), put the boulder at this angle from the player's facing, at its wall.
+            const angle = (degrees * Math.PI) / 180;
+            const distance = rock.radius + 1;
+            const player = new Vector3(
+                rock.x - Math.sin(angle) * distance,
+                rock.base + 0.5,
+                rock.z - Math.cos(angle) * distance,
+            );
+            return { terrain, rock, player };
+        };
+        const hitRock = (hits: RockWrenchHit[], rock: ReturnType<typeof setup>['rock']) =>
+            hits.some((hit) => Math.hypot(hit.position.x - rock.x, hit.position.z - rock.z) < rock.radius);
+
+        // Dead ahead under either arc.
+        const ahead = setup(0);
+        expect(hitRock(ahead.terrain.wrenchStrike(ahead.player, 1, 0, (Math.PI * 4) / 3), ahead.rock)).toBe(true);
+
+        // 100 degrees off the facing is inside easy's 240-degree arc but outside medium's 180.
+        const wide = setup(100);
+        expect(hitRock(wide.terrain.wrenchStrike(wide.player, 1, 0, (Math.PI * 4) / 3), wide.rock)).toBe(true);
+        const narrow = setup(100);
+        expect(hitRock(narrow.terrain.wrenchStrike(narrow.player, 1, 0, Math.PI), narrow.rock)).toBe(false);
+
+        // A boulder directly behind stays out of even the widest arc.
+        const behind = setup(180);
+        expect(hitRock(behind.terrain.wrenchStrike(behind.player, 1, 0, (Math.PI * 4) / 3), behind.rock)).toBe(false);
     });
 
     it('scatters several boulder shapes with an uneven silhouette', () => {

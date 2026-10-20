@@ -35,7 +35,7 @@ export const PLAYER_VISUAL_SCALE = 0.86;
 // the water tints it exactly like the opaque NPCs.
 export const PLAYER_BODY_RENDER_ORDER = -2;
 // Boot sole size in model units. The ground prints are derived from these so they keep the foot's
-// exact rectangular shape.
+// proportions.
 export const FOOT_WIDTH = 0.28;
 export const FOOT_LENGTH = 0.4;
 // Radius of the antenna's glowing tip sphere, in player-model units. The detector ring uses it as

@@ -109,9 +109,12 @@ const TREE_CULL_DISTANCE = 620;
 // Larger cells mean fewer draw calls; smaller cells mean tighter culling.
 const DECORATION_CELL_SIZE = 384;
 // Boulders within this radius of the player take a wrench hit once per swing. The height check is
-// deliberately loose so rocks on a slope are reachable from their uphill or downhill side.
+// deliberately loose so rocks on a slope are reachable from their uphill or downhill side. A
+// regular swing only covers the forward arc; the charged spin sweeps all the way around.
 const ROCK_WRENCH_RANGE = 4.5;
 const ROCK_WRENCH_REACH = 2.5;
+// Fallback arc for callers that supply a facing; the game passes the difficulty's arc explicitly.
+const DEFAULT_ROCK_WRENCH_STRIKE_ARC = (Math.PI * 4) / 3;
 // Boulders show a small dent after three hits, a larger one after six, and break after nine.
 // Boulders with a fuel-mineral seam are weaker and break on the sixth hit.
 const ROCK_SMALL_DENT_HITS = 3;
@@ -1351,9 +1354,16 @@ export class Terrain {
     // Damages every boulder within the wrench's radius and returns the impact points. Each hit
     // sprays sparks; the third and sixth carve a progressively larger dent, and the ninth breaks
     // the boulder into loose stones. Emerald-bearing boulders break on the sixth hit instead.
-    // A charged strike deals several hits at once.
-    wrenchStrike(playerPosition: Vector3, damage = 1): RockWrenchHit[] {
+    // A charged strike deals several hits at once. Pass a facing and arc to limit the strike to
+    // that forward arc; omit the facing (the charged spin) to hit all around.
+    wrenchStrike(
+        playerPosition: Vector3,
+        damage = 1,
+        facing: number | null = null,
+        arc = DEFAULT_ROCK_WRENCH_STRIKE_ARC,
+    ): RockWrenchHit[] {
         const hits: RockWrenchHit[] = [];
+        const minForwardDot = Math.cos(arc / 2);
 
         for (const boulder of this.boulders) {
             if (boulder.destroyed) {
@@ -1373,6 +1383,12 @@ export class Terrain {
                 playerPosition.y < boulder.base - ROCK_WRENCH_REACH
             ) {
                 continue;
+            }
+            if (facing !== null && centreDistance > 1e-4) {
+                const forwardDot = (dx * Math.sin(facing) + dz * Math.cos(facing)) / centreDistance;
+                if (forwardDot < minForwardDot) {
+                    continue;
+                }
             }
 
             boulder.hits += damage;

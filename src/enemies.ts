@@ -106,10 +106,12 @@ const DRAW_DISTANCE = 65;
 // Robots attack anywhere on their floor, plus the last/first quarter of the ramps touching it.
 const RAMP_ATTACK_QUARTER = 0.25;
 const FLOOR_ENGAGE_HEIGHT = 3;
-// A wrench swing is deliberately forgiving: reach is a radius around the player. The player's
-// facing never narrows it, so a robot beside or behind the player is hit just like one ahead.
+// A wrench swing is deliberately forgiving: reach is a radius around the player. A regular swing
+// only covers the forward arc, while the charged spin sweeps all the way around.
 const WRENCH_RANGE = 4.5;
 const WRENCH_REACH_HEIGHT = 2.5;
+// Fallback arc for callers that supply a facing; the game passes the difficulty's arc explicitly.
+const DEFAULT_WRENCH_STRIKE_ARC = (Math.PI * 4) / 3;
 // A wrench hit shoves the robot straight away from the player, decaying to rest over this window.
 const KNOCKBACK_SECONDS = 0.5;
 const KNOCKBACK_SPEED = 30;
@@ -762,9 +764,16 @@ export class EnemyRobots {
     }
 
     // Damages every vulnerable enemy within the wrench's reach and returns their positions and
-    // remaining health fractions. A charged strike deals more damage.
-    wrenchStrike(playerPosition: Vector3, damage = 1): EnemyWrenchHit[] {
+    // remaining health fractions. A charged strike deals more damage. Pass a facing and arc to
+    // limit the strike to that forward arc; omit the facing (the charged spin) to hit all around.
+    wrenchStrike(
+        playerPosition: Vector3,
+        damage = 1,
+        facing: number | null = null,
+        arc = DEFAULT_WRENCH_STRIKE_ARC,
+    ): EnemyWrenchHit[] {
         const hits: EnemyWrenchHit[] = [];
+        const minForwardDot = Math.cos(arc / 2);
         if (!this.enemiesEnabled) {
             return hits;
         }
@@ -782,6 +791,12 @@ export class EnemyRobots {
             const distance = Math.hypot(dx, dz);
             if (distance > WRENCH_RANGE) {
                 continue;
+            }
+            if (facing !== null && distance > 1e-4) {
+                const forwardDot = (dx * Math.sin(facing) + dz * Math.cos(facing)) / distance;
+                if (forwardDot < minForwardDot) {
+                    continue;
+                }
             }
 
             enemy.hitPoints -= damage;
