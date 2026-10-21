@@ -197,7 +197,7 @@ const DEFAULT_SETTINGS = {
     antialias: false,
     shadowQuality: 'high' as ShadowQuality,
     shadowMode: 'baked' as ShadowMode,
-    shadowSoftness: 1,
+    shadowSoftness: 2,
     grassRadius: DEFAULT_GRASS_RADIUS,
     difficulty: 'medium' as const,
     volume: 0.8,
@@ -2444,7 +2444,13 @@ function renderFrame(): void {
     // The live shadow maps are refreshed once per frame here. The viewmodel overlay pass reuses
     // them instead of rendering the cascades a second time.
     sun.shadow.needsUpdate = true;
-    robotShadowSun.shadow.needsUpdate = true;
+    // The robot-only map is only read by the player model. First person hides that model, so skip
+    // the extra shadow pass; switching back to third person refreshes it on the next frame.
+    // The robot-only map is only read by the player model. First person hides that model, so skip
+    // the extra shadow pass once the map exists; the first frame still renders it so the sun shadow
+    // sampler array never contains an uninitialized map.
+    robotShadowSun.shadow.needsUpdate =
+        player.group.visible || robotShadowSun.shadow.map === null;
     // Skip the foreground pass entirely when the wrench is not on screen (third person, no wrench,
     // cinematics), so those frames pay nothing for it.
     const wrenchOverlay = firstPersonWrench.group.visible ? renderFirstPersonWrenchOverlay : null;
