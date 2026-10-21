@@ -81,6 +81,7 @@
   "gui.moveSpeed": "Move speed",
   "gui.jumpStrength": "Jump strength",
   "gui.mouseSensitivity": "Mouse sensitivity",
+  "gui.unacceleratedMouse": "Unaccelerated mouse",
   "gui.view": "View",
   "gui.firstPerson": "First person",
   "gui.thirdPerson": "Third person",

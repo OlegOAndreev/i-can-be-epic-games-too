@@ -190,6 +190,7 @@ const DEFAULT_SETTINGS = {
     moveSpeed: 10.5,
     jumpSpeed: 12,
     sensitivity: 0.0022,
+    unacceleratedMouse: true,
     firstPerson: false,
     firstPersonFov: FIRST_PERSON_DEFAULT_FOV,
     thirdPersonFov: FOV,
@@ -437,6 +438,7 @@ function storeSettings(): void {
             moveSpeed: playerSettings.moveSpeed,
             jumpSpeed: playerSettings.jumpSpeed,
             sensitivity: cameraController.sensitivity,
+            unacceleratedMouse: mouseSettings.unacceleratedMouse,
             firstPerson: viewSettings.firstPerson,
             firstPersonFov: viewSettings.firstPersonFov,
             thirdPersonFov: viewSettings.thirdPersonFov,
@@ -508,6 +510,13 @@ const viewSettings = {
     firstPersonFov: storedNumber(storedSettings, 'firstPersonFov', 40, 110, DEFAULT_SETTINGS.firstPersonFov),
     thirdPersonFov: storedNumber(storedSettings, 'thirdPersonFov', 40, 110, DEFAULT_SETTINGS.thirdPersonFov),
 };
+
+// Mouse input is a persisted preference. The GUI binds to a mirror so an unsupported platform can
+// show the control unchecked without discarding the player's choice for a supported browser.
+const mouseSettings = {
+    unacceleratedMouse: storedBoolean(storedSettings, 'unacceleratedMouse', DEFAULT_SETTINGS.unacceleratedMouse),
+};
+const mouseInputControl = { unacceleratedMouse: mouseSettings.unacceleratedMouse };
 
 // Gameplay rules that are persisted alongside the visual and audio settings.
 const gameSettings = {
@@ -674,6 +683,7 @@ let gui: GUI | null = null;
 let seedText: { text: string } | null = null;
 let worldSeedController: Controller | null = null;
 let renderReportController: Controller | null = null;
+let unacceleratedMouseController: Controller | null = null;
 let renderReportLabelTimer = 0;
 let statsPanel: Stats | null = null;
 let profiler: Profiler | null = null;
@@ -1156,6 +1166,7 @@ async function init(): Promise<void> {
             gameAudio.suspend();
             statusLine.textContent = t('status.pointerLockError');
         },
+        onUnacceleratedMouseSupportChange: (supported) => updateUnacceleratedMouseSupport(supported),
         onToggleFullscreen: () => toggleFullscreen(),
         onScreenshot: () => saveScreenshot(),
         onToggleView: () => {
@@ -1178,6 +1189,7 @@ async function init(): Promise<void> {
         onFinaleShortcut: () => startFinaleShortcut(),
         onResume: () => resumeWalking(),
     });
+    input.unacceleratedMouse = mouseSettings.unacceleratedMouse;
 
     playButton.addEventListener('click', () => resumeWalking());
     // The dimmed area around the menu resumes the game, but clicks inside the menu or in the
@@ -1662,6 +1674,10 @@ function resetSettingsToDefaults(): void {
     playerSettings.moveSpeed = DEFAULT_SETTINGS.moveSpeed;
     playerSettings.jumpSpeed = DEFAULT_SETTINGS.jumpSpeed;
     cameraController.sensitivity = DEFAULT_SETTINGS.sensitivity;
+    mouseSettings.unacceleratedMouse = DEFAULT_SETTINGS.unacceleratedMouse;
+    mouseInputControl.unacceleratedMouse =
+        input.unacceleratedMouseSupported === false ? false : DEFAULT_SETTINGS.unacceleratedMouse;
+    input.unacceleratedMouse = mouseInputControl.unacceleratedMouse;
     gameSettings.difficulty = DEFAULT_SETTINGS.difficulty;
     player.setDifficulty(DEFAULT_SETTINGS.difficulty);
     enemyRobots.setDifficulty(DEFAULT_SETTINGS.difficulty);
@@ -1735,6 +1751,13 @@ function createGui(GuiConstructor: typeof GUI): GUI {
     movementFolder
         .add(cameraController, 'sensitivity', 0.0005, 0.005, 0.0001)
         .name(t('gui.mouseSensitivity', 'Mouse sensitivity'));
+    unacceleratedMouseController = movementFolder
+        .add(mouseInputControl, 'unacceleratedMouse')
+        .name(t('gui.unacceleratedMouse', 'Unaccelerated mouse'))
+        .onChange((value: boolean) => {
+            mouseSettings.unacceleratedMouse = value;
+            input.unacceleratedMouse = value;
+        });
 
     const viewFolder = guiInstance.addFolder(t('gui.view', 'View')).close();
     viewFolder
@@ -1811,6 +1834,17 @@ function createGui(GuiConstructor: typeof GUI): GUI {
         .name(t('gui.resetToDefaults', 'Reset to defaults'));
 
     return guiInstance;
+}
+
+function updateUnacceleratedMouseSupport(supported: boolean): void {
+    mouseInputControl.unacceleratedMouse = supported ? mouseSettings.unacceleratedMouse : false;
+    input.unacceleratedMouse = mouseInputControl.unacceleratedMouse;
+    if (supported) {
+        unacceleratedMouseController?.enable();
+    } else {
+        unacceleratedMouseController?.disable();
+    }
+    unacceleratedMouseController?.updateDisplay();
 }
 
 function wireMegastructureSwitches(): void {

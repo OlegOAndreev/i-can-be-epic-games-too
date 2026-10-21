@@ -38,6 +38,7 @@ export interface FlightInput {
 export interface InputCallbacks {
     onPointerLockChange?: (locked: boolean) => void;
     onPointerLockError?: () => void;
+    onUnacceleratedMouseSupportChange?: (supported: boolean) => void;
     onToggleFullscreen?: () => void;
     onScreenshot?: () => void;
     onToggleView?: () => void;
@@ -53,6 +54,9 @@ export interface InputCallbacks {
 // per frame so no movement is lost on a slow frame.
 export class Input {
     pointerLocked = false;
+    // The player's preference. Support is null until a promise tells us whether the platform honours it.
+    unacceleratedMouse = true;
+    unacceleratedMouseSupported: boolean | null = null;
 
     private canvas: HTMLCanvasElement;
     private callbacks: InputCallbacks;
@@ -86,6 +90,7 @@ export class Input {
     private readonly lookInput = { x: 0, y: 0 };
     private resumeOnEscapeRelease = false;
     private escapeBlockedUntil = 0;
+    private suppressPointerLockErrorEvent = false;
 
     constructor(canvas: HTMLCanvasElement, callbacks: InputCallbacks = {}) {
         this.canvas = canvas;
@@ -105,18 +110,63 @@ export class Input {
         window.addEventListener('mousedown', (event) => this.onMouseDown(event));
 
         document.addEventListener('pointerlockchange', () => this.onPointerLockChange());
-        document.addEventListener('pointerlockerror', () => this.callbacks.onPointerLockError?.());
+        document.addEventListener('pointerlockerror', () => this.onPointerLockError());
     }
 
     requestPointerLock(): void {
         if (document.pointerLockElement === this.canvas) {
             return;
         }
-        // Recent browsers return a promise; older ones return undefined and report errors via events.
-        const result: unknown = this.canvas.requestPointerLock();
-        if (result instanceof Promise) {
-            result.catch(() => this.callbacks.onPointerLockError?.());
+        // Raw deltas feel the same at every mouse speed. Browsers without the option (notably
+        // Chrome on Linux) reject with NotSupportedError, so fall back to the adjusted deltas.
+        // Once a platform has rejected the option, do not ask for it again.
+        this.acquirePointerLock(this.unacceleratedMouse && this.unacceleratedMouseSupported !== false);
+    }
+
+    // Recent browsers return a promise; older ones return undefined and report errors via events.
+    private acquirePointerLock(unadjustedMovement: boolean): void {
+        let result: unknown;
+        try {
+            result = unadjustedMovement
+                ? this.canvas.requestPointerLock({ unadjustedMovement: true })
+                : this.canvas.requestPointerLock();
+        } catch {
+            this.callbacks.onPointerLockError?.();
+            return;
         }
+
+        if (!(result instanceof Promise)) {
+            return;
+        }
+
+        // The spec fires pointerlockerror and rejects the promise for the same failure. Prefer the
+        // rejection here so the fallback can retry before the game reports an error.
+        this.suppressPointerLockErrorEvent = true;
+        result.then(
+            () => {
+                this.suppressPointerLockErrorEvent = false;
+                if (unadjustedMovement) {
+                    this.setUnacceleratedMouseSupported(true);
+                }
+            },
+            (error: unknown) => {
+                this.suppressPointerLockErrorEvent = false;
+                if (unadjustedMovement && isNotSupportedError(error)) {
+                    this.setUnacceleratedMouseSupported(false);
+                    this.acquirePointerLock(false);
+                } else {
+                    this.callbacks.onPointerLockError?.();
+                }
+            },
+        );
+    }
+
+    private setUnacceleratedMouseSupported(supported: boolean): void {
+        if (this.unacceleratedMouseSupported === supported) {
+            return;
+        }
+        this.unacceleratedMouseSupported = supported;
+        this.callbacks.onUnacceleratedMouseSupportChange?.(supported);
     }
 
     // Poll the gamepad once per frame. The Gamepad API has no events for stick movement or button state,
@@ -339,6 +389,12 @@ export class Input {
         this.lookY += event.movementY;
     }
 
+    private onPointerLockError(): void {
+        if (!this.suppressPointerLockErrorEvent) {
+            this.callbacks.onPointerLockError?.();
+        }
+    }
+
     private onPointerLockChange(): void {
         this.pointerLocked = document.pointerLockElement === this.canvas;
 
@@ -363,6 +419,10 @@ export class Input {
 
         this.callbacks.onPointerLockChange?.(this.pointerLocked);
     }
+}
+
+function isNotSupportedError(error: unknown): boolean {
+    return error instanceof DOMException && error.name === 'NotSupportedError';
 }
 
 function getActiveGamepad(): Gamepad | null {

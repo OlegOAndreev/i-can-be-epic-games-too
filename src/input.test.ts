@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { readFlightGamepadInput, readGamepadInput } from './input';
+import { Input, readFlightGamepadInput, readGamepadInput } from './input';
 
 function createGamepad(axes: number[] = [], pressedButtons: number[] = []): Gamepad {
     const buttons = Array.from({ length: 16 }, (_, index) => ({
@@ -8,6 +8,124 @@ function createGamepad(axes: number[] = [], pressedButtons: number[] = []): Game
     }));
     return { axes, buttons } as unknown as Gamepad;
 }
+
+describe('Input pointer lock', () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    function createInput(requestPointerLock: (options?: PointerLockOptions) => Promise<void> | undefined) {
+        const documentListeners = new Map<string, EventListener>();
+        vi.stubGlobal('window', { addEventListener: vi.fn() });
+        vi.stubGlobal('document', {
+            pointerLockElement: null,
+            addEventListener: vi.fn((type: string, listener: EventListener) => documentListeners.set(type, listener)),
+        });
+        const onPointerLockError = vi.fn();
+        const onUnacceleratedMouseSupportChange = vi.fn();
+        const input = new Input({ requestPointerLock } as unknown as HTMLCanvasElement, {
+            onPointerLockError,
+            onUnacceleratedMouseSupportChange,
+        });
+        return { input, onPointerLockError, onUnacceleratedMouseSupportChange, documentListeners };
+    }
+
+    it('requests unaccelerated deltas by default', async () => {
+        const requestPointerLock = vi.fn(() => Promise.resolve());
+        const { input, onUnacceleratedMouseSupportChange } = createInput(requestPointerLock);
+
+        input.requestPointerLock();
+        await Promise.resolve();
+
+        expect(requestPointerLock).toHaveBeenCalledWith({ unadjustedMovement: true });
+        expect(input.unacceleratedMouseSupported).toBe(true);
+        expect(onUnacceleratedMouseSupportChange).toHaveBeenCalledWith(true);
+    });
+
+    it('uses adjusted deltas when the preference is off', async () => {
+        const requestPointerLock = vi.fn(() => Promise.resolve());
+        const { input, onUnacceleratedMouseSupportChange } = createInput(requestPointerLock);
+        input.unacceleratedMouse = false;
+
+        input.requestPointerLock();
+        await Promise.resolve();
+
+        expect(requestPointerLock).toHaveBeenCalledWith();
+        expect(input.unacceleratedMouseSupported).toBe(null);
+        expect(onUnacceleratedMouseSupportChange).not.toHaveBeenCalled();
+    });
+
+    it('falls back to adjusted deltas when the browser rejects the option', async () => {
+        const requestPointerLock = vi.fn((options?: PointerLockOptions) =>
+            options?.unadjustedMovement
+                ? Promise.reject(new DOMException('unsupported', 'NotSupportedError'))
+                : Promise.resolve(),
+        );
+        const { input, onPointerLockError, onUnacceleratedMouseSupportChange } = createInput(requestPointerLock);
+
+        input.requestPointerLock();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(requestPointerLock).toHaveBeenNthCalledWith(1, { unadjustedMovement: true });
+        expect(requestPointerLock.mock.calls[1]).toEqual([]);
+        expect(input.unacceleratedMouseSupported).toBe(false);
+        expect(onUnacceleratedMouseSupportChange).toHaveBeenCalledWith(false);
+        expect(onPointerLockError).not.toHaveBeenCalled();
+    });
+
+    it('does not retry unaccelerated input after the platform rejects it', async () => {
+        const requestPointerLock = vi.fn((options?: PointerLockOptions) =>
+            options?.unadjustedMovement
+                ? Promise.reject(new DOMException('unsupported', 'NotSupportedError'))
+                : Promise.resolve(),
+        );
+        const { input } = createInput(requestPointerLock);
+
+        input.requestPointerLock();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        requestPointerLock.mockClear();
+
+        input.requestPointerLock();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(requestPointerLock).toHaveBeenCalledWith();
+        expect(requestPointerLock).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores the pointerlockerror event that accompanies a promise rejection', async () => {
+        let rejectRaw: (reason: unknown) => void = () => {};
+        const rawRequest = new Promise<void>((_resolve, reject) => {
+            rejectRaw = reject;
+        });
+        const requestPointerLock = vi.fn((options?: PointerLockOptions) =>
+            options?.unadjustedMovement ? rawRequest : Promise.resolve(),
+        );
+        const { input, onPointerLockError, documentListeners } = createInput(requestPointerLock);
+
+        input.requestPointerLock();
+        documentListeners.get('pointerlockerror')?.(new Event('pointerlockerror'));
+        await Promise.resolve();
+        expect(onPointerLockError).not.toHaveBeenCalled();
+
+        rejectRaw(new DOMException('unsupported', 'NotSupportedError'));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(requestPointerLock.mock.calls[1]).toEqual([]);
+        expect(onPointerLockError).not.toHaveBeenCalled();
+    });
+
+    it('reports other pointer lock failures without retrying', async () => {
+        const requestPointerLock = vi.fn(() => Promise.reject(new DOMException('denied', 'SecurityError')));
+        const { input, onPointerLockError } = createInput(requestPointerLock);
+
+        input.requestPointerLock();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(requestPointerLock).toHaveBeenCalledTimes(1);
+        expect(input.unacceleratedMouseSupported).toBe(null);
+        expect(onPointerLockError).toHaveBeenCalledTimes(1);
+    });
+});
 
 describe('readFlightGamepadInput', () => {
     it('returns neutral flight input without a gamepad', () => {

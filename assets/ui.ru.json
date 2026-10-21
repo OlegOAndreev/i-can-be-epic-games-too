@@ -81,6 +81,7 @@
   "gui.moveSpeed": "Скорость движения",
   "gui.jumpStrength": "Сила прыжка",
   "gui.mouseSensitivity": "Чувствительность мыши",
+  "gui.unacceleratedMouse": "Мышь без ускорения",
   "gui.view": "Вид",
   "gui.firstPerson": "От первого\nлица",
   "gui.thirdPerson": "От третьего\nлица",
