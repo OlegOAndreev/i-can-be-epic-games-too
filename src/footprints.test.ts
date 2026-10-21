@@ -56,6 +56,18 @@ describe('footprints', () => {
         expect(mesh.visible).toBe(false);
     });
 
+    it('tints each print with the local ground colour', () => {
+        const scene = new Scene();
+        const footprints = new Footprints(scene, texture);
+        const groundColor = new Color(0.2, 0.5, 0.35);
+        footprints.spawn(new Vector3(1, 4.2, 2), new Vector3(0, 0, 1), 0, groundColor, terrain);
+
+        const colors = (scene.children[0] as Mesh).geometry.getAttribute('color');
+        expect(colors.getX(0)).toBeCloseTo(groundColor.r);
+        expect(colors.getY(0)).toBeCloseTo(groundColor.g);
+        expect(colors.getZ(0)).toBeCloseTo(groundColor.b);
+    });
+
     it('clears all active prints', () => {
         const scene = new Scene();
         const footprints = new Footprints(scene, texture);

@@ -14,7 +14,7 @@ import type { Material } from 'three';
 import { buildElectricBolts } from './electric-bolts';
 import type { Difficulty } from './enemies';
 import { GLOW_RING_TEXTURE_INNER_RADIUS } from './glow';
-import { angleDelta, clamp, damp, smoothstep } from './math-utils';
+import { angleDelta, clamp, damp, dampAngle, smoothstep } from './math-utils';
 import {
     ANTENNA_IDLE_HALO_OPACITY,
     ANTENNA_IDLE_HALO_SCALE,
@@ -129,11 +129,24 @@ const AIR_TURN_ACCELERATION = GROUND_TURN_ACCELERATION / 2;
 export const WRENCH_ATTACK_SECONDS = 0.45;
 // The charged spin gets extra time so both turns read, 20% faster than the doubled pace.
 export const WRENCH_CHARGED_ATTACK_SECONDS = (WRENCH_ATTACK_SECONDS * 2) / 1.2;
+// The wrench only connects partway through the animation, once the arm has visibly swung: a third
+// of the way through a regular swing and halfway through the charged spin.
+export const WRENCH_STRIKE_PORTION = 1 / 3;
+export const WRENCH_CHARGED_STRIKE_PORTION = 1 / 2;
 // The charged strike fills the wrench in this long after a press. A full charge triples the
 // damage and turns the release into a spinning strike: the robot makes two full turns with the
 // wrench held forward.
 export const WRENCH_CHARGE_SECONDS = 1;
 export const WRENCH_CHARGED_DAMAGE = 3;
+// Petting the wolf is a short scripted gesture: the arm reaches out, sweeps sideways twice, then
+// returns to rest. The first-person viewmodel and the third-person arm share this timing.
+export const PET_ANIMATION_SECONDS = 1.4;
+const PET_TURN_RATE = 12;
+// Sideways sweep of the extended arm, in radians of shoulder rotation.
+const PET_ARM_SWEEP = 0.42;
+// The reach eases out and back in so the arm does not snap toward the wolf or drop out of frame.
+const PET_REACH_IN_PORTION = 0.2;
+const PET_REACH_OUT_PORTION = 0.8;
 // The charged release winds the arm up to horizontal while the robot starts turning immediately.
 // The arm drops again over the final 30° of the 720° turn.
 const WRENCH_CHARGED_LIFT = Math.PI / 2;
@@ -173,6 +186,13 @@ export class Player {
     // Fires when a wrench swing plays to completion (not when it is interrupted), with whether
     // the strike was charged.
     onWrenchSwingEnd: ((charged: boolean) => void) | null = null;
+    // Fires once per swing, when the wrench reaches the point in the animation where it connects:
+    // a third of the way through a regular swing and halfway through the charged spin. Interrupted
+    // swings never fire it.
+    onWrenchStrike: ((charged: boolean) => void) | null = null;
+    // Fires when a petting gesture (see startPetting) plays to completion, not when it is
+    // interrupted by a knockdown or destruction.
+    onPettingEnd: (() => void) | null = null;
     // Fires whenever a charge begins, including one remembered from a press that arrived while
     // the previous swing was still playing.
     onWrenchChargeStart: (() => void) | null = null;
@@ -192,6 +212,9 @@ export class Player {
     private wrenchJawCenter: Group;
     private wrenchPop = 0;
     private wrenchAttackElapsed = -1;
+    private wrenchStrikeFired = false;
+    private petElapsed = -1;
+    private petFacing = 0;
     private wrenchChargeBufferRemaining = 0;
     private difficulty: Difficulty = 'medium';
     private wrenchCharging = false;
@@ -393,6 +416,28 @@ export class Player {
         return this.wrenchAttackElapsed >= 0;
     }
 
+    // True while the petting gesture is playing.
+    get isPetting(): boolean {
+        return this.petElapsed >= 0;
+    }
+
+    // How far through the petting gesture the robot is, from 0 to 1.
+    get petProgress(): number {
+        return this.petElapsed < 0 ? 0 : Math.min(1, this.petElapsed / PET_ANIMATION_SECONDS);
+    }
+
+    // Eased 0..1 extension of the petting arm, used by both the third-person arm and the first-
+    // person viewmodel.
+    get petReach(): number {
+        if (this.petElapsed < 0) {
+            return 0;
+        }
+        return (
+            smoothstep(0, PET_REACH_IN_PORTION, this.petProgress) *
+            (1 - smoothstep(PET_REACH_OUT_PORTION, 1, this.petProgress))
+        );
+    }
+
     // True once the caretakers have handed the wrench over. The first-person viewmodel follows it.
     get isWrenchEquipped(): boolean {
         return this.wrench.visible;
@@ -430,6 +475,7 @@ export class Player {
         }
         if (!equipped) {
             this.stopWrenchAttack();
+            this.stopPetting();
         }
         this.wrench.visible = equipped;
     }
@@ -489,7 +535,13 @@ export class Player {
     // is still playing is remembered for the difficulty's short buffer window and starts the
     // charge as soon as that swing ends.
     beginWrenchCharge(): boolean {
-        if (this.destroyed || !this.wrench.visible || this.knockdownActive || this.wrenchCharging) {
+        if (
+            this.destroyed ||
+            !this.wrench.visible ||
+            this.knockdownActive ||
+            this.wrenchCharging ||
+            this.petElapsed >= 0
+        ) {
             return false;
         }
         if (this.wrenchAttackElapsed >= 0) {
@@ -545,10 +597,17 @@ export class Player {
     // Starts a wrench swing. Returns false when the wrench is not equipped or a swing is already
     // in progress.
     swingWrench(charged = false): boolean {
-        if (this.destroyed || !this.wrench.visible || this.knockdownActive || this.wrenchAttackElapsed >= 0) {
+        if (
+            this.destroyed ||
+            !this.wrench.visible ||
+            this.knockdownActive ||
+            this.wrenchAttackElapsed >= 0 ||
+            this.petElapsed >= 0
+        ) {
             return false;
         }
         this.wrenchAttackElapsed = 0;
+        this.wrenchStrikeFired = false;
         this.wrenchSwingCharged = charged;
         this.wrenchSwingStartYaw = this.group.rotation.y;
         if (!charged) {
@@ -559,15 +618,48 @@ export class Player {
 
     private stopWrenchAttack(): void {
         this.wrenchAttackElapsed = -1;
+        this.wrenchStrikeFired = false;
         this.wrenchCharging = false;
         this.wrenchChargeElapsed = 0;
         this.wrenchSwingCharged = false;
         this.wrenchChargeBufferRemaining = 0;
         this.wrenchBoltMesh.visible = false;
         this.rightArm.rotation.x = 0;
+        this.rightArm.rotation.y = 0;
         this.rightArm.rotation.z = this.rightArmRestZ;
         this.leftArm.rotation.x = 0;
         this.leftArm.rotation.z = this.leftArmRestZ;
+    }
+
+    // Starts the petting gesture: the robot turns toward the wolf and reaches out with the wrench.
+    // Rejected while the wrench is busy, so a normal hit still takes priority mid-swing.
+    startPetting(facing: number): boolean {
+        if (
+            this.destroyed ||
+            !this.wrench.visible ||
+            this.knockdownActive ||
+            this.wrenchAttackElapsed >= 0 ||
+            this.wrenchCharging ||
+            this.petElapsed >= 0
+        ) {
+            return false;
+        }
+        this.petElapsed = 0;
+        this.petFacing = facing;
+        this.wrenchChargeBufferRemaining = 0;
+        this.velocity.set(0, 0, 0);
+        this.turnVelocity = 0;
+        return true;
+    }
+
+    private stopPetting(): void {
+        if (this.petElapsed < 0) {
+            return;
+        }
+        this.petElapsed = -1;
+        this.rightArm.rotation.x = 0;
+        this.rightArm.rotation.y = 0;
+        this.rightArm.rotation.z = this.rightArmRestZ;
     }
 
     setOpacity(opacity: number): void {
@@ -680,6 +772,7 @@ export class Player {
         this.shockKnockbackRemaining = 0;
         this.cancelWrenchCharge();
         this.stopWrenchAttack();
+        this.stopPetting();
 
         const originals: typeof this.destructionOriginals = [];
         const seen = new Set<Material>();
@@ -733,6 +826,7 @@ export class Player {
     }
 
     private resetPose(): void {
+        this.stopPetting();
         this.airJumpsRemaining = MAX_AIR_JUMPS;
         this.turnVelocity = 0;
         this.walkPhase = 0;
@@ -774,6 +868,19 @@ export class Player {
             }
         }
 
+        // Petting is a short scripted gesture. A knockdown interrupts it without awarding the
+        // follow-up, which is why the completion callback lives here rather than at the input site.
+        if (this.petElapsed >= 0) {
+            this.petElapsed += dt;
+            if (this.knockdownActive) {
+                this.stopPetting();
+            } else if (this.petElapsed >= PET_ANIMATION_SECONDS) {
+                this.stopPetting();
+                this.onPettingEnd?.();
+            }
+        }
+        const petting = this.petElapsed >= 0;
+
         // Camera-relative movement basis: yaw 0 looks down -Z.
         const sinYaw = Math.sin(cameraYaw);
         const cosYaw = Math.cos(cameraYaw);
@@ -796,7 +903,7 @@ export class Player {
             }
         }
 
-        const hasInput = !knockedDown && inputLength > 0.01;
+        const hasInput = !knockedDown && !petting && inputLength > 0.01;
         const baseSpeed = this.settings.moveSpeed * (inWater ? 0.6 : 1);
         const targetSpeed = hasInput ? baseSpeed + this.landingBoost : 0;
 
@@ -876,7 +983,7 @@ export class Player {
 
         // The ground jump leaves one air jump available. A second press while airborne consumes it,
         // without touching the landing boost so chained-jump speed carries through the double jump.
-        if (!knockedDown && input.jump) {
+        if (!knockedDown && !petting && input.jump) {
             if (this.grounded || landingGrace) {
                 if (landingGrace) {
                     position.y = ground;
@@ -946,6 +1053,14 @@ export class Player {
             // arc and viewmodel aligned with what the player sees. The ground/air turn split below
             // stays a third-person feature.
             this.turnVelocity = 0;
+            if (petting) {
+                // Keep the viewmodel attached to the view while the arm pets in camera space.
+                this.group.rotation.y = cameraYaw + Math.PI;
+            }
+        } else if (petting) {
+            // Third person turns to face the wolf before the arm comes up.
+            this.turnVelocity = 0;
+            this.group.rotation.y = dampAngle(this.group.rotation.y, this.petFacing, PET_TURN_RATE, dt);
         } else {
             const targetTurnVelocity =
                 horizontalSpeed > 0.5
@@ -1062,6 +1177,7 @@ export class Player {
 
         const lying = this.knockdownProgress;
 
+        const petting = this.petElapsed >= 0;
         let leftLegTarget = 0;
         let rightLegTarget = 0;
         let leftArmTarget: number;
@@ -1074,6 +1190,11 @@ export class Player {
             rightArmTarget = -0.05 * lying;
             leftLegTarget = 0.08 * lying;
             rightLegTarget = -0.08 * lying;
+        } else if (petting) {
+            leftArmTarget = 0;
+            rightArmTarget = 0;
+            leftLegTarget = 0;
+            rightLegTarget = 0;
         } else if (!this.grounded) {
             leftArmTarget = this.leftArmForward ? -1.55 : 1.15;
             rightArmTarget = this.leftArmForward ? 1.15 : -1.55;
@@ -1098,37 +1219,59 @@ export class Player {
         this.leftArm.rotation.x += (leftArmTarget - this.leftArm.rotation.x) * poseBlend;
         this.rightArm.rotation.x += (rightArmTarget - this.rightArm.rotation.x) * poseBlend;
 
+        if (petting) {
+            // Reach straight ahead, then sweep the extended arm left and right twice. Rotating the
+            // shoulder around Z with X at horizontal keeps the whole sweep in a plane parallel to
+            // the ground.
+            const reach = this.petReach;
+            const sweep = Math.sin(this.petProgress * Math.PI * 4) * PET_ARM_SWEEP * reach;
+            this.rightArm.rotation.x = (-Math.PI / 2) * reach;
+            this.rightArm.rotation.y = 0;
+            this.rightArm.rotation.z = this.rightArmRestZ + sweep;
+        }
+
         if (this.wrenchAttackElapsed >= 0) {
             this.wrenchAttackElapsed += dt;
             if (this.knockdownActive) {
                 this.stopWrenchAttack();
-            } else if (this.wrenchAttackElapsed >= this.wrenchSwingSeconds) {
-                const charged = this.wrenchSwingCharged;
-                // stopWrenchAttack drops any remembered press, so capture it first.
-                const bufferedCharge = this.wrenchChargeBufferRemaining > 0;
-                if (charged) {
-                    // Finish on the exact starting facing so a slow final frame cannot leave the
-                    // robot a few degrees off after the full turn.
-                    this.group.rotation.y = this.wrenchSwingStartYaw;
-                }
-                this.stopWrenchAttack();
-                this.onWrenchSwingEnd?.(charged);
-                if (bufferedCharge) {
-                    this.beginWrenchCharge();
-                }
             } else {
-                const progress = this.wrenchAttackElapsed / this.wrenchSwingSeconds;
-                if (this.wrenchSwingCharged) {
-                    // The charged strike spins the whole robot through two full turns, with the
-                    // wrench raised in front and lowered again over the last 30°.
-                    this.group.rotation.y = this.wrenchSwingStartYaw + chargedWrenchSpinAngle(progress);
-                    this.rightArm.rotation.x = chargedWrenchArmAngle(progress);
+                if (!this.wrenchStrikeFired) {
+                    const strikePortion = this.wrenchSwingCharged
+                        ? WRENCH_CHARGED_STRIKE_PORTION
+                        : WRENCH_STRIKE_PORTION;
+                    if (this.wrenchAttackElapsed >= this.wrenchSwingSeconds * strikePortion) {
+                        this.wrenchStrikeFired = true;
+                        this.onWrenchStrike?.(this.wrenchSwingCharged);
+                    }
+                }
+                if (this.wrenchAttackElapsed >= this.wrenchSwingSeconds) {
+                    const charged = this.wrenchSwingCharged;
+                    // stopWrenchAttack drops any remembered press, so capture it first.
+                    const bufferedCharge = this.wrenchChargeBufferRemaining > 0;
+                    if (charged) {
+                        // Finish on the exact starting facing so a slow final frame cannot leave the
+                        // robot a few degrees off after the full turn.
+                        this.group.rotation.y = this.wrenchSwingStartYaw;
+                    }
+                    this.stopWrenchAttack();
+                    this.onWrenchSwingEnd?.(charged);
+                    if (bufferedCharge) {
+                        this.beginWrenchCharge();
+                    }
                 } else {
-                    // The regular swing circles only the wrench arm, in the same forward/back
-                    // plane as the jump pose.
-                    this.rightArm.rotation.x = wrenchCircleAngle(progress);
-                    // The other arm makes a small counter-sway instead of following the circle.
-                    this.leftArm.rotation.x = -Math.sin(progress * Math.PI * 2) * 0.25;
+                    const progress = this.wrenchAttackElapsed / this.wrenchSwingSeconds;
+                    if (this.wrenchSwingCharged) {
+                        // The charged strike spins the whole robot through two full turns, with the
+                        // wrench raised in front and lowered again over the last 30°.
+                        this.group.rotation.y = this.wrenchSwingStartYaw + chargedWrenchSpinAngle(progress);
+                        this.rightArm.rotation.x = chargedWrenchArmAngle(progress);
+                    } else {
+                        // The regular swing circles only the wrench arm, in the same forward/back
+                        // plane as the jump pose.
+                        this.rightArm.rotation.x = wrenchCircleAngle(progress);
+                        // The other arm makes a small counter-sway instead of following the circle.
+                        this.leftArm.rotation.x = -Math.sin(progress * Math.PI * 2) * 0.25;
+                    }
                 }
             }
         }

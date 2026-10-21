@@ -1,14 +1,31 @@
 import { Group, MeshStandardMaterial, Sprite, SpriteMaterial, Vector3 } from 'three';
+import type { CanvasTexture } from 'three';
 
 import { getRadialGlowTexture, glowSpriteMaterial } from './glow';
 import { damp, dampAngle, hash32, wrapAngle } from './math-utils';
 import { disposeSceneGraph, isSharedMaterial } from './mesh-optimize';
-import { addBox, addCylinder, addSegment, addSphere, createMaterial, prepareMeshes } from './npc-robots';
+import {
+    addBox,
+    addCylinder,
+    addSegment,
+    addSphere,
+    createMaterial,
+    PreRenderedSpeechLabel,
+    prepareMeshes,
+    renderSpeechTexture,
+} from './npc-robots';
 import { mulberry32 } from './noise';
 import { WATER_LEVEL } from './terrain';
 import type { CylinderCollider, Terrain } from './terrain';
 
 export type AnimalKind = 'deer' | 'wolf';
+
+export interface WolfPetTarget {
+    id: number;
+    x: number;
+    y: number;
+    z: number;
+}
 
 // The animals share the caretaker robot palette, but their eyes are a bright machine green.
 export const ANIMAL_EYE_COLOR = 0x49ff6b;
@@ -41,6 +58,27 @@ const DISTANT_PACK_DISTANCE = 120;
 // interval, whichever comes first. Both are well inside one terrain cell.
 const WALK_CHECK_DISTANCE = 0.4;
 const WALK_CHECK_INTERVAL = 0.12;
+// A petted wolf leads the player to the nearest emerald stone. It starts at a trot and
+// accelerates to a run over the first three seconds, then stops just outside the stone's collider
+// and waits long enough for the player to catch up.
+const GUIDE_START_SPEED = 5;
+const GUIDE_MAX_SPEED = 15;
+const GUIDE_ACCELERATION_SECONDS = 3;
+const GUIDE_STOP_MARGIN = 1.5;
+// A wolf's lines float above its head like the enemy speech labels, so petting reads as the animal
+// talking instead of the caretaker dialogue box.
+const WOLF_SPEECH_WORLD_WIDTH = 3.2;
+const WOLF_SPEECH_HEIGHT_OFFSET = 0.2;
+const GUIDE_WAIT_SECONDS = 6;
+
+// Linear ramp from the starting trot to the full run.
+export function guideWolfSpeed(elapsed: number): number {
+    const progress = Math.min(1, Math.max(0, elapsed / GUIDE_ACCELERATION_SECONDS));
+    return GUIDE_START_SPEED + (GUIDE_MAX_SPEED - GUIDE_START_SPEED) * progress;
+}
+// The player and a wolf can only stand about a metre apart once their body cylinders touch, so
+// this vertical tolerance keeps petting from reaching a wolf on a ledge above or below.
+const PET_HEIGHT = 1.6;
 
 interface AnimalSpec {
     kind: AnimalKind;
@@ -132,9 +170,16 @@ interface ModelVariation {
     strideScale: number;
 }
 
+interface WolfSpeech {
+    label: PreRenderedSpeechLabel;
+    remaining: number;
+}
+
 interface Animal {
+    id: number;
     group: Group;
     model: AnimalModel;
+    speech: WolfSpeech | null;
     offsetX: number;
     offsetZ: number;
     obstacles: CylinderCollider[];
@@ -170,12 +215,18 @@ interface Pack {
     watching: boolean;
     fleeing: boolean;
     fleeTimer: number;
+    // While guiding, the pack ignores its usual watch/roam cycle and walks to pack.target,
+    // which points at the petting reward: the nearest emerald stone.
+    guiding: boolean;
+    guideElapsed: number;
 }
 
 // A handful of robotic deer and wolves that wander the land around the spawn. When the
 // player comes close they stop, turn, and stare with their green eyes until the player leaves.
 export class RobotAnimals {
     readonly group = new Group();
+    // Called when a guiding wolf reaches its emerald stone.
+    onWolfFoundStone: ((id: number) => void) | null = null;
 
     private readonly terrain: Terrain;
     private readonly rng: () => number;
@@ -183,8 +234,11 @@ export class RobotAnimals {
     private readonly palettes: Palette[] = [];
     private readonly blockerColliders: CylinderCollider[] = [];
     private readonly paletteByKind = new Map<AnimalKind, Palette>();
+    private readonly wolves: Animal[] = [];
+    private readonly speechTextures = new Map<string, CanvasTexture>();
     private readonly lastPlayerPosition = new Vector3();
     private readonly playerDirection = new Vector3();
+    private nextAnimalId = 0;
     private hasPlayerPosition = false;
     private elapsed = 0;
 
@@ -212,6 +266,10 @@ export class RobotAnimals {
 
         for (const pack of this.packs) {
             this.updatePack(pack, dt, playerPosition);
+        }
+
+        for (const wolf of this.wolves) {
+            this.updateWolfSpeech(wolf.speech, dt);
         }
     }
 
@@ -251,8 +309,14 @@ export class RobotAnimals {
         }
 
         this.packs.length = 0;
+        this.wolves.length = 0;
         this.palettes.length = 0;
         this.paletteByKind.clear();
+        for (const texture of this.speechTextures.values()) {
+            texture.dispose();
+        }
+        this.speechTextures.clear();
+        this.nextAnimalId = 0;
     }
 
     private palette(kind: AnimalKind): Palette {
@@ -329,6 +393,8 @@ export class RobotAnimals {
             watching: false,
             fleeing: false,
             fleeTimer: 0,
+            guiding: false,
+            guideElapsed: 0,
         };
         const packId = this.packs.length;
         this.packs.push(pack);
@@ -378,7 +444,8 @@ export class RobotAnimals {
             const pace = 0.94 + this.rng() * 0.12;
             const wobble = 0.5 + this.rng() * 0.8;
 
-            pack.members.push({
+            const animal: Animal = {
+                id: this.nextAnimalId++,
                 group,
                 model,
                 offsetX: offset.x,
@@ -404,7 +471,141 @@ export class RobotAnimals {
                 walkCheckZ: z,
                 walkCheckTimer: 0,
                 walkBlocked: false,
-            });
+                speech: null,
+            };
+            group.userData.id = animal.id;
+            pack.members.push(animal);
+            if (spec.kind === 'wolf') {
+                this.wolves.push(animal);
+            }
+        }
+    }
+
+    // Nearest wolf the player can pet. When facing is given, the wolf must also be inside the same
+    // forward arc the wrench uses, so first-person petting stays on the crosshair.
+    findWolfToPet(
+        playerPosition: Vector3,
+        facing: number | null,
+        arc: number,
+        maxDistance: number,
+    ): WolfPetTarget | null {
+        const minForwardDot = Math.cos(arc / 2);
+        let nearest: Animal | null = null;
+        let nearestDistance = maxDistance;
+
+        for (const animal of this.wolves) {
+            const dx = animal.group.position.x - playerPosition.x;
+            const dz = animal.group.position.z - playerPosition.z;
+            const distance = Math.hypot(dx, dz);
+            if (distance > nearestDistance) {
+                continue;
+            }
+            if (Math.abs(animal.group.position.y - playerPosition.y) > PET_HEIGHT) {
+                continue;
+            }
+            if (facing !== null && distance > 1e-4) {
+                const forwardDot = (dx * Math.sin(facing) + dz * Math.cos(facing)) / distance;
+                if (forwardDot < minForwardDot) {
+                    continue;
+                }
+            }
+            nearest = animal;
+            nearestDistance = distance;
+        }
+
+        if (!nearest) {
+            return null;
+        }
+        return {
+            id: nearest.id,
+            x: nearest.group.position.x,
+            y: nearest.group.position.y,
+            z: nearest.group.position.z,
+        };
+    }
+
+    // Sends a petted wolf to the closest standing emerald stone. Returns false when the wolf is
+    // unknown or there is no reachable stone, so the caller can skip the invitation.
+    guideWolf(id: number): boolean {
+        const animal = this.wolves.find((candidate) => candidate.id === id);
+        if (!animal) {
+            return false;
+        }
+        const pack = this.packs.find((candidate) => candidate.members.includes(animal));
+        if (!pack) {
+            return false;
+        }
+
+        const stone = this.terrain.nearestEmeraldStone(animal.group.position.x, animal.group.position.z);
+        if (!stone) {
+            return false;
+        }
+
+        // Stop on the stone's near side, trying a full circle in case the approach side is water or
+        // steep ground. The stop distance clears the boulder's own collision cylinder.
+        const dx = animal.group.position.x - stone.x;
+        const dz = animal.group.position.z - stone.z;
+        const length = Math.hypot(dx, dz);
+        const baseAngle = length > 1e-4 ? Math.atan2(dx, dz) : 0;
+        const stopDistance = stone.radius + GUIDE_STOP_MARGIN;
+
+        for (let attempt = 0; attempt < 8; attempt++) {
+            const angle = baseAngle + (attempt * Math.PI) / 4;
+            const targetX = stone.x + Math.sin(angle) * stopDistance;
+            const targetZ = stone.z + Math.cos(angle) * stopDistance;
+            if (!this.isWalkable(targetX, targetZ, 0.45)) {
+                continue;
+            }
+
+            pack.guiding = true;
+            pack.watching = false;
+            pack.fleeing = false;
+            pack.guideElapsed = 0;
+            pack.idle = 0;
+            pack.target = new Vector3(targetX, this.terrain.heightAt(targetX, targetZ), targetZ);
+            return true;
+        }
+
+        return false;
+    }
+
+    // Shows a line above a wolf's head. The label is baked once per unique text and then follows
+    // the wolf, so it stays anchored while the animal walks. Returns false for an unknown wolf.
+    showWolfSpeech(id: number, text: string, seconds: number): boolean {
+        const animal = this.wolves.find((candidate) => candidate.id === id);
+        if (!animal) {
+            return false;
+        }
+
+        let texture = this.speechTextures.get(text);
+        if (!texture) {
+            texture = renderSpeechTexture(text);
+            this.speechTextures.set(text, texture);
+        }
+
+        if (!animal.speech) {
+            const label = new PreRenderedSpeechLabel(texture, WOLF_SPEECH_WORLD_WIDTH);
+            label.sprite.position.set(0, animal.height + WOLF_SPEECH_HEIGHT_OFFSET, 0);
+            animal.group.add(label.sprite);
+            animal.speech = { label, remaining: 0 };
+        }
+
+        animal.speech.label.show(texture);
+        animal.speech.remaining = seconds;
+        return true;
+    }
+
+    private updateWolfSpeech(speech: WolfSpeech | null, dt: number): void {
+        if (!speech) {
+            return;
+        }
+        speech.label.update(dt);
+        if (speech.remaining <= 0) {
+            return;
+        }
+        speech.remaining = Math.max(0, speech.remaining - dt);
+        if (speech.remaining === 0) {
+            speech.label.hide();
         }
     }
 
@@ -423,17 +624,24 @@ export class RobotAnimals {
         centerZ /= pack.members.length;
 
         const playerDistance = Math.hypot(playerPosition.x - centerX, playerPosition.z - centerZ);
-        if (playerDistance > RECYCLE_DISTANCE && pack.relocateDelay <= 0) {
+        if (playerDistance > RECYCLE_DISTANCE && pack.relocateDelay <= 0 && !pack.guiding) {
             this.relocatePack(pack, playerPosition);
             return;
         }
-        if (playerDistance > DISTANT_PACK_DISTANCE) {
+        // A guiding wolf keeps walking even when the player falls far behind; recycling it would
+        // teleport the guide away mid-journey.
+        if (playerDistance > DISTANT_PACK_DISTANCE && !pack.guiding) {
             return;
         }
 
         for (const animal of pack.members) {
             animal.eye.emissiveIntensity =
                 2.2 + Math.sin(this.elapsed * (1.8 + animal.pace * 0.6) + animal.phase) * 0.4;
+        }
+
+        if (pack.guiding) {
+            this.updateGuidePack(pack, dt);
+            return;
         }
 
         if (pack.kind === 'deer') {
@@ -507,6 +715,49 @@ export class RobotAnimals {
             );
             animal.model.update(dt, this.elapsed, moving, animal.speed, 0);
         }
+    }
+
+    private updateGuidePack(pack: Pack, dt: number): void {
+        const target = pack.target;
+        if (!target) {
+            pack.guiding = false;
+            return;
+        }
+
+        let centerX = 0;
+        let centerZ = 0;
+        for (const animal of pack.members) {
+            centerX += animal.group.position.x;
+            centerZ += animal.group.position.z;
+        }
+        centerX /= pack.members.length;
+        centerZ /= pack.members.length;
+
+        if (Math.hypot(target.x - centerX, target.z - centerZ) < TARGET_REACHED) {
+            pack.guiding = false;
+            pack.target = null;
+            pack.idle = GUIDE_WAIT_SECONDS;
+            this.onWolfFoundStone?.(pack.members[0].id);
+            for (const animal of pack.members) {
+                this.updateIdleAnimal(animal, dt);
+            }
+            return;
+        }
+
+        for (const animal of pack.members) {
+            // Sample before advancing the timer so the first step is exactly the starting speed.
+            const speed = guideWolfSpeed(pack.guideElapsed);
+            const wobblePhase = this.elapsed * (0.6 + animal.phase * 0.08) + animal.phase;
+            const moving = this.moveAnimal(
+                animal,
+                target.x + animal.offsetX + Math.cos(wobblePhase) * animal.wobble * 0.4,
+                target.z + animal.offsetZ + Math.sin(wobblePhase * 1.3) * animal.wobble * 0.4,
+                dt,
+                speed,
+            );
+            animal.model.update(dt, this.elapsed, moving, speed, 0);
+        }
+        pack.guideElapsed += dt;
     }
 
     private updatePackWatch(pack: Pack, playerPosition: Vector3): void {
@@ -768,6 +1019,7 @@ export class RobotAnimals {
             pack.watching = false;
             pack.fleeing = false;
             pack.fleeTimer = 0;
+            pack.guideElapsed = 0;
 
             for (const animal of pack.members) {
                 const memberX = x + animal.offsetX;

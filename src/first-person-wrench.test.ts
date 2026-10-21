@@ -2,6 +2,7 @@ import {
     AdditiveBlending,
     DataTexture,
     DirectionalLight,
+    Group,
     Mesh,
     MeshBasicMaterial,
     MeshStandardMaterial,
@@ -30,6 +31,9 @@ const RESTING: FirstPersonWrenchFrame = {
     cameraYaw: 0,
     cameraPitch: 0,
     chargeProgress: 0,
+    petting: false,
+    petProgress: 0,
+    petReach: 0,
     knockdownProgress: 0,
 };
 
@@ -201,6 +205,37 @@ describe('first-person wrench', () => {
         expect(wrench.group.position.x).toBeLessThan(resting.x);
         expect(wrench.group.position.y).toBeGreaterThan(resting.y);
         expect(wrench.group.rotation.z).toBeLessThan(restingRoll);
+    });
+
+    it('pivots the arm at the shoulder and sweeps the wolf twice while petting', () => {
+        const wrench = new FirstPersonWrench();
+        wrench.update(0, RESTING);
+        const resting = wrench.group.position.clone();
+        const restingJaw = wrench.getJawCenterWorldPosition(new Vector3());
+        const pivot = wrench.group.getObjectByName('first-person-wrench-pet-pivot') as Group;
+
+        // Quarter of the first sweep: the arm is pivoted forward and the wrench is to the right.
+        wrench.update(0, { ...RESTING, petting: true, petProgress: 0.125, petReach: 1 });
+        const right = wrench.group.position.clone();
+        const rightJaw = wrench.getJawCenterWorldPosition(new Vector3());
+        expect(pivot.rotation.x).toBeGreaterThan(0.3);
+        expect(rightJaw.z).toBeLessThan(restingJaw.z - 0.1);
+        // The viewmodel root stays put; only the shoulder pivot moves the arm forward.
+        expect(right.z).toBeCloseTo(resting.z, 5);
+        expect(right.x).toBeGreaterThan(resting.x + 0.1);
+
+        // Three quarters: the same reach, now swept to the left.
+        wrench.update(0, { ...RESTING, petting: true, petProgress: 0.375, petReach: 1 });
+        expect(wrench.group.position.z).toBeCloseTo(resting.z, 5);
+        expect(wrench.group.position.x).toBeLessThan(right.x - 0.3);
+
+        // The motion repeats a second time, so the first phase comes back around.
+        wrench.update(0, { ...RESTING, petting: true, petProgress: 0.625, petReach: 1 });
+        expect(wrench.group.position.x).toBeCloseTo(right.x, 5);
+
+        wrench.update(0, RESTING);
+        expect(pivot.rotation.x).toBeCloseTo(0);
+        expect(wrench.getJawCenterWorldPosition(new Vector3()).z).toBeCloseTo(restingJaw.z, 5);
     });
 
     it('turns the whole viewmodel with the robot body, not the camera', () => {

@@ -1,8 +1,10 @@
-import { Group, Mesh, MeshStandardMaterial, Vector3 } from 'three';
+import { Group, Mesh, MeshStandardMaterial, Sprite, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
-import { ANIMAL_EYE_COLOR, RobotAnimals } from './robot-animals';
-import { testTerrain } from './test-helpers';
+import { ANIMAL_EYE_COLOR, guideWolfSpeed, RobotAnimals } from './robot-animals';
+import { installCanvasDocument, testTerrain } from './test-helpers';
+
+installCanvasDocument(1024, 440);
 
 function animalGroups(animals: RobotAnimals): Group[] {
     return animals.group.children.filter((child): child is Group => child instanceof Group);
@@ -174,6 +176,85 @@ describe('robot animals', () => {
 
         expect(maxWag).toBeGreaterThan(0.4);
         expect(maxYaw).toBe(0);
+
+        animals.dispose();
+    });
+
+    it('accelerates the guiding wolf from a trot to a run', () => {
+        expect(guideWolfSpeed(0)).toBe(5);
+        expect(guideWolfSpeed(1.5)).toBe(10);
+        expect(guideWolfSpeed(3)).toBe(15);
+        expect(guideWolfSpeed(10)).toBe(15);
+    });
+
+    it('shows a wolf line above its head and fades it out', () => {
+        const terrain = testTerrain(20260419, { meshes: false });
+        const animals = new RobotAnimals(terrain);
+        const wolf = animalGroups(animals).find((group) => group.userData.kind === 'wolf')!;
+
+        expect(animals.showWolfSpeech(-1, 'nobody', 1)).toBe(false);
+        expect(animals.showWolfSpeech(wolf.userData.id, 'Woof woof', 1)).toBe(true);
+
+        const label = wolf.getObjectByName('speech-label') as Sprite;
+        expect(label).toBeDefined();
+        expect(label.visible).toBe(true);
+        // The label is anchored above the wolf, not inside its body.
+        expect(label.position.y).toBeGreaterThan(1);
+
+        // The line holds while its timer runs, then fades out.
+        for (let step = 0; step < 15; step++) {
+            animals.update(0.05, wolf.position.clone());
+        }
+        expect(label.visible).toBe(true);
+        for (let step = 0; step < 40; step++) {
+            animals.update(0.05, wolf.position.clone());
+        }
+        expect(label.visible).toBe(false);
+
+        animals.dispose();
+    });
+
+    it('pets a nearby wolf in the forward cone and sends it to the nearest emerald stone', () => {
+        const terrain = testTerrain(20260419, { meshes: false });
+        const animals = new RobotAnimals(terrain);
+        const groups = animalGroups(animals);
+        const wolf = groups.find((group) => group.userData.kind === 'wolf')!;
+        // Stand just in front of the wolf (world +Z is the wolf's nose when it faces 0).
+        const player = new Vector3(wolf.position.x, wolf.position.y, wolf.position.z + 1.2);
+
+        const target = animals.findWolfToPet(player, Math.PI, Math.PI / 2, 3);
+        expect(target).not.toBeNull();
+        expect(target!.id).toBe(wolf.userData.id);
+        expect(animals.findWolfToPet(player, 0, Math.PI / 2, 3)).toBeNull();
+        expect(
+            animals.findWolfToPet(new Vector3(player.x, player.y, player.z + 2), null, Math.PI, 3),
+        ).toBeNull();
+        // Petting reaches exactly three metres from the wolf's centre.
+        expect(
+            animals.findWolfToPet(new Vector3(wolf.position.x, wolf.position.y, wolf.position.z + 3.1), null, Math.PI, 3),
+        ).toBeNull();
+
+        const stone = terrain.nearestEmeraldStone(wolf.position.x, wolf.position.z);
+        expect(stone).not.toBeNull();
+        const before = Math.hypot(wolf.position.x - stone!.x, wolf.position.z - stone!.z);
+
+        expect(animals.guideWolf(target!.id)).toBe(true);
+        const foundStones: number[] = [];
+        animals.onWolfFoundStone = (id) => foundStones.push(id);
+        const firstStepX = wolf.position.x;
+        const firstStepZ = wolf.position.z;
+        animals.update(0.05, player);
+        // The guide starts at 5 m/s, so one 0.05 s frame covers 0.25 m.
+        expect(Math.hypot(wolf.position.x - firstStepX, wolf.position.z - firstStepZ)).toBeCloseTo(0.25, 2);
+        for (let step = 1; step < 600; step++) {
+            animals.update(0.05, player);
+        }
+        expect(foundStones).toEqual([target!.id]);
+
+        const after = Math.hypot(wolf.position.x - stone!.x, wolf.position.z - stone!.z);
+        expect(after).toBeLessThan(before);
+        // The wolf ends up standing outside the stone instead of walking into it.
+        expect(after).toBeGreaterThanOrEqual(stone!.radius);
 
         animals.dispose();
     });

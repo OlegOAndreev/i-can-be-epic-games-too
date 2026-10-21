@@ -9,6 +9,9 @@ const MAX_PARTICLES_PER_HARD_LANDING = 46;
 const TEXTURE_VARIANTS = 3;
 // Hard landings throw up 46 puffs at once; this cap only binds when several clouds overlap.
 const MAX_ACTIVE_PARTICLES = 160;
+// A hard landing knocks the player onto its face, so its dust hangs in the air and fades 2.0x
+// slower than an ordinary landing cloud.
+const HARD_LANDING_LIFETIME_SCALE = 2.0;
 
 interface DustParticle {
     sprite: Sprite;
@@ -96,7 +99,7 @@ export class DustPuffs {
                 growth: 2.6 + Math.random() * 1.3,
                 horizontalSpeed: (2.0 + Math.random() * 3.4) * strength,
                 upwardSpeed: (1.1 + Math.random() * 2.2) * strength,
-                lifetime: 0.85 + Math.random() * 0.55,
+                lifetime: (0.85 + Math.random() * 0.55) * HARD_LANDING_LIFETIME_SCALE,
                 opacity: 0.85 + Math.random() * 0.15,
                 heightOffset: 0.14 + Math.random() * 0.38,
                 neutralMix: 0.18,

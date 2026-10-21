@@ -122,9 +122,10 @@ const ROCK_LARGE_DENT_HITS = 6;
 const ROCK_SHATTER_HITS = 9;
 const ROCK_EMERALD_SHATTER_HITS = 6;
 const HIDDEN_BOULDER_MATRIX = new Matrix4().makeScale(0, 0, 0);
-// One large boulder in ten carries a fuel-mineral seam. The seam tints the rock with a glossy
-// emerald sheen, and breaking it drops a shard that can be picked up from the ground.
-const EMERALD_BOULDER_CHANCE = 0.1;
+// One large boulder in thirty carries a fuel-mineral seam, three times rarer than before. The
+// seam tints the rock with a glossy emerald sheen, and breaking it drops a shard that can be
+// picked up from the ground.
+const EMERALD_BOULDER_CHANCE = 1 / 30;
 const EMERALD_MIN_BOULDER_RADIUS = 1.1;
 // One emerald boulder is always planted just outside the wreck clearing so the fuel task has a
 // visible starting point from the crash site.
@@ -185,6 +186,13 @@ export interface RockWrenchHit {
     position: Vector3;
     hits: number;
     destroyed: boolean;
+}
+
+export interface EmeraldStone {
+    x: number;
+    y: number;
+    z: number;
+    radius: number;
 }
 
 export interface CylinderCollider {
@@ -383,6 +391,30 @@ export class Terrain {
 
     get mineralsCollected(): number {
         return this.mineralsCollectedCount;
+    }
+
+    // Nearest emerald-bearing boulder that is still standing. The wolf uses it as its destination
+    // after being petted, so it always leads the player to a rock that still holds a fuel mineral.
+    nearestEmeraldStone(x: number, z: number): EmeraldStone | null {
+        let nearest: Boulder | null = null;
+        let nearestDistance = Infinity;
+
+        for (const boulder of this.boulders) {
+            if (!boulder.emerald || boulder.destroyed) {
+                continue;
+            }
+            const distance = Math.hypot(boulder.x - x, boulder.z - z);
+            if (distance >= nearestDistance) {
+                continue;
+            }
+            nearest = boulder;
+            nearestDistance = distance;
+        }
+
+        if (!nearest) {
+            return null;
+        }
+        return { x: nearest.x, y: nearest.y, z: nearest.z, radius: nearest.radius };
     }
 
     // TODO: Collision samples this analytic height while the rendered terrain interpolates the 3 m

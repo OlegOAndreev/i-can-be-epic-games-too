@@ -26,9 +26,6 @@ const PRINT_WIDTH = FOOT_WIDTH * PLAYER_VISUAL_SCALE * PRINT_SCALE;
 const PRINT_LENGTH = FOOT_LENGTH * PLAYER_VISUAL_SCALE * PRINT_SCALE;
 const GROUND_OFFSET = 0.04;
 const PRINT_OPACITY = 0.88;
-// Keeps a trace of the local ground colour while leaving the print map readable.
-const TINT_STRENGTH = 0.5;
-const WHITE = new Color(0xffffff);
 
 // Unit footprint layout, shared by every pooled decal. Each spawn rotates these local X/Z pairs
 // into place and lifts them onto the terrain; no geometry is allocated per print.
@@ -139,7 +136,9 @@ export class Footprints {
             this.uvs[targetUv + 1] = sourceUvs.getY(i);
         }
 
-        this.writeColor(slot, groundColor.clone().lerp(WHITE, TINT_STRENGTH), 0);
+        // The map is neutral gray, so tinting it with the ground colour lets the print take on
+        // the hue of whatever surface it was stamped into.
+        this.writeColor(slot, groundColor, 0);
 
         const print = this.pool.pop() ?? { slot, age: 0, alpha: 0 };
         print.slot = slot;

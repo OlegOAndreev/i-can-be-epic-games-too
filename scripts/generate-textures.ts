@@ -1216,9 +1216,10 @@ function paintDent(context: CanvasRenderingContext2D, size: number): void {
     }
 }
 
-// A single oval boot print in a bright, sunlit-earth palette. A halo of displaced soil and soft
-// concentric ovals build a fuzzy elliptical print, and the short cracks and scattered sand match
-// the crater decals without competing with them for attention.
+// A single oval boot print as a neutral grayscale detail map. A halo of displaced soil and soft
+// concentric ovals build a fuzzy elliptical print, and the short cracks and scattered grit match
+// the crater decals without competing with them for attention. Keeping the map colourless lets
+// the decal take its hue from the terrain beneath it.
 function paintFootprint(context: CanvasRenderingContext2D, size: number): void {
     // Paint the print into an offscreen canvas first, then blur it on the way in. A wide pass
     // dissolves the edge into the ground, while a tighter, lighter pass keeps the pressed core
@@ -1248,13 +1249,13 @@ function paintFootprintShape(context: CanvasRenderingContext2D, size: number): v
 
     context.clearRect(0, 0, size, size);
 
-    // A loose apron of displaced, sunlit soil around the print. Jittered, overlapping ovals keep
-    // the fringe uneven instead of reading as a clean elliptical outline.
+    // A loose apron of displaced soil around the print. Jittered, overlapping ovals keep the
+    // fringe uneven instead of reading as a clean elliptical outline.
     for (let ring = 0; ring < 10; ring++) {
         const spread = 1 + ring * 0.028;
         const jitterX = (rng() * 2 - 1) * size * 0.014;
         const jitterY = (rng() * 2 - 1) * size * 0.014;
-        context.fillStyle = rgba('#ad9a79', 0.045);
+        context.fillStyle = rgba('#d2d2d2', 0.045);
         context.beginPath();
         context.ellipse(centreX + jitterX, centreY + jitterY, radiusX * spread, radiusY * spread, rng() * TAU, 0, TAU);
         context.fill();
@@ -1263,9 +1264,9 @@ function paintFootprintShape(context: CanvasRenderingContext2D, size: number): v
     // Nested, shrinking ovals darken toward the middle and soften the outer edge without
     // relying on canvas blur filters. A tiny per-layer jitter keeps the rims from lining up.
     const layers = 36;
-    const rimColor = hexToRgb('#a7926f');
-    const midColor = hexToRgb('#8a714e');
-    const coreColor = hexToRgb('#6a5237');
+    const rimColor = hexToRgb('#c8c8c8');
+    const midColor = hexToRgb('#9d9d9d');
+    const coreColor = hexToRgb('#737373');
     for (let layer = 0; layer < layers; layer++) {
         const t = layer / (layers - 1);
         const shrink = 1 - Math.pow(t, 3) * 0.24;
@@ -1289,7 +1290,7 @@ function paintFootprintShape(context: CanvasRenderingContext2D, size: number): v
         const steps = 2 + Math.floor(rng() * 3);
         const stepLength = size * (0.014 + rng() * 0.018);
 
-        context.strokeStyle = rgba('#493623', 0.14 + rng() * 0.2);
+        context.strokeStyle = rgba('#4d4d4d', 0.14 + rng() * 0.2);
         context.lineWidth = size * (0.003 + rng() * 0.003);
         context.beginPath();
         context.moveTo(x, y);
@@ -1310,7 +1311,7 @@ function paintFootprintShape(context: CanvasRenderingContext2D, size: number): v
         const y = centreY + Math.sin(angle) * radiusY * distance;
         const radius = size * (0.0025 + rng() * 0.0055);
 
-        context.fillStyle = rgba(rng() < 0.6 ? '#b39f7d' : '#56422b', 0.14 + rng() * 0.32);
+        context.fillStyle = rgba(rng() < 0.6 ? '#d9d9d9' : '#5d5d5d', 0.14 + rng() * 0.32);
         context.beginPath();
         context.ellipse(x, y, radius * (0.7 + rng() * 0.8), radius * (0.4 + rng() * 0.6), rng() * TAU, 0, TAU);
         context.fill();

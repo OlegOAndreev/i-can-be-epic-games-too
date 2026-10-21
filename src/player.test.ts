@@ -10,11 +10,14 @@ import {
     FIRST_PERSON_DEFAULT_FOV,
     FIRST_PERSON_WRENCH_STRIKE_ARC,
     isFullySubmerged,
+    PET_ANIMATION_SECONDS,
     PLAYER_HEIGHT,
     thrusterGlowStrength,
     wrenchCircleAngle,
     WRENCH_ATTACK_SECONDS,
     WRENCH_CHARGED_ATTACK_SECONDS,
+    WRENCH_CHARGED_STRIKE_PORTION,
+    WRENCH_STRIKE_PORTION,
 } from './player';
 import {
     ANTENNA_IDLE_HALO_OPACITY,
@@ -270,6 +273,66 @@ describe('wrench attack', () => {
         expect(completions).toBe(1);
     });
 
+    it('connects once a third of the way through a regular swing', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        player.setWrenchEquipped(true);
+        const strikes: boolean[] = [];
+        player.onWrenchStrike = (charged) => {
+            strikes.push(charged);
+        };
+
+        player.swingWrench();
+        player.update(WRENCH_ATTACK_SECONDS * WRENCH_STRIKE_PORTION - 0.01, NO_INPUT, 0, terrain);
+        expect(strikes).toHaveLength(0);
+
+        player.update(0.02, NO_INPUT, 0, terrain);
+        expect(strikes).toEqual([false]);
+
+        // The rest of the swing does not check for hits again.
+        player.update(WRENCH_ATTACK_SECONDS, NO_INPUT, 0, terrain);
+        expect(strikes).toHaveLength(1);
+    });
+
+    it('connects once halfway through the charged spin', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        player.setWrenchEquipped(true);
+        player.beginWrenchCharge();
+        player.updateWrenchCharge(1);
+        expect(player.releaseWrench()).toBe(true);
+        const strikes: boolean[] = [];
+        player.onWrenchStrike = (charged) => {
+            strikes.push(charged);
+        };
+
+        player.update(WRENCH_CHARGED_ATTACK_SECONDS * WRENCH_CHARGED_STRIKE_PORTION - 0.01, NO_INPUT, 0, terrain);
+        expect(strikes).toHaveLength(0);
+
+        player.update(0.02, NO_INPUT, 0, terrain);
+        expect(strikes).toEqual([true]);
+
+        // The second half of the spin does not check for hits again.
+        player.update(WRENCH_CHARGED_ATTACK_SECONDS, NO_INPUT, 0, terrain);
+        expect(strikes).toHaveLength(1);
+    });
+
+    it('does not connect when the swing is interrupted before the hit lands', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        player.setWrenchEquipped(true);
+        let strikes = 0;
+        player.onWrenchStrike = () => {
+            strikes++;
+        };
+
+        player.swingWrench();
+        player.update(WRENCH_ATTACK_SECONDS * WRENCH_STRIKE_PORTION - 0.01, NO_INPUT, 0, terrain);
+        player.setWrenchEquipped(false);
+        player.update(WRENCH_ATTACK_SECONDS, NO_INPUT, 0, terrain);
+        expect(strikes).toBe(0);
+    });
+
     it('keeps the charged swing running past the regular swing duration', () => {
         const terrain = testTerrain();
         const player = testPlayer(terrain);
@@ -292,6 +355,59 @@ describe('wrench attack', () => {
         player.update(WRENCH_CHARGED_ATTACK_SECONDS, NO_INPUT, 0, terrain);
         expect(completions).toBe(1);
         expect(player.isWrenchSwingCharged).toBe(false);
+    });
+});
+
+describe('wolf petting', () => {
+    it('needs an equipped wrench and fires one completion callback', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+
+        expect(player.startPetting(0)).toBe(false);
+        player.setWrenchEquipped(true);
+        expect(player.startPetting(0)).toBe(true);
+        expect(player.isPetting).toBe(true);
+        expect(player.petProgress).toBe(0);
+        expect(player.petReach).toBe(0);
+        // A pet outranks the ordinary wrench actions while it plays.
+        expect(player.swingWrench()).toBe(false);
+        expect(player.beginWrenchCharge()).toBe(false);
+
+        let completed = 0;
+        player.onPettingEnd = () => {
+            completed++;
+        };
+
+        player.update(PET_ANIMATION_SECONDS / 2, NO_INPUT, 0, terrain);
+        expect(player.isPetting).toBe(true);
+        expect(player.petProgress).toBeGreaterThan(0.4);
+        expect(player.petReach).toBeGreaterThan(0.5);
+
+        player.update(PET_ANIMATION_SECONDS, NO_INPUT, 0, terrain);
+        expect(player.isPetting).toBe(false);
+        expect(completed).toBe(1);
+    });
+
+    it('turns the third-person robot toward the wolf', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        player.setWrenchEquipped(true);
+        player.group.rotation.y = 0;
+        const facing = Math.PI / 2;
+
+        expect(player.startPetting(facing)).toBe(true);
+        stepPlayer(player, terrain, 30);
+
+        expect(Math.abs(angleDelta(player.group.rotation.y, facing))).toBeLessThan(0.05);
+    });
+
+    it('drops the pet gesture when the wrench is put away', () => {
+        const player = testPlayer();
+        player.setWrenchEquipped(true);
+        expect(player.startPetting(0)).toBe(true);
+
+        player.setWrenchEquipped(false);
+        expect(player.isPetting).toBe(false);
     });
 });
 

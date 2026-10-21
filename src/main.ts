@@ -116,6 +116,9 @@ const FAR_Z = 6000;
 const PLAYER_FADE_START_DISTANCE = 3.5;
 const PLAYER_FADE_END_DISTANCE = 0.5;
 const PLAYER_MIN_OPACITY = 0.1;
+// Petting starts while the player is within three metres of the wolf's centre.
+const PET_WOLF_DISTANCE = 2.5;
+const WOLF_DIALOGUE_SECONDS = 2.8;
 const MAX_PIXEL_RATIO = 1.5;
 type ShadowMode = 'cascaded' | 'baked';
 const DOUBLE_JUMP_TRAIL_COUNT = 3;
@@ -665,6 +668,8 @@ let playerRecovering = false;
 const playerRespawnPosition = new Vector3();
 let playerRespawnFacing = 0;
 let robotStory: RobotDialogue = { intro: [], outro: [] };
+// The wolf being petted, held until the gesture finishes so the follow-up starts in sync.
+let pettingWolfId: number | null = null;
 let finale: Finale | null = null;
 let grassField: GrassField;
 let dustPuffs: DustPuffs;
@@ -813,6 +818,9 @@ function createWorldActors(terrain: Terrain): void {
     view.scene.add(playerDebris.group);
 
     robotAnimals = new RobotAnimals(terrain);
+    robotAnimals.onWolfFoundStone = (id) => {
+        showWolfSpeech(id, t('wolf.foundStone', "look what I've found. I am a good boy"));
+    };
     view.scene.add(robotAnimals.group);
 
     robotRemains = new RobotRemains(terrain, gameAudio);
@@ -956,15 +964,25 @@ async function init(): Promise<void> {
     player = new Player(terrain, playerSettings);
     player.setDifficulty(gameSettings.difficulty);
     playerHealth = new PlayerHealth(gameSettings.difficulty);
-    // A regular swing checks enemies only when it starts; the charged spin checks them again as
-    // it finishes, catching robots that drifted into reach during the longer animation.
-    player.onWrenchSwingEnd = (charged) => {
-        if (charged) {
-            strikeEnemiesWithWrench(true);
-        }
+    // The wrench connects once per swing, partway through the animation: a third of the way
+    // through a regular swing and halfway through the charged spin. Interrupting the swing before
+    // that point skips the hit.
+    player.onWrenchStrike = (charged) => {
+        strikeWithWrench(charged);
     };
     // Fires for an immediate charge and for one buffered from a press during the previous swing.
     player.onWrenchChargeStart = () => gameAudio.playStructureBuzz(WRENCH_CHARGE_SECONDS, 'wrench');
+    // The wolf only leads the player to the stone once the petting gesture has played out.
+    player.onPettingEnd = () => {
+        if (pettingWolfId === null) {
+            return;
+        }
+        const wolfId = pettingWolfId;
+        pettingWolfId = null;
+        if (robotAnimals.guideWolf(wolfId)) {
+            showWolfSpeech(wolfId, t('wolf.pet', 'Woof woof, follow me'));
+        }
+    };
     player.onJump = (doubleJump) => gameAudio.playJump(doubleJump);
     player.onDoubleJump = (position) => {
         // The ring trails the robot's own arc, which puts it right under the first-person camera.
@@ -1986,6 +2004,11 @@ function hideDialogueLine(): void {
     dialogueBox.classList.add('is-hidden');
 }
 
+// The wolf speaks above its own head, not in the caretaker dialogue box.
+function showWolfSpeech(id: number, text: string): void {
+    robotAnimals.showWolfSpeech(id, text, WOLF_DIALOGUE_SECONDS);
+}
+
 function formatElapsedTime(totalSeconds: number): string {
     const totalMinutes = Math.round(Math.max(0, totalSeconds) / 60);
     if (totalMinutes === 0) {
@@ -2330,6 +2353,7 @@ function rebuildWorld(seed: number): void {
     cinematicCameraEngaged = false;
     whiteoutDelay = 0;
     whiteoutRemaining = 0;
+    pettingWolfId = null;
     lightningFlash.setOpacity(0);
     gameAudio.stopStructureBuzz();
     gameAudio.resetStructureHums();
@@ -2858,12 +2882,56 @@ function onPointerLockChange(locked: boolean): void {
     }
 }
 
-// Both attack types hit everything in front of the robot once when the swing starts: enemies,
-// rocks, the megastructure switch, and robot remains. A regular swing only covers the forward arc
-// for the current difficulty, while the charged spin sweeps all the way around and deals triple
-// damage.
-function strikeWithWrench(charged: boolean): void {
+// A pet takes the place of a normal swing when the wrench is ready and a wolf is close enough.
+// First person must also be looking through the same cone the wrench uses; third person turns the
+// robot toward the wolf first, so it only needs contact range.
+function tryPetWolf(): boolean {
+    if (
+        !player.isWrenchEquipped ||
+        player.isPetting ||
+        player.isWrenchSwinging ||
+        player.isWrenchCharging ||
+        player.isKnockedDown
+    ) {
+        return false;
+    }
+
+    const facing = cameraController.firstPerson ? cameraController.yaw + Math.PI : null;
+    const wolf = robotAnimals.findWolfToPet(
+        player.group.position,
+        facing,
+        FIRST_PERSON_WRENCH_STRIKE_ARC,
+        PET_WOLF_DISTANCE,
+    );
+    if (!wolf) {
+        return false;
+    }
+
+    const targetFacing = Math.atan2(wolf.x - player.group.position.x, wolf.z - player.group.position.z);
+    if (!player.startPetting(targetFacing)) {
+        return false;
+    }
+    pettingWolfId = wolf.id;
+    return true;
+}
+
+// Starts the visible part of a swing: the whoosh and the wrench trails. The hit itself lands
+// later, once the animation has swung far enough (see Player.onWrenchStrike).
+function beginWrenchSwing(charged: boolean): void {
     gameAudio.playWrenchSwing(charged);
+    if (charged) {
+        for (const trail of wrenchTrails) {
+            trail.start();
+        }
+    } else {
+        wrenchHitTrail.start();
+    }
+}
+
+// Both attack types hit everything in front of the robot exactly once per swing: enemies, rocks,
+// the megastructure switch, and robot remains. A regular swing only covers the forward arc for the
+// current difficulty, while the charged spin sweeps all the way around and deals triple damage.
+function strikeWithWrench(charged: boolean): void {
     const damage = charged ? WRENCH_CHARGED_DAMAGE : 1;
     const firstPerson = cameraController.firstPerson;
     // Use the live camera yaw rather than the body, which is updated later in the frame. In first
@@ -2876,13 +2944,6 @@ function strikeWithWrench(charged: boolean): void {
     // threat area comparable. The multiplier depends only on the view mode, so both regular and
     // charged attacks use it.
     const reachScale = firstPerson ? FIRST_PERSON_WRENCH_REACH_SCALE : 1;
-    if (charged) {
-        for (const trail of wrenchTrails) {
-            trail.start();
-        }
-    } else {
-        wrenchHitTrail.start();
-    }
     strikeEnemiesWithWrench(charged, facing, arc, reachScale);
     const rockHits = terrain.wrenchStrike(player.group.position, damage, facing, arc, reachScale);
     if (rockHits.length > 0) {
@@ -2908,10 +2969,8 @@ function strikeWithWrench(charged: boolean): void {
     }
 }
 
-// Only the charged strike hits enemies twice: once when it starts and again when the animation
-// ends. The second pass catches robots that moved into reach mid-spin; wrenchStrike skips anyone
-// still immune from the first pass, so a robot in range for both checks only takes one hit. The
-// default reach follows the current view mode, so both charged passes use the first-person reach.
+// Damages every vulnerable enemy in the wrench's reach. One hit sound plays per swing, anchored to
+// the first result, so a wide sweep does not stack overlapping impacts.
 function strikeEnemiesWithWrench(
     charged = false,
     facing: number | null = null,
@@ -3096,9 +3155,12 @@ function animate(): void {
         input.consumeLook();
     }
 
-    // The regular attack swings as soon as its input goes down.
-    if (input.consumeAttackPress() && !player.isWrenchCharging && player.swingWrench()) {
-        strikeWithWrench(false);
+    // The regular attack swings as soon as its input goes down, unless a nearby wolf turns the
+    // press into a petting gesture instead.
+    if (input.consumeAttackPress() && !player.isWrenchCharging) {
+        if (!tryPetWolf() && player.swingWrench()) {
+            beginWrenchSwing(false);
+        }
     }
     // The charged attack starts filling on its own from a Shift or right-button press. A press
     // during the previous swing is remembered by the player and starts the charge when it ends.
@@ -3119,15 +3181,21 @@ function animate(): void {
         actorColliders,
         cameraController.firstPerson,
     );
+    // A knockdown or death interrupts the gesture without firing its completion callback.
+    if (pettingWolfId !== null && !player.isPetting) {
+        pettingWolfId = null;
+    }
     // A knockdown, destruction, or lost wrench cancels the charge without striking.
     if (player.updateWrenchCharge(dt)) {
         gameAudio.stopStructureBuzz('wrench');
     }
     // A full charge releases itself; the player never has to hold the button.
     if (player.isWrenchCharging && player.isWrenchCharged) {
-        player.releaseWrench();
+        const released = player.releaseWrench();
         gameAudio.stopStructureBuzz('wrench');
-        strikeWithWrench(true);
+        if (released) {
+            beginWrenchSwing(true);
+        }
     }
     const chargedSwing = player.isWrenchSwingCharged;
     const regularSwing = player.isWrenchSwinging && !chargedSwing;
@@ -3192,6 +3260,9 @@ function animate(): void {
         cameraYaw: cameraController.yaw,
         cameraPitch: cameraController.pitch,
         chargeProgress: player.wrenchChargeProgress,
+        petting: player.isPetting,
+        petProgress: player.petProgress,
+        petReach: player.petReach,
         knockdownProgress: player.knockdownProgress,
     });
     // The trails must follow the visible wrench. In first person that is the camera-mounted

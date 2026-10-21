@@ -93,6 +93,19 @@ export interface FirstPersonSwingPose {
 
 const SWING_ARC_LIFT = 0.5;
 const SWING_FORWARD_EXTENSION = 2.5;
+// Petting stretches the arm toward the wolf. The arm pivots at the shoulder instead of sliding
+// forward; the side offset oscillates the whole viewmodel around the centred pose.
+const PET_CENTER = 0.3;
+const PET_SIDE = 0.2;
+const PET_LIFT = 0.08;
+const PET_PITCH = 0.28;
+const PET_YAW = 0.26;
+const PET_ROLL = -0.2;
+// Shoulder point in viewmodel space, just past the visible forearm. The hand hangs below it, so a
+// positive X rotation swings the hand and wrench forward into the scene.
+const PET_SHOULDER_Y = 0.62;
+const PET_SHOULDER_Z = 0.06;
+const PET_PIVOT_ANGLE = (35 * Math.PI) / 180;
 // The rings stay 1.5x thinner than their third-person counterparts; the charged trail is thinner
 // still.
 const FIRST_PERSON_RING_THINNING = 1.5;
@@ -187,6 +200,11 @@ export interface FirstPersonWrenchFrame {
     cameraPitch: number;
     // 0..1 charge progress. Above zero shows the electric cage, matching the third-person wrench.
     chargeProgress: number;
+    // 0..1 progress and eased reach of a petting gesture. While petting is true, the wrench
+    // stretches toward the wolf instead of swinging.
+    petting: boolean;
+    petProgress: number;
+    petReach: number;
     // 0..1 progress through a hard-landing face plant. The viewmodel drops below the frame while
     // this is high and returns as the robot gets up.
     knockdownProgress: number;
@@ -202,6 +220,7 @@ export class FirstPersonWrench {
 
     private readonly model = new Group();
     private readonly swingPivot = new Group();
+    private readonly petPivot = new Group();
     private readonly tips: Group[] = [];
     private readonly jawCenter = new Group();
     private handOffset = 0;
@@ -230,6 +249,7 @@ export class FirstPersonWrench {
         this.attachment.name = 'first-person-wrench';
         this.group.name = 'first-person-wrench-pose';
         this.swingPivot.name = 'first-person-wrench-swing';
+        this.petPivot.name = 'first-person-wrench-pet-pivot';
         this.model.name = 'first-person-wrench-model';
         this.attachment.add(this.group);
         this.glowMaterial = new MeshStandardMaterial({
@@ -384,6 +404,8 @@ export class FirstPersonWrench {
         const chargedSwing = frame.swinging && frame.chargedSwing ? Math.sin(frame.swingAngle / 2) : 0;
         const chargedKick = Math.abs(chargedSwing);
         const facePlantDrop = FACE_PLANT_DROP * frame.knockdownProgress;
+        const petReach = frame.petting ? frame.petReach : 0;
+        const petSide = Math.sin(frame.petProgress * Math.PI * 4) * PET_SIDE * petReach;
 
         // The regular strike pivots around the jaw-line axis, so the head moves forward and down
         // instead of sweeping sideways across the view. The hand and wrench ride above that pivot,
@@ -393,15 +415,24 @@ export class FirstPersonWrench {
         this.model.position.y = -this.handOffset - swingPose.arcLift;
         this.model.position.z = -swingPose.forward;
         this.group.position.set(
-            BASE_X + swayX + chargedSwing * SWING_X,
-            BASE_Y + bobY + breath + pitchSway + swingPose.lift + chargedKick * 0.03 - landingDip - facePlantDrop,
+            BASE_X + swayX + chargedSwing * SWING_X + petReach * PET_CENTER + petSide,
+            BASE_Y +
+                bobY +
+                breath +
+                pitchSway +
+                swingPose.lift +
+                chargedKick * 0.03 +
+                petReach * PET_LIFT -
+                landingDip -
+                facePlantDrop,
             BASE_Z - chargedKick * 0.04,
         );
         this.group.rotation.set(
-            BASE_PITCH - chargedKick * 0.28,
-            BASE_YAW - chargedSwing * 0.12,
-            BASE_ROLL + swayRoll - chargedSwing * SWING_ROLL,
+            BASE_PITCH - chargedKick * 0.28 + petReach * PET_PITCH,
+            BASE_YAW - chargedSwing * 0.12 + petReach * PET_YAW,
+            BASE_ROLL + swayRoll - chargedSwing * SWING_ROLL + petReach * PET_ROLL,
         );
+        this.petPivot.rotation.x = petReach * PET_PIVOT_ANGLE;
         this.updateWrenchBolts(dt, frame.chargeProgress);
     }
 
@@ -537,10 +568,13 @@ export class FirstPersonWrench {
         // The swing pivot stays at the hand's resting point; the hand and wrench offset upward
         // during the hit to increase the arc radius without moving the pivot.
         this.handOffset = handY * FIRST_PERSON_WRENCH_SCALE;
-        this.swingPivot.position.set(0, this.handOffset, 0);
+        this.petPivot.position.set(0, PET_SHOULDER_Y, PET_SHOULDER_Z);
+        // Keep the hand at its original pose when the petting pivot is at rest.
+        this.swingPivot.position.set(0, this.handOffset - PET_SHOULDER_Y, -PET_SHOULDER_Z);
         this.model.position.set(0, -this.handOffset, 0);
         this.swingPivot.add(this.model);
-        this.group.add(this.swingPivot);
+        this.petPivot.add(this.swingPivot);
+        this.group.add(this.petPivot);
     }
 
     // Mirrors Player.updateWrenchBolts, but with the first-person cage and thinning.
