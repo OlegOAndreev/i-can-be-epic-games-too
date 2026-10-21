@@ -967,6 +967,10 @@ async function init(): Promise<void> {
     player.onWrenchChargeStart = () => gameAudio.playStructureBuzz(WRENCH_CHARGE_SECONDS, 'wrench');
     player.onJump = (doubleJump) => gameAudio.playJump(doubleJump);
     player.onDoubleJump = (position) => {
+        // The ring trails the robot's own arc, which puts it right under the first-person camera.
+        if (cameraController.firstPerson) {
+            return;
+        }
         if (!isFullySubmerged(position)) {
             waterSplash.spawnDoubleJumpRing(position);
         }
@@ -999,15 +1003,21 @@ async function init(): Promise<void> {
             }
         } else {
             const groundColor = terrain.groundColorAt(position.x, position.z);
-            if (onMetal) {
-                dustPuffs.spawnMetalLanding(position, groundColor);
-            } else if (hardLanding) {
-                dustPuffs.spawnHardLanding(position, impactSpeed, groundColor);
+            // First person puts the camera among the landing puffs, so skip the cloud but keep the
+            // dent and its shadow patch, which stay part of the world.
+            if (!cameraController.firstPerson) {
+                if (onMetal) {
+                    dustPuffs.spawnMetalLanding(position, groundColor);
+                } else if (hardLanding) {
+                    dustPuffs.spawnHardLanding(position, impactSpeed, groundColor);
+                } else {
+                    dustPuffs.spawn(position, impactSpeed, groundColor);
+                }
+            }
+            if (hardLanding) {
                 groundDents.spawn(position, impactSpeed, groundColor, terrain);
                 // Dent decals create a new lit material; add the static shadow uniforms to it.
                 staticSunShadow?.patchScene(view.scene);
-            } else {
-                dustPuffs.spawn(position, impactSpeed, groundColor);
             }
         }
     };
@@ -1023,7 +1033,9 @@ async function init(): Promise<void> {
 
         if (onMetal) {
             gameAudio.playMetalFootstep(0, METAL_FOOTSTEP_GAIN * boost);
-            dustPuffs.spawnMetalLanding(position, groundColor);
+            if (!cameraController.firstPerson) {
+                dustPuffs.spawnMetalLanding(position, groundColor);
+            }
             return;
         }
 
@@ -1036,7 +1048,9 @@ async function init(): Promise<void> {
         }
 
         footstepPosition.set(position.x, terrain.heightAt(position.x, position.z), position.z);
-        dustPuffs.spawn(footstepPosition, impactSpeed, groundColor);
+        if (!cameraController.firstPerson) {
+            dustPuffs.spawn(footstepPosition, impactSpeed, groundColor);
+        }
         footprints.spawn(footstepPosition, windDirection, footstepSide, groundColor, terrain);
         footstepSide *= -1;
     };
@@ -2555,9 +2569,13 @@ function setFirstPerson(firstPerson: boolean): void {
     cameraController.setFirstPerson(firstPerson);
     syncViewModeButtons();
     if (firstPerson) {
-        // First person puts the camera inside the robot, so the wake streaks would sometimes
-        // pop across the lens. Drop any live ones and stop emitting while the view is inside.
+        // First person puts the camera inside the robot, so the wake streaks and its own dust
+        // would sometimes pop across the lens. Drop any live ones and stop emitting them while
+        // the view is inside.
         windTrails.clear();
+        dustPuffs.clear();
+        doubleJumpTrailRemaining = 0;
+        doubleJumpTrailTimer = 0;
     }
     updatePlayerAppearance();
     applyCameraFov();
@@ -3132,7 +3150,7 @@ function animate(): void {
     }
 
     // Leave the remaining splash circles at the robot's current point on its jump arc.
-    if (doubleJumpTrailRemaining > 0) {
+    if (!cameraController.firstPerson && doubleJumpTrailRemaining > 0) {
         doubleJumpTrailTimer -= dt;
         if (doubleJumpTrailTimer <= 0) {
             if (!isFullySubmerged(player.group.position)) {

@@ -70,6 +70,9 @@ const ENGINE_Z = -3.0;
 // under the wing plate.
 const ENGINE_CUTOUT_RADIUS = 0.5;
 const SMOKE_COLORS = [0x232220, 0x2a2926, 0x32302c];
+// The grass field is one alpha-blended draw at renderOrder 0, so its camera-relative sort would
+// otherwise put blades in front of puffs that are farther away. Draw the plume after the foliage.
+const SMOKE_RENDER_ORDER = 1;
 // Puffs expand quickly through the first few metres, then only slowly as they climb.
 const SMOKE_QUICK_GROWTH_DISTANCE = 4;
 const SMOKE_SLOW_GROWTH_DISTANCE = 150;
@@ -564,6 +567,7 @@ export class Spaceship {
         const mesh = this.acquireSmokeMesh(geometry, material);
         mesh.position.copy(position);
         mesh.rotation.set(0, 0, 0);
+        mesh.renderOrder = SMOKE_RENDER_ORDER;
         this.smokeGroup.add(mesh);
 
         const startScale = 0.22 + Math.random() * 0.12;

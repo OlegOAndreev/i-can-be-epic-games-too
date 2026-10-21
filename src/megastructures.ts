@@ -1652,7 +1652,7 @@ export class Megastructures {
         this.group.add(lamp);
 
         const glowRadius = lampRadius * 2.1;
-        const glow = new Mesh(new SphereGeometry(glowRadius, 12, 8), this.lampGlowMaterial);
+        const glow = new Mesh(new SphereGeometry(glowRadius, 24, 16), this.lampGlowMaterial);
         glow.name = 'crown-lamp-glow';
         glow.position.set(centreX, lampY, centreZ);
         this.group.add(glow);
