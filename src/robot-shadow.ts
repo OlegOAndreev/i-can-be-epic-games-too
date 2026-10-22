@@ -16,9 +16,9 @@ import type { ShadowPreset } from './sun-light-shadow';
 
 const SUN_SHADOW_LOOKUP = 'getSunShadow( sunShadowMap[ i ], sunLightShadow, UNROLLED_LOOP_INDEX )';
 
-// Robots are small and stay close to the camera. One cascade over this distance covers every world
-// shadow that can meaningfully fall on them; enemies are culled at 65 m and NPCs are closer, so
-// 80 m keeps the cascade tight enough for readable shadows on robot surfaces.
+// Robots are small and stay close to the camera. This is the range of world shadows that can fall
+// on the player robot; the robot's own cast shadow comes from the main sun. Enemies are culled at
+// 65 m and NPCs are closer, so 80 m keeps a safety margin around every visible caster.
 export const ROBOT_SHADOW_DISTANCE = 80;
 
 // A second, black sun renders a single close-range cascade without the player robot in it. The

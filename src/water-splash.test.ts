@@ -3,6 +3,12 @@ import { describe, expect, it } from 'vitest';
 
 import { WaterSplash } from './water-splash';
 
+function doubleJumpRingOpacity(scene: Scene): number {
+    const ring = scene.children.find((child) => child.renderOrder === 4) as Mesh | undefined;
+    expect(ring).toBeDefined();
+    return (ring!.material as MeshBasicMaterial).opacity;
+}
+
 describe('water splash', () => {
     it('spawns white particles and foam rings that clean themselves up', () => {
         const scene = new Scene();
@@ -103,6 +109,27 @@ describe('water splash', () => {
 
         splash.update(1);
         expect(scene.children.length).toBe(0);
+
+        splash.dispose();
+    });
+
+    it('shows the double-jump ring 1.5x more opaque in third person than in first person', () => {
+        const scene = new Scene();
+        const splash = new WaterSplash(scene);
+        const position = new Vector3(0, 2, 0);
+
+        splash.spawnDoubleJumpRing(position);
+        splash.update(0);
+        const thirdPersonOpacity = doubleJumpRingOpacity(scene);
+        splash.clear();
+
+        splash.setFirstPerson(true);
+        splash.spawnDoubleJumpRing(position);
+        splash.update(0);
+        const firstPersonOpacity = doubleJumpRingOpacity(scene);
+
+        expect(thirdPersonOpacity).toBeCloseTo(0.5);
+        expect(firstPersonOpacity).toBeCloseTo(thirdPersonOpacity / 1.5);
 
         splash.dispose();
     });

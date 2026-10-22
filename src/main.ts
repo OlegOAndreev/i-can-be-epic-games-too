@@ -132,11 +132,18 @@ const DAMAGE_VIGNETTE_BOOST = 1.6;
 
 // Cascaded shadows cover the same range as the fog; anything beyond it is not visible.
 const MAX_SHADOW_DISTANCE = 620;
-// The static shadow atlas spans the whole world; this leaves room for the tallest structures.
+// The static atlas spans the whole world; this leaves room for the tallest structures.
 const STATIC_SHADOW_MAX_HEIGHT = 400;
 // In static atlas mode one live cascade covers the near field at high resolution, while the atlas
 // fills in static shadows farther away. Fog starts at 90 m, so dynamic shadows beyond this barely show.
 const STATIC_ATLAS_LIVE_DISTANCE = 120;
+// The static atlas carries the far field. 3072² across the fitted near frustum is ~12 cm per
+// texel at the default FOV; ultra keeps 4096² (~9 cm) for extra near-field detail.
+const MAX_LIVE_SHADOW_MAP_SIZE = 3072;
+const ULTRA_LIVE_SHADOW_MAP_SIZE = 4096;
+// The robot map covers 80 m instead of 120 m and is only read by the player model. At 2048² it
+// lands at the same ~12 cm per texel while costing about 44% of the main map's pixels.
+const MAX_ROBOT_SHADOW_MAP_SIZE = 2048;
 const SEED_STORAGE_KEY = 'walking-game.seed';
 const PLAYER_STORAGE_KEY = 'walking-game.player';
 const SETTINGS_STORAGE_KEY = 'walking-game.settings';
@@ -200,7 +207,7 @@ const DEFAULT_SETTINGS = {
     antialias: false,
     shadowQuality: 'high' as ShadowQuality,
     shadowMode: 'staticAtlas' as ShadowMode,
-    shadowSoftness: 2,
+    shadowSoftness: 1.75,
     grassRadius: DEFAULT_GRASS_RADIUS,
     difficulty: 'medium' as const,
     volume: 0.8,
@@ -1476,7 +1483,12 @@ function createLights(): void {
     // already covers static geometry across the island, so extra live cascades mostly duplicate work.
     const cascadeCount = staticAtlas ? 1 : preset.cascades;
     const cascadeFractions = staticAtlas ? [] : preset.fractions;
-    const liveMapSize = staticAtlas ? Math.min(4096, preset.mapSize * 2) : preset.mapSize;
+    const liveMapCap =
+        renderSettings.shadowQuality === 'ultra' ? ULTRA_LIVE_SHADOW_MAP_SIZE : MAX_LIVE_SHADOW_MAP_SIZE;
+    const liveMapSize = staticAtlas
+        ? Math.min(liveMapCap, preset.mapSize * 2)
+        : preset.mapSize;
+    const robotMapSize = Math.min(liveMapSize, MAX_ROBOT_SHADOW_MAP_SIZE);
     const liveDistance = staticAtlas
         ? Math.min(renderSettings.shadowDistance, STATIC_ATLAS_LIVE_DISTANCE)
         : renderSettings.shadowDistance;
@@ -1503,7 +1515,7 @@ function createLights(): void {
 
     // This zero-intensity sun renders an identical cascade set without the player robot. The
     // robot samples it for its own shading, giving it world shadows without self-shadowing.
-    robotShadowSun = createRobotShadowSun(sun, { ...preset, cascades: cascadeCount, mapSize: liveMapSize });
+    robotShadowSun = createRobotShadowSun(sun, { ...preset, cascades: cascadeCount, mapSize: robotMapSize });
     robotShadowSun.shadow.autoUpdate = false;
     view.scene.add(robotShadowSun);
     viewmodelLights.push(hemisphere, interiorFillLight, sun, robotShadowSun);
@@ -2595,6 +2607,8 @@ function updateSpeedFov(dt: number, speed: number): void {
 function setFirstPerson(firstPerson: boolean): void {
     viewSettings.firstPerson = firstPerson;
     cameraController.setFirstPerson(firstPerson);
+    dustPuffs.setFirstPerson(firstPerson);
+    waterSplash.setFirstPerson(firstPerson);
     syncViewModeButtons();
     if (firstPerson) {
         // First person puts the camera inside the robot, so the wake streaks would sometimes
