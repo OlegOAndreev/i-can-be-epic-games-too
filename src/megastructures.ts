@@ -363,6 +363,15 @@ export interface FloorProp {
     signs: FloorPropSign[];
 }
 
+// Exterior decoration that only appears once a tower has been charged: the wall signs and the
+// luminous cyan trim bands around each floor edge. Parts stay per tower so one tower can light up
+// while the others remain dark.
+interface PoweredDecor {
+    trim: BufferGeometry[];
+    glow: BufferGeometry[];
+    signs: BufferGeometry[];
+}
+
 // A handful of weathered metal towers in the style of Combine architecture, each walled on all four
 // sides with a single ground-level entrance. Storey footprints are randomly uneven rather than
 // tapering regularly, and broad storeys rest on and overhang narrower ones. Every level is a full
@@ -557,10 +566,12 @@ export class Megastructures {
     });
     private boltLight = new PointLight(0xbfe0ff, 0, 70, 2);
     private stoneParts: BufferGeometry[] = [];
-    private trimParts: BufferGeometry[] = [];
-    private trimGlowParts: BufferGeometry[] = [];
+    private poweredDecorParts: PoweredDecor[] = [];
+    private poweredDecorMeshes: Mesh[][] = [];
+    private poweredTowers = new Set<number>();
+    private currentTowerIndex = 0;
+    private entranceFrameParts: BufferGeometry[] = [];
     private entranceGlowParts: BufferGeometry[] = [];
-    private signParts: BufferGeometry[] = [];
     private windowParts: BufferGeometry[] = [];
     private floorPropCoreParts: BufferGeometry[] = [];
     private floorPropGlowParts: BufferGeometry[] = [];
@@ -626,10 +637,9 @@ export class Megastructures {
         }
 
         this.finishStone();
-        this.finishTrim();
-        this.finishTrimGlow();
+        this.finishPoweredDecor();
+        this.finishEntranceFrame();
         this.finishEntranceGlow();
-        this.finishSigns();
         this.finishWindows();
         this.finishFloorProps();
 
@@ -813,6 +823,11 @@ export class Megastructures {
         return this.switches
             .filter((structureSwitch) => structureSwitch.triggered)
             .map((structureSwitch) => structureSwitch.towerIndex);
+    }
+
+    // True once the tower's switch has finished charging, so its crown and exterior are lit.
+    isTowerPowered(towerIndex: number): boolean {
+        return this.poweredTowers.has(towerIndex);
     }
 
     // Re-applies the drained look from a save without replaying the strike, its sound, or the
@@ -1039,6 +1054,7 @@ export class Megastructures {
     }
 
     private setCrownBlue(towerIndex: number): void {
+        this.setTowerPowered(towerIndex);
         const glow = this.crownGlows[towerIndex];
         if (!glow || glow.blue) {
             return;
@@ -1059,6 +1075,15 @@ export class Megastructures {
             field.mesh.visible = true;
             field.material.opacity = CROWN_SHIELD_OPACITY;
             field.cooldown = 0;
+        }
+    }
+
+    // Lights the tower's exterior signs and cyan trim once its switch has been thrown. The meshes
+    // stay hidden while the tower is unpowered, and restoring a save goes through the same path.
+    private setTowerPowered(towerIndex: number): void {
+        this.poweredTowers.add(towerIndex);
+        for (const mesh of this.poweredDecorMeshes[towerIndex] ?? []) {
+            mesh.visible = true;
         }
     }
 
@@ -1352,6 +1377,9 @@ export class Megastructures {
             entranceSide,
             storeys,
         });
+        const towerIndex = this.towers.length - 1;
+        this.currentTowerIndex = towerIndex;
+        this.poweredDecorParts.push({ trim: [], glow: [], signs: [] });
         const groundStorey = storeys[0];
         const entrance = this.addTowerWalls(
             groundStorey.minX,
@@ -1437,7 +1465,7 @@ export class Megastructures {
             previousRamp = ramp;
         }
 
-        this.addFloorProps(this.towers.length - 1, storeys, floors, levelCount, levelHeight, centreX, centreZ);
+        this.addFloorProps(towerIndex, storeys, floors, levelCount, levelHeight, centreX, centreZ);
 
         for (let level = 0; level < levelCount; level++) {
             const edge = floorEdgeBounds(level);
@@ -2492,7 +2520,7 @@ export class Megastructures {
         geometry.rotateY(Math.atan2(normalX, normalZ));
         geometry.translate(baseX, centreY, baseZ);
         this.applySignAttributes(geometry, color, signLayer, animation);
-        this.signParts.push(geometry);
+        this.poweredDecorParts[this.currentTowerIndex].signs.push(geometry);
     }
 
     private addTowerWalls(
@@ -2608,7 +2636,7 @@ export class Megastructures {
                     ? new BoxGeometry(along, height, ENTRANCE_FRAME_DEPTH)
                     : new BoxGeometry(ENTRANCE_FRAME_DEPTH, height, along);
             geometry.translate(x, y, z);
-            this.trimParts.push(geometry);
+            this.entranceFrameParts.push(geometry);
         };
 
         // The jambs run a little below the sampled ground height so uneven terrain never leaves
@@ -2853,20 +2881,21 @@ export class Megastructures {
             [0.08, 0.16, depth + 0.14, minX - 0.06, y, centreZ],
         ];
 
+        const decor = this.poweredDecorParts[this.currentTowerIndex];
         for (const [partWidth, partHeight, partDepth, x, partY, z] of parts) {
             const geometry = new BoxGeometry(partWidth, partHeight, partDepth);
             geometry.translate(x, partY, z);
-            this.trimParts.push(geometry);
+            decor.trim.push(geometry);
         }
 
-        // Soft additive bands on the outer faces of all four trim strips. These are merged into one
-        // mesh, so every level across all towers adds only a single extra draw call.
+        // Soft additive bands on the outer faces of all four trim strips. They are merged with the
+        // tower's other trim, so each tower adds only a handful of extra draw calls.
         const glowHeight = 1.6;
         const addGlow = (glowWidth: number, x: number, z: number, rotationY: number): void => {
             const geometry = new PlaneGeometry(glowWidth, glowHeight);
             geometry.rotateY(rotationY);
             geometry.translate(x, y, z);
-            this.trimGlowParts.push(geometry);
+            decor.glow.push(geometry);
         };
         addGlow(width + 0.6, centreX, maxZ + 0.13, 0);
         addGlow(width + 0.6, centreX, minZ - 0.13, Math.PI);
@@ -2900,24 +2929,42 @@ export class Megastructures {
         this.stoneParts = [];
     }
 
-    private finishTrim(): void {
-        this.finishParts(this.trimParts, this.trimMaterial, false, true, 'level-trim');
-        this.trimParts = [];
+    // Merges every tower's exterior decoration into its own meshes and starts them hidden. The
+    // entrance glow and the interior totems are built separately and stay visible from the start.
+    private finishPoweredDecor(): void {
+        for (let towerIndex = 0; towerIndex < this.poweredDecorParts.length; towerIndex++) {
+            const parts = this.poweredDecorParts[towerIndex];
+            const meshes = [
+                this.createPartsMesh(parts.trim, this.trimMaterial, false, true, `level-trim-${towerIndex}`),
+                this.createPartsMesh(parts.glow, this.trimGlowMaterial, false, false, `level-trim-glow-${towerIndex}`),
+                this.createPartsMesh(
+                    parts.signs,
+                    this.floorPropGlowMaterial,
+                    false,
+                    false,
+                    `tower-sign-glyphs-${towerIndex}`,
+                ),
+            ].filter((mesh): mesh is Mesh => mesh !== null);
+            for (const mesh of meshes) {
+                mesh.visible = false;
+                this.group.add(mesh);
+            }
+            this.poweredDecorMeshes[towerIndex] = meshes;
+        }
+
+        this.poweredDecorParts = [];
     }
 
-    private finishTrimGlow(): void {
-        this.finishParts(this.trimGlowParts, this.trimGlowMaterial, false, false, 'level-trim-glow');
-        this.trimGlowParts = [];
+    // The teal doorway frame belongs to the entrance, so it stays visible whether or not the
+    // tower has been powered.
+    private finishEntranceFrame(): void {
+        this.finishParts(this.entranceFrameParts, this.trimMaterial, false, true, 'entrance-frame');
+        this.entranceFrameParts = [];
     }
 
     private finishEntranceGlow(): void {
         this.finishParts(this.entranceGlowParts, this.entranceGlowMaterial, false, false, 'entrance-glow');
         this.entranceGlowParts = [];
-    }
-
-    private finishSigns(): void {
-        this.finishParts(this.signParts, this.floorPropGlowMaterial, false, false, 'tower-sign-glyphs');
-        this.signParts = [];
     }
 
     private finishWindows(): void {
@@ -2933,17 +2980,28 @@ export class Megastructures {
         receiveShadow: boolean,
         name = '',
     ): void {
+        const mesh = this.createPartsMesh(parts, material, castShadow, receiveShadow, name);
+        if (mesh) {
+            this.group.add(mesh);
+        }
+    }
+
+    private createPartsMesh(
+        parts: BufferGeometry[],
+        material: Material,
+        castShadow: boolean,
+        receiveShadow: boolean,
+        name = '',
+    ): Mesh | null {
         if (parts.length === 0) {
-            return;
+            return null;
         }
 
-        const geometry = mergeParts(parts);
-
-        const mesh = new Mesh(geometry, material);
+        const mesh = new Mesh(mergeParts(parts), material);
         mesh.name = name;
         mesh.castShadow = castShadow;
         mesh.receiveShadow = receiveShadow;
-        this.group.add(mesh);
+        return mesh;
     }
 }
 

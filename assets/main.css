@@ -762,9 +762,9 @@ kbd {
 }
 
 .map-swatch-structure {
-    border: 1px solid rgba(132, 244, 255, 0.9);
+    border: 1px solid rgba(255, 178, 102, 0.9);
     border-radius: 2px;
-    background: rgba(56, 201, 226, 0.2);
+    background: rgba(226, 118, 47, 0.2);
 }
 
 .map-swatch-player {

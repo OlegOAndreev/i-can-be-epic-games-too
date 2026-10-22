@@ -69,7 +69,7 @@ describe('wreck map', () => {
         parts.dispose();
     });
 
-    it('draws a drained megastructure white', () => {
+    it('draws unpowered megastructures orange and powered ones cyan', () => {
         const terrain = testTerrain();
         const parts = new SpaceshipParts(terrain, stubAudio({ started: false }));
         const panel = {
@@ -88,14 +88,13 @@ describe('wreck map', () => {
 
         map.update(terrain.spawn.x, terrain.spawn.z, 0);
         const before = context.getImageData(x, y, 1, 1).data;
-        expect(before[2]).toBeGreaterThan(before[0]);
+        expect(before[0]).toBeGreaterThan(before[2]);
 
-        terrain.megastructures.switches[0].triggered = true;
+        terrain.megastructures.restoreFlippedTowerIndices([terrain.megastructures.switches[0].towerIndex]);
         map.update(terrain.spawn.x, terrain.spawn.z, 0);
         const after = context.getImageData(x, y, 1, 1).data;
-        expect(after[0]).toBeGreaterThan(240);
-        expect(after[1]).toBeGreaterThan(240);
-        expect(after[2]).toBeGreaterThan(240);
+        expect(after[2]).toBeGreaterThan(after[0]);
+        expect(after[2]).toBeGreaterThan(150);
 
         parts.dispose();
     });

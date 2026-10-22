@@ -96,8 +96,8 @@ export class WreckMap {
             this.structureState = Number.NaN;
         }
 
-        // The terrain, structures, and search marks only change when a switch flips or a part is
-        // collected, so they live on an offscreen layer and the open map redraws just the arrow.
+        // The terrain, structures, and search marks only change when a tower powers up or a part
+        // is collected, so they live on an offscreen layer and the open map redraws just the arrow.
         const structureState = this.getStructureState();
         if (structureState !== this.structureState) {
             this.renderStaticLayer(structureState);
@@ -110,7 +110,7 @@ export class WreckMap {
     private getStructureState(): number {
         let state = 0;
         for (const structureSwitch of this.terrain.megastructures.switches) {
-            state = state * 3 + (structureSwitch.triggered ? 1 : 0);
+            state = state * 2 + (this.terrain.megastructures.isTowerPowered(structureSwitch.towerIndex) ? 1 : 0);
         }
         for (const site of this.parts.getSites()) {
             state = state * 2 + (site.collected ? 1 : 0);
@@ -193,25 +193,23 @@ export class WreckMap {
             const maxX = this.toCanvasX(tower.maxX);
             const minZ = this.toCanvasZ(tower.minZ);
             const maxZ = this.toCanvasZ(tower.maxZ);
-            // A flipped switch has taken that tower's energy, so it fades from the cyan power
-            // colour to white on the map.
-            const drained = this.terrain.megastructures.switches.some(
-                (structureSwitch) => structureSwitch.towerIndex === towerIndex && structureSwitch.triggered,
-            );
+            // An unpowered tower reads as the standard orange; once its switch has charged it
+            // turns cyan like the live energy running through the structure.
+            const powered = this.terrain.megastructures.isTowerPowered(towerIndex);
 
-            context.fillStyle = drained ? 'rgba(255, 255, 255, 0.16)' : 'rgba(56, 201, 226, 0.12)';
+            context.fillStyle = powered ? 'rgba(56, 201, 226, 0.12)' : 'rgba(226, 118, 47, 0.16)';
             context.fillRect(minX, minZ, maxX - minX, maxZ - minZ);
 
             for (let index = 0; index < tower.storeys.length; index++) {
                 const storey = tower.storeys[index];
                 const topStorey = index === tower.storeys.length - 1;
-                context.strokeStyle = drained
+                context.strokeStyle = powered
                     ? topStorey
-                        ? 'rgba(255, 255, 255, 0.98)'
-                        : 'rgba(255, 255, 255, 0.62)'
+                        ? 'rgba(132, 244, 255, 0.95)'
+                        : 'rgba(86, 217, 240, 0.48)'
                     : topStorey
-                      ? 'rgba(132, 244, 255, 0.95)'
-                      : 'rgba(86, 217, 240, 0.48)';
+                      ? 'rgba(255, 178, 102, 0.95)'
+                      : 'rgba(226, 138, 71, 0.48)';
                 context.lineWidth = topStorey ? 2 : 1;
                 context.strokeRect(
                     this.toCanvasX(storey.minX),
@@ -223,7 +221,7 @@ export class WreckMap {
 
             const centreX = this.toCanvasX((tower.minX + tower.maxX) / 2);
             const centreZ = this.toCanvasZ((tower.minZ + tower.maxZ) / 2);
-            context.fillStyle = drained ? 'rgba(255, 255, 255, 0.98)' : 'rgba(160, 250, 255, 0.95)';
+            context.fillStyle = powered ? 'rgba(160, 250, 255, 0.95)' : 'rgba(255, 196, 128, 0.95)';
             context.beginPath();
             context.arc(centreX, centreZ, 2.6, 0, Math.PI * 2);
             context.fill();

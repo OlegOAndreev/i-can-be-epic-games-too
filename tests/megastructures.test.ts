@@ -464,53 +464,91 @@ describe('megastructures', () => {
 
         const signMeshes: Mesh[] = [];
         structures.group.traverse((child) => {
-            if (child instanceof Mesh && child.name === 'tower-sign-glyphs') {
+            if (child instanceof Mesh && child.name.startsWith('tower-sign-glyphs')) {
                 signMeshes.push(child);
             }
         });
-        expect(signMeshes.length).toBe(1);
+        expect(signMeshes.length).toBe(structures.towers.length);
 
-        const mesh = signMeshes[0];
-        const material = mesh.material as ShaderMaterial;
+        const material = signMeshes[0].material as ShaderMaterial;
         expect(material.uniforms.uSigns.value).toBeDefined();
 
-        const positions = mesh.geometry.getAttribute('position');
         let widest = 0;
-        for (let vertex = 0; vertex < positions.count; vertex += 4) {
-            const left = new Vector3().fromBufferAttribute(positions, vertex);
-            const right = new Vector3().fromBufferAttribute(positions, vertex + 1);
-            widest = Math.max(widest, left.distanceTo(right));
-        }
-        expect(widest).toBeGreaterThan(5);
-
-        const colors = mesh.geometry.getAttribute('propColor');
-        const signLayers = mesh.geometry.getAttribute('propSign');
-        expect(colors).toBeDefined();
-        expect(signLayers).toBeDefined();
-        expect(signLayers.count).toBeGreaterThan(0);
-
         let goldSigns = 0;
         let purpleSigns = 0;
-        for (let vertex = 0; vertex < colors.count; vertex += 4) {
-            const red = colors.getX(vertex);
-            const green = colors.getY(vertex);
-            const blue = colors.getZ(vertex);
-            const isGold = red > 0.5 && green > 0.2 && blue < 0.2;
-            const isPurple = blue > 0.7 && red < 0.7 && green < 0.35;
-            expect(isGold || isPurple).toBe(true);
-            if (isGold) {
-                goldSigns++;
-            } else {
-                purpleSigns++;
+        for (const mesh of signMeshes) {
+            const positions = mesh.geometry.getAttribute('position');
+            for (let vertex = 0; vertex < positions.count; vertex += 4) {
+                const left = new Vector3().fromBufferAttribute(positions, vertex);
+                const right = new Vector3().fromBufferAttribute(positions, vertex + 1);
+                widest = Math.max(widest, left.distanceTo(right));
             }
 
-            for (let offset = 0; offset < 4; offset++) {
-                expect(signLayers.getX(vertex + offset)).toBeGreaterThanOrEqual(0);
-                expect(signLayers.getX(vertex + offset)).toBeLessThan(getSurfaceTextures().signLayers);
+            const colors = mesh.geometry.getAttribute('propColor');
+            const signLayers = mesh.geometry.getAttribute('propSign');
+            expect(colors).toBeDefined();
+            expect(signLayers).toBeDefined();
+            expect(signLayers.count).toBeGreaterThan(0);
+
+            for (let vertex = 0; vertex < colors.count; vertex += 4) {
+                const red = colors.getX(vertex);
+                const green = colors.getY(vertex);
+                const blue = colors.getZ(vertex);
+                const isGold = red > 0.5 && green > 0.2 && blue < 0.2;
+                const isPurple = blue > 0.7 && red < 0.7 && green < 0.35;
+                expect(isGold || isPurple).toBe(true);
+                if (isGold) {
+                    goldSigns++;
+                } else {
+                    purpleSigns++;
+                }
+
+                for (let offset = 0; offset < 4; offset++) {
+                    expect(signLayers.getX(vertex + offset)).toBeGreaterThanOrEqual(0);
+                    expect(signLayers.getX(vertex + offset)).toBeLessThan(getSurfaceTextures().signLayers);
+                }
             }
         }
+        expect(widest).toBeGreaterThan(5);
         expect(goldSigns).toBeGreaterThan(0);
         expect(purpleSigns).toBeGreaterThan(0);
+    });
+
+    it('only lights the exterior signs and cyan trim once a tower is powered', () => {
+        const terrain = testTerrain();
+        const structures = terrain.megastructures;
+        const structureSwitch = structures.switches[0];
+        const towerIndex = structureSwitch.towerIndex;
+
+        const exterior: Mesh[] = [];
+        structures.group.traverse((child) => {
+            if (
+                child instanceof Mesh &&
+                (child.name.startsWith('level-trim') || child.name.startsWith('tower-sign-glyphs'))
+            ) {
+                exterior.push(child);
+            }
+        });
+        expect(exterior.length).toBe(structures.towers.length * 3);
+        expect(exterior.every((mesh) => !mesh.visible)).toBe(true);
+
+        // Interior totems and the entrance glow stay visible from the start.
+        expect(structures.floorProps.length).toBeGreaterThan(0);
+        const entranceGlow = structures.group.getObjectByName('entrance-glow');
+        expect(entranceGlow).toBeInstanceOf(Mesh);
+        expect(entranceGlow?.visible).toBe(true);
+
+        const atSwitch = new Vector3(structureSwitch.x, structureSwitch.y, structureSwitch.z);
+        expect(structures.wrenchHit(atSwitch)).not.toBeNull();
+
+        // Charging alone must not light the tower yet.
+        structures.update(SWITCH_CHARGE_SECONDS / 2, atSwitch);
+        expect(exterior.every((mesh) => !mesh.visible)).toBe(true);
+
+        structures.update(SWITCH_CHARGE_SECONDS, atSwitch);
+        for (const mesh of exterior) {
+            expect(mesh.visible, mesh.name).toBe(mesh.name.endsWith(`-${towerIndex}`));
+        }
     });
 
     it('builds a taper and a continuous walkable spiral ramp up each crown', () => {
