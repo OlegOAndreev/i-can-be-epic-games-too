@@ -20,7 +20,7 @@ import {
 
 import { getRadialGlowTexture, glowSpriteMaterial } from './glow';
 import { lcg32, lerp } from './math-utils';
-import { mergeMeshesByMaterial, mergeParts } from './mesh-optimize';
+import { materialCastsShadow, mergeMeshesByMaterial, mergeParts } from './mesh-optimize';
 import { SKY_COLOR } from './sky-color';
 
 export interface SpaceshipSite {
@@ -310,7 +310,9 @@ export class Spaceship {
         this.restOnTerrain(site, heightAt);
         this.group.traverse((child) => {
             if (child instanceof Mesh) {
-                child.castShadow = true;
+                const materials = Array.isArray(child.material) ? child.material : [child.material];
+                // The emissive engine faces glow, they do not block the sun.
+                child.castShadow = materials.some(materialCastsShadow);
                 child.receiveShadow = true;
             }
         });

@@ -1,5 +1,6 @@
 /*! coi-serviceworker v0.1.7 - Guido Zuidhof and contributors, licensed under MIT */
 /*! Source: https://github.com/gzuidhof/coi-serviceworker */
+/*! PATCHED: see the coi-serviceworker section in README.md. */
 let coepCredentialless = false;
 if (typeof window === 'undefined') {
     self.addEventListener('install', () => self.skipWaiting());
@@ -50,6 +51,12 @@ if (typeof window === 'undefined') {
                         newHeaders.set('Cross-Origin-Resource-Policy', 'cross-origin');
                     }
                     newHeaders.set('Cross-Origin-Opener-Policy', 'same-origin');
+
+                    // PATCHED: Chrome gates JS Self-Profiling behind Document Policy. Only opt in
+                    // when the page was loaded with ?profile.
+                    if (r.mode === 'navigate' && new URL(r.url).searchParams.has('profile')) {
+                        newHeaders.set('Document-Policy', 'js-profiling');
+                    }
 
                     return new Response(response.body, {
                         status: response.status,

@@ -1,6 +1,7 @@
 node_modules
 dist
 profiling
+PLAN.txt
 
 .cache
 .vscode

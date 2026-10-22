@@ -280,13 +280,18 @@ kbd {
 }
 
 .menu-select select {
-    padding: 6px 10px;
+    padding: 6px 30px 6px 10px;
     border: 1px solid rgba(255, 255, 255, 0.22);
     border-radius: 8px;
-    background: rgba(255, 255, 255, 0.08);
+    background-color: rgba(255, 255, 255, 0.08);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%2391aab8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    background-size: 10px 7px;
     color: #f2f7fa;
     font: inherit;
     cursor: pointer;
+    appearance: none;
 }
 
 .menu-select select:focus-visible {
@@ -880,16 +885,7 @@ kbd {
     display: none;
 }
 
-#stats-panel {
-    position: absolute;
-    right: 0;
-    bottom: 0;
-    cursor: pointer;
-    opacity: 0.8;
-    z-index: 10000;
-}
-
-#profiler-panel {
+#performance-graph-panel {
     position: fixed;
     top: 64px;
     right: 16px;
@@ -909,7 +905,7 @@ kbd {
     pointer-events: none;
 }
 
-#profiler-panel canvas {
+#performance-graph-panel canvas {
     display: block;
     margin-top: 6px;
 }

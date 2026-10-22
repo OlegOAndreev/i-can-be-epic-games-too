@@ -1582,7 +1582,8 @@ export class Terrain {
 
         const mesh = new Mesh(this.mineralGeometry, this.mineralMaterial);
         mesh.name = 'emerald-mineral';
-        mesh.castShadow = true;
+        // A pickup-sized shard does not need its own depth draw.
+        mesh.castShadow = false;
         mesh.receiveShadow = true;
         mesh.position.set(
             boulder.x + (Math.random() - 0.5) * boulder.radius * 0.6,

@@ -42,7 +42,7 @@ export interface InputCallbacks {
     onToggleFullscreen?: () => void;
     onScreenshot?: () => void;
     onToggleView?: () => void;
-    onToggleProfiler?: () => void;
+    onTogglePerformanceGraph?: () => void;
     onToggleMusic?: () => void;
     onToggleMap?: () => void;
     onTeleport?: () => void;
@@ -319,7 +319,7 @@ export class Input {
         }
         if (event.code === 'KeyP') {
             if (!event.repeat) {
-                this.callbacks.onToggleProfiler?.();
+                this.callbacks.onTogglePerformanceGraph?.();
             }
             return;
         }

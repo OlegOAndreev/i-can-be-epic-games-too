@@ -38,6 +38,18 @@ describe('shadow casters', () => {
         });
         expect(proxies).toBe(0);
     });
+
+    it('keeps emissive glow parts out of the shadow map', () => {
+        const root = new Group();
+        const glowMaterial = new MeshStandardMaterial({ emissive: 0xff0000 });
+        const glow = new Mesh(new BoxGeometry(1, 1, 1), glowMaterial);
+        root.add(glow);
+
+        prepareMeshes(root);
+
+        expect(glow.castShadow).toBe(false);
+        expect(glow.receiveShadow).toBe(true);
+    });
 });
 
 describe('speech pacing', () => {

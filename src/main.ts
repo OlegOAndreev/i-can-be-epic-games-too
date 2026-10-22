@@ -1,6 +1,5 @@
 import type { Controller } from 'lil-gui';
 import type GUI from 'lil-gui';
-import type Stats from 'three/addons/libs/stats.module.js';
 import {
     ACESFilmicToneMapping,
     AmbientLight,
@@ -77,7 +76,8 @@ import {
 } from './player';
 import type { PlayerSettings } from './player';
 import { PlayerHealth } from './player-health';
-import type { Profiler } from './profiler';
+import type { PerformanceGraph } from './performance-graph';
+import type { ProfileRecorder } from './profile-recorder';
 import type { RenderAudit } from './render-audit';
 import { RobotAnimals } from './robot-animals';
 import { RobotRemains } from './robot-remains';
@@ -505,8 +505,7 @@ function parseSeedText(value: string): number | null {
 }
 
 const initialSearchParams = new URLSearchParams(window.location.search);
-const DEBUG_TOOLS_ENABLED =
-    import.meta.env.DEV || initialSearchParams.has('debug') || initialSearchParams.has('profile');
+const profilingEnabled = initialSearchParams.has('profile');
 const sharedPlayerState = readSharedPlayerState(initialSearchParams);
 const storedSettings = readStoredSettings();
 const shadowQuality = storedShadowQuality(storedSettings, DEFAULT_SETTINGS.shadowQuality);
@@ -723,10 +722,13 @@ let gui: GUI | null = null;
 let seedText: { text: string } | null = null;
 let worldSeedController: Controller | null = null;
 let renderReportController: Controller | null = null;
+let recordProfileController: Controller | null = null;
 let unacceleratedMouseController: Controller | null = null;
 let renderReportLabelTimer = 0;
-let statsPanel: Stats | null = null;
-let profiler: Profiler | null = null;
+let recordProfileLabelTimer = 0;
+let performanceGraph: PerformanceGraph | null = null;
+let profileRecorder: ProfileRecorder | null = null;
+let profileSupported = false;
 let renderAudit: RenderAudit | null = null;
 let sun: SunLight;
 let robotShadowSun: SunLight;
@@ -936,28 +938,34 @@ async function init(): Promise<void> {
     }
 
     underwater = new UnderwaterEffect(view.renderer, view.fog);
-    // The scene and the underwater overlay are rendered separately, so count both in the profiler.
+    // The scene and the underwater overlay are rendered separately, so count both in the performance graph.
     view.renderer.info.autoReset = false;
-    let GuiClass: typeof GUI | null = null;
-    let StatsClass: typeof Stats | null = null;
-    if (DEBUG_TOOLS_ENABLED) {
-        const [guiModule, statsModule, profilerModule, auditModule] = await Promise.all([
-            import('lil-gui'),
-            import('three/addons/libs/stats.module.js'),
-            import('./profiler'),
-            import('./render-audit'),
-        ]);
-        GuiClass = guiModule.default;
-        StatsClass = statsModule.default;
-        const profilerInstance = new profilerModule.Profiler(view.renderer, view.camera);
-        profiler = profilerInstance;
-        renderAudit = new auditModule.RenderAudit(view.renderer, view.scene, {
-            available: profilerInstance.gpuTimingAvailable,
-            sample: () => profilerInstance.requestGpuSample(),
-        });
-        if (initialSearchParams.has('profile')) {
-            profilerInstance.toggle();
+    const [guiModule, performanceGraphModule, auditModule, profileModule] = await Promise.all([
+        import('lil-gui'),
+        import('./performance-graph'),
+        import('./render-audit'),
+        import('./profile-recorder'),
+    ]);
+    const GuiClass = guiModule.default;
+    const performanceGraphInstance = new performanceGraphModule.PerformanceGraph(view.renderer, view.camera);
+    performanceGraph = performanceGraphInstance;
+    renderAudit = new auditModule.RenderAudit(view.renderer, view.scene, {
+        available: performanceGraphInstance.gpuTimingAvailable,
+        sample: () => performanceGraphInstance.requestGpuSample(),
+    });
+    if (profileModule.ProfileRecorder.isSupported()) {
+        profileSupported = true;
+        if (profilingEnabled) {
+            try {
+                // The recorder attaches to the browser API here; recording starts on button press.
+                profileRecorder = new profileModule.ProfileRecorder();
+            } catch (error) {
+                console.warn('[profile] JS self-profiling is not enabled for this document.', error);
+            }
         }
+    }
+    if (profilingEnabled) {
+        performanceGraphInstance.toggle();
     }
     gameAudio = new GameAudio();
     gameAudio.setVolume(storedNumber(storedSettings, 'volume', 0, 1, DEFAULT_SETTINGS.volume));
@@ -1189,10 +1197,7 @@ async function init(): Promise<void> {
         }
     }
 
-    if (GuiClass !== null && StatsClass !== null) {
-        createStatsPanel(StatsClass);
-        gui = createGui(GuiClass);
-    }
+    gui = createGui(GuiClass);
     applyDebugSettings();
     setupMenuSettings();
     refreshStaticShadows();
@@ -1247,7 +1252,7 @@ async function init(): Promise<void> {
                 toggleFirstPerson();
             }
         },
-        onToggleProfiler: () => profiler?.toggle(),
+        onTogglePerformanceGraph: () => performanceGraph?.toggle(),
         onToggleMusic: () => toggleMusic(),
         onToggleMap: () => {
             if (input.pointerLocked && !finale?.active) {
@@ -1313,7 +1318,7 @@ async function init(): Promise<void> {
         webglContextLost = true;
         // Rendering any effect pass against a lost context throws; stop the loop immediately.
         view.renderer.setAnimationLoop(null);
-        profiler?.handleContextLost();
+        performanceGraph?.handleContextLost();
         renderAudit?.handleContextLost();
         if (!finale && !finaleTransitionActive && playerDestroyedRemaining === 0) {
             storePlayerState();
@@ -1322,7 +1327,7 @@ async function init(): Promise<void> {
     });
     canvas.addEventListener('webglcontextrestored', () => {
         webglContextLost = false;
-        profiler?.handleContextRestored();
+        performanceGraph?.handleContextRestored();
         // Render-target contents do not survive context loss; rebuild the static shadow atlas.
         if (staticSunShadow?.isBaked()) {
             staticSunShadow.bake(view.renderer, view.scene);
@@ -1633,13 +1638,6 @@ function nextFrame(): Promise<void> {
     });
 }
 
-function createStatsPanel(StatsConstructor: typeof Stats): void {
-    statsPanel = new StatsConstructor();
-    statsPanel.dom.id = 'stats-panel';
-    statsPanel.dom.style.cssText = '';
-    document.body.appendChild(statsPanel.dom);
-}
-
 function resumeWalking(): void {
     if (!worldReady) {
         return;
@@ -1822,7 +1820,8 @@ function resetSettingsToDefaults(): void {
 
 function createGui(GuiConstructor: typeof GUI): GUI {
     const guiInstance = new GuiConstructor({ title: t('gui.title', 'Advanced settings') });
-    guiInstance.open();
+    // Keep the panel collapsed until the player opens it.
+    guiInstance.close();
     guiInstance.onFinishChange(() => storeSettings());
 
     const worldFolder = guiInstance.addFolder(t('gui.world', 'World')).open();
@@ -1920,8 +1919,8 @@ function createGui(GuiConstructor: typeof GUI): GUI {
         .name(t('gui.resolutionScale', 'Resolution scale'))
         .onChange(applyDebugSettings);
     debugFolder
-        .add({ toggleProfiler: () => profiler?.toggle() }, 'toggleProfiler')
-        .name(t('gui.profiler', 'Profiler (P)'));
+        .add({ togglePerformanceGraph: () => performanceGraph?.toggle() }, 'togglePerformanceGraph')
+        .name(t('gui.performanceGraph', 'Performance graph (P)'));
     renderReportController = debugFolder
         .add(
             {
@@ -1933,6 +1932,12 @@ function createGui(GuiConstructor: typeof GUI): GUI {
             'logRenderReport',
         )
         .name(t('gui.renderReport', 'Log render report'));
+    recordProfileController = debugFolder
+        .add({ recordProfile: () => handleProfileButton() }, 'recordProfile')
+        .name(profileButtonLabel());
+    if (!profileSupported || (profilingEnabled && profileRecorder === null)) {
+        recordProfileController.disable();
+    }
 
     guiInstance
         .add({ resetToDefaults: () => resetSettingsToDefaults() }, 'resetToDefaults')
@@ -2272,10 +2277,9 @@ function updateFinaleFrame(dt: number): void {
     nightSky.update(dt, cameraForward);
 
     updateScreenFades(dt);
-    profiler?.beginRender();
+    performanceGraph?.beginRender();
     renderFrame();
-    profiler?.endFrame();
-    statsPanel?.update();
+    performanceGraph?.endFrame();
 }
 
 function resetFinalePresentation(): void {
@@ -2634,6 +2638,60 @@ function showRenderReportStatus(message: string): void {
     window.clearTimeout(renderReportLabelTimer);
     renderReportLabelTimer = window.setTimeout(() => {
         renderReportController?.name(t('gui.renderReport', 'Log render report'));
+    }, 1600);
+}
+
+function profileButtonLabel(): string {
+    return profileSupported && !profilingEnabled
+        ? t('gui.enableProfiling', 'Enable profiling')
+        : t('gui.recordProfile', 'Record profile');
+}
+
+function handleProfileButton(): void {
+    if (!profileSupported) {
+        return;
+    }
+    if (!profilingEnabled) {
+        const url = new URL(window.location.href);
+        url.searchParams.set('profile', '1');
+        window.location.assign(url);
+        return;
+    }
+    void recordProfile();
+}
+
+async function recordProfile(): Promise<void> {
+    if (!profileRecorder || profileRecorder.recording) {
+        return;
+    }
+
+    window.clearTimeout(recordProfileLabelTimer);
+    recordProfileController?.disable();
+    recordProfileController?.name(t('gui.profileRecording', 'Recording profile…'));
+    try {
+        const samples = await profileRecorder.writeCpuProfile();
+        showRecordProfileStatus(
+            samples === null
+                ? t('gui.profileEmpty', 'No profile samples captured')
+                : t('gui.profileSaved', 'Profile saved'),
+        );
+    } catch (error) {
+        console.warn('[profile] Could not record the CPU profile.', error);
+        showRecordProfileStatus(t('gui.profileFailed', 'Profile failed — see console'));
+    } finally {
+        recordProfileController?.enable();
+    }
+}
+
+function showRecordProfileStatus(message: string): void {
+    if (!recordProfileController) {
+        return;
+    }
+
+    recordProfileController.name(message);
+    window.clearTimeout(recordProfileLabelTimer);
+    recordProfileLabelTimer = window.setTimeout(() => {
+        recordProfileController?.name(t('gui.recordProfile', 'Record profile'));
     }, 1600);
 }
 
@@ -3227,7 +3285,7 @@ function animate(): void {
     if (webglContextLost) {
         return;
     }
-    profiler?.beginFrame();
+    performanceGraph?.beginFrame();
     const dt = Math.min(clock.getDelta(), 0.05);
     view.updateCanvasSize(canvas);
     syncPixelRatio();
@@ -3236,9 +3294,9 @@ function animate(): void {
     // Pointer lock is the pause state. Freeze simulation and keep the current frame visible;
     // IdleManager still handles hidden tabs and long-idle render-loop suspension separately.
     if (!input.pointerLocked) {
-        profiler?.beginRender();
+        performanceGraph?.beginRender();
         renderFrame();
-        profiler?.endFrame();
+        performanceGraph?.endFrame();
         return;
     }
 
@@ -3544,8 +3602,7 @@ function animate(): void {
     nightSky.update(dt, cameraForward);
 
     updateScreenFades(dt);
-    profiler?.beginRender();
+    performanceGraph?.beginRender();
     renderFrame();
-    profiler?.endFrame();
-    statsPanel?.update();
+    performanceGraph?.endFrame();
 }

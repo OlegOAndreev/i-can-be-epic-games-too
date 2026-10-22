@@ -88,6 +88,63 @@ describe('robot animals', () => {
         animals.dispose();
     });
 
+    it('merges the animated pivots and swaps distant packs to a single LOD mesh', () => {
+        const terrain = testTerrain(20260419, { meshes: false });
+        const animals = new RobotAnimals(terrain);
+        const group = animalGroups(animals)[0];
+
+        const body = group.getObjectByName('body');
+        expect(body).toBeDefined();
+        expect(body!.children.some((child) => child instanceof Mesh && child.name.startsWith('merged-'))).toBe(true);
+
+        const hoof = group.getObjectByName('hoof-0');
+        expect(hoof).toBeInstanceOf(Mesh);
+        expect((hoof as Mesh).castShadow).toBe(false);
+
+        let eyeShadowCasters = 0;
+        group.traverse((child) => {
+            if (
+                child instanceof Mesh &&
+                child.material instanceof MeshStandardMaterial &&
+                child.material.emissive.getHex() === ANIMAL_EYE_COLOR &&
+                child.castShadow
+            ) {
+                eyeShadowCasters++;
+            }
+        });
+        expect(eyeShadowCasters).toBe(0);
+
+        const detailed = group.children.find((child): child is Group => child instanceof Group);
+        const lod = group.children.find(
+            (child): child is Mesh => child instanceof Mesh && child.name.endsWith('-lod'),
+        );
+        expect(detailed).toBeDefined();
+        expect(lod).toBeDefined();
+        let detailedMeshes = 0;
+        detailed!.traverse((child) => {
+            if (child instanceof Mesh) {
+                detailedMeshes++;
+            }
+        });
+        // The unmerged rig has roughly 45-50 meshes; the per-pivot merge leaves under 30.
+        expect(detailedMeshes).toBeLessThan(30);
+        expect(detailed!.visible).toBe(true);
+        expect(lod!.visible).toBe(false);
+
+        const far = new Vector3(group.position.x + 400, 0, group.position.z);
+        far.y = terrain.heightAt(far.x, far.z);
+        animals.update(0.016, far);
+        expect(detailed!.visible).toBe(false);
+        expect(lod!.visible).toBe(true);
+
+        const near = group.position.clone();
+        animals.update(0.016, near);
+        expect(detailed!.visible).toBe(true);
+        expect(lod!.visible).toBe(false);
+
+        animals.dispose();
+    });
+
     it('places twenty deer packs and at least ten wolves per world', () => {
         for (const seed of [20260419, 1, 7, 42, 424242, 999999]) {
             const terrain = testTerrain(seed, { meshes: false });

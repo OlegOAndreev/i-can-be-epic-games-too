@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { GLOW_RING_TEXTURE_INNER_RADIUS } from './glow';
 import { angleDelta } from './math-utils';
+import { materialCastsShadow } from './mesh-optimize';
 import type { Player } from './player';
 import {
     chargedWrenchArmAngle,
@@ -590,7 +591,9 @@ describe('Player shadow casters', () => {
             pivot.traverse((child) => {
                 if (child instanceof Mesh && !halos.has(child)) {
                     detailedMeshes++;
-                    expect(child.castShadow).toBe(true);
+                    const materials = Array.isArray(child.material) ? child.material : [child.material];
+                    // Opaque body parts cast; emissive visor/thruster parts do not.
+                    expect(child.castShadow).toBe(materials.some(materialCastsShadow));
                     expect(child.receiveShadow).toBe(true);
                 }
             });

@@ -18,6 +18,7 @@ import type { BufferGeometry } from 'three';
 
 import { getRadialGlowTexture } from './glow';
 import { lerp } from './math-utils';
+import { materialCastsShadow } from './mesh-optimize';
 import { ENEMY_EYE_COLOR } from './npc-robots';
 import type { RobotKind } from './npc-robots';
 import { applySpin, bounceParticle, integrateParticle } from './particle-motion';
@@ -471,7 +472,8 @@ export class EnemyDebris {
     ): InstancedMesh {
         const batch = new InstancedMesh(geometry, material, POOL_SIZE);
         batch.name = name;
-        batch.castShadow = true;
+        // The glowing debris batches share an emissive material; they should not cast shadows.
+        batch.castShadow = materialCastsShadow(material);
         batch.receiveShadow = true;
         batch.frustumCulled = false;
         batch.instanceMatrix.setUsage(DynamicDrawUsage);

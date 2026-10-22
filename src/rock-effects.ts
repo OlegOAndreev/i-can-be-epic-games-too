@@ -108,7 +108,9 @@ export class RockEffects {
             );
             mesh.name = 'rock-fragment';
             mesh.visible = false;
-            mesh.castShadow = true;
+            // Shards are a few centimetres across and live for a second; the shadow draw costs more
+            // than the silhouette contributes.
+            mesh.castShadow = false;
             mesh.receiveShadow = true;
             this.group.add(mesh);
             this.fragments.push({

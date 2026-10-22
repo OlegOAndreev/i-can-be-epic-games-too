@@ -20,10 +20,10 @@ interface FrameSample {
     gpu: number | null;
 }
 
-// Lightweight on-screen profiler. GPU time comes from EXT_disjoint_timer_query_webgl2 when the
-// browser exposes it; on browsers without the extension the panel still reports CPU timings,
-// draw calls, and triangle counts. Measurements are only issued while the panel is visible.
-export class Profiler {
+// Lightweight on-screen performance graph. GPU time comes from EXT_disjoint_timer_query_webgl2
+// when the browser exposes it; on browsers without the extension the panel still reports CPU
+// timings, draw calls, and triangle counts. Measurements are only issued while the panel is visible.
+export class PerformanceGraph {
     readonly dom: HTMLPreElement;
     visible = false;
 
@@ -62,11 +62,11 @@ export class Profiler {
                 | undefined) ?? null;
 
         this.dom = document.createElement('pre');
-        this.dom.id = 'profiler-panel';
+        this.dom.id = 'performance-graph-panel';
         this.dom.hidden = true;
         this.textNode = document.createTextNode('');
         this.graph = document.createElement('canvas');
-        this.graph.className = 'profiler-graph';
+        this.graph.className = 'performance-graph';
         this.graph.style.width = `${GRAPH_WIDTH}px`;
         this.graph.style.height = `${GRAPH_HEIGHT}px`;
         this.graphContext = this.graph.getContext('2d');

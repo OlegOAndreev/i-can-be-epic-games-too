@@ -19,7 +19,7 @@ import {
     glowMaterial as createGlowMaterial,
     glowSpriteMaterial,
 } from './glow';
-import { mergeMeshesByMaterial } from './mesh-optimize';
+import { materialCastsShadow, mergeMeshesByMaterial } from './mesh-optimize';
 
 // The rear thruster dots glow softly while idle and flare up while running.
 export const THRUSTER_BASE_GLOW = 1.0;
@@ -404,11 +404,12 @@ export function buildPlayerModel(): PlayerModel {
     const robotMaterials: MeshStandardMaterial[] = [];
     visual.traverse((child) => {
         if (child instanceof Mesh) {
-            // The player casts its actual silhouette and receives the world-only shadow map so
-            // trees and structures shade the robot.
-            child.castShadow = true;
-            child.receiveShadow = true;
             const materials = Array.isArray(child.material) ? child.material : [child.material];
+            // The player casts its actual silhouette and receives the world-only shadow map so
+            // trees and structures shade the robot. Emissive visor/thruster parts are light, not
+            // geometry, and stay out of the depth pass.
+            child.castShadow = materials.some(materialCastsShadow);
+            child.receiveShadow = true;
             for (const material of materials) {
                 if (material instanceof MeshStandardMaterial && !robotMaterials.includes(material)) {
                     // Player.setOpacity() switches these into the opaque pass as soon as it knows the

@@ -34,6 +34,15 @@ export function isSharedMaterial(material: Material): boolean {
     return sharedMaterials.has(material);
 }
 
+// Glow parts are light, not geometry. Emissive materials and faded transparent materials should not
+// reserve a depth pass in the shadow map. Opaque body materials still cast their real silhouette.
+export function materialCastsShadow(material: Material): boolean {
+    if (material.transparent && material.opacity < 1) {
+        return false;
+    }
+    return !(material instanceof MeshStandardMaterial) || material.emissive.getHex() === 0;
+}
+
 export function disposeGeometry(geometry: BufferGeometry): void {
     if (!sharedGeometries.has(geometry)) {
         geometry.dispose();

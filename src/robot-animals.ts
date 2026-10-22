@@ -1,9 +1,15 @@
 import { Group, Mesh, MeshStandardMaterial, Sprite, SpriteMaterial, Vector3 } from 'three';
-import type { CanvasTexture } from 'three';
+import type { BufferGeometry, CanvasTexture } from 'three';
 
 import { getRadialGlowTexture, glowSpriteMaterial } from './glow';
 import { damp, dampAngle, hash32, wrapAngle } from './math-utils';
-import { disposeSceneGraph, isSharedMaterial } from './mesh-optimize';
+import {
+    disposeSceneGraph,
+    isSharedMaterial,
+    mergeMeshesWithVertexColors,
+    registerSharedGeometry,
+    registerSharedMaterial,
+} from './mesh-optimize';
 import {
     addBox,
     addCylinder,
@@ -13,6 +19,7 @@ import {
     PreRenderedSpeechLabel,
     prepareMeshes,
     renderSpeechTexture,
+    robotBodyMaterial,
 } from './npc-robots';
 import { mulberry32 } from './noise';
 import { PLAYER_RADIUS } from './player';
@@ -58,9 +65,9 @@ const DEER_FLEE_ACCELERATION_SECONDS = 1;
 const DEER_FLEE_STOP_FACTOR = 2.4;
 const DEER_FLEE_TARGET_MIN = 45;
 const DEER_FLEE_TARGET_MAX = 70;
-// Packs farther than this are out of sight; their wander timers and animation pause until the
-// player comes closer. Guiding wolves keep updating so they can finish leading the way.
-const DISTANT_PACK_DISTANCE = 300;
+// Packs farther than this swap to the single-mesh distant LOD; their wander timers and animation
+// pause until the player comes closer. Guiding wolves keep updating so they can finish leading the way.
+const DISTANT_PACK_DISTANCE = 150;
 // A walkability query is only repeated after the animal has moved this far, or after the fallback
 // interval, whichever comes first. Both are well inside one terrain cell.
 const WALK_CHECK_DISTANCE = 0.4;
@@ -79,6 +86,18 @@ const GUIDE_ARRIVAL_SECONDS = 0.4;
 const WOLF_SPEECH_WORLD_WIDTH = 3.2;
 const WOLF_SPEECH_HEIGHT_OFFSET = 0.2;
 const GUIDE_ARRIVAL_SIT_SECONDS = 6;
+
+// One mesh per distant animal. Vertex colours keep the palette while a single material lets the
+// whole frozen body collapse to one draw in the main pass and one in the shadow map.
+const DISTANT_ANIMAL_MATERIAL = registerSharedMaterial(
+    new MeshStandardMaterial({
+        name: 'distant-animal',
+        color: 0xffffff,
+        vertexColors: true,
+        roughness: 0.62,
+        metalness: 0.15,
+    }),
+);
 
 // Linear ramp from the starting trot to the full run.
 export function guideWolfSpeed(elapsed: number): number {
@@ -231,6 +250,8 @@ interface Animal {
     id: number;
     group: Group;
     model: AnimalModel;
+    // One static mesh used while the pack sleeps beyond DISTANT_PACK_DISTANCE.
+    lod: Mesh | null;
     speech: WolfSpeech | null;
     offsetX: number;
     offsetZ: number;
@@ -263,6 +284,8 @@ interface Pack {
     home: Vector3;
     target: Vector3 | null;
     members: Animal[];
+    // True while the members are showing their merged distant LOD instead of the animated rigs.
+    distant: boolean;
     roamRadius: number;
     idle: number;
     roamTimer: number;
@@ -296,6 +319,7 @@ export class RobotAnimals {
     private readonly paletteByKind = new Map<AnimalKind, Palette>();
     private readonly wolves: Animal[] = [];
     private readonly speechTextures = new Map<string, CanvasTexture>();
+    private readonly lodGeometries = new Map<AnimalKind, BufferGeometry | null>();
     private nextAnimalId = 0;
     private elapsed = 0;
 
@@ -344,7 +368,20 @@ export class RobotAnimals {
 
     dispose(): void {
         this.blockerColliders.length = 0;
+        // Distant packs detach their detailed rig from the scene graph, so tear those down through
+        // the animal reference instead of relying on the group traversal below.
+        for (const pack of this.packs) {
+            for (const animal of pack.members) {
+                disposeSceneGraph(animal.model.visual);
+            }
+        }
         disposeSceneGraph(this.group);
+        // The one-mesh LOD geometry is shared by every animal of a kind and is skipped by the
+        // scene-graph teardown, so release the cached copies here.
+        for (const geometry of this.lodGeometries.values()) {
+            geometry?.dispose();
+        }
+        this.lodGeometries.clear();
 
         for (const palette of this.palettes) {
             // Body materials are shared module-wide and deliberately outlive this instance. Only the
@@ -443,6 +480,7 @@ export class RobotAnimals {
             home: home.clone(),
             target: null,
             members: [],
+            distant: false,
             roamRadius: spec.roamRadius,
             idle: 0.5 + this.rng() * 3.5,
             roamTimer: ROAM_GOAL_TIME,
@@ -457,6 +495,7 @@ export class RobotAnimals {
         };
         const packId = this.packs.length;
         this.packs.push(pack);
+        const lodGeometry = this.lodGeometry(spec.kind, palette);
 
         for (const offset of packOffsets(size, spec.kind, this.rng)) {
             let x = home.x + offset.x;
@@ -489,6 +528,19 @@ export class RobotAnimals {
             group.add(model.visual);
             this.group.add(group);
 
+            let lod: Mesh | null = null;
+            if (lodGeometry) {
+                lod = new Mesh(lodGeometry, DISTANT_ANIMAL_MATERIAL);
+                lod.name = `robot-${spec.kind}-lod`;
+                lod.position.copy(model.visual.position);
+                lod.quaternion.copy(model.visual.quaternion);
+                lod.scale.copy(model.visual.scale);
+                lod.castShadow = true;
+                lod.receiveShadow = true;
+                lod.visible = false;
+                group.add(lod);
+            }
+
             const body = ANIMAL_COLLIDER[spec.kind];
             const height = body.height * scale;
             const collider: CylinderCollider = {
@@ -508,6 +560,7 @@ export class RobotAnimals {
                 id: this.nextAnimalId++,
                 group,
                 model,
+                lod,
                 offsetX: offset.x,
                 offsetZ: offset.z,
                 obstacles: this.terrain.colliders.filter(
@@ -661,6 +714,7 @@ export class RobotAnimals {
                 continue;
             }
 
+            this.setPackDistant(pack, false);
             pack.guiding = true;
             pack.watching = false;
             pack.fleeing = false;
@@ -792,7 +846,9 @@ export class RobotAnimals {
 
         const playerDistance = Math.hypot(playerPosition.x - centerX, playerPosition.z - centerZ);
         // Far packs sleep in place. A guiding wolf keeps walking even when the player falls behind.
-        if (playerDistance > DISTANT_PACK_DISTANCE && !pack.guiding) {
+        const distant = playerDistance > DISTANT_PACK_DISTANCE && !pack.guiding;
+        this.setPackDistant(pack, distant);
+        if (distant) {
             return;
         }
 
@@ -879,7 +935,53 @@ export class RobotAnimals {
         }
     }
 
+    // Swaps a sleeping pack between the animated rig and the single-mesh distant LOD. Detaching the
+    // detailed rig also removes its meshes from updateMatrixWorld; re-adding it later resumes from
+    // the pose it froze in.
+    private setPackDistant(pack: Pack, distant: boolean): void {
+        if (pack.distant === distant) {
+            return;
+        }
+        pack.distant = distant;
+        for (const animal of pack.members) {
+            if (!animal.lod) {
+                continue;
+            }
+            if (distant) {
+                animal.model.visual.visible = false;
+                animal.model.visual.removeFromParent();
+                animal.lod.visible = true;
+            } else {
+                animal.lod.visible = false;
+                animal.model.visual.visible = true;
+                animal.group.add(animal.model.visual);
+            }
+        }
+    }
+
+    // The rest pose is identical for every animal of a kind, so one merged geometry serves the whole
+    // herd. The per-animal group transform places it at the frozen animal's position and heading.
+    private lodGeometry(kind: AnimalKind, palette: Palette): BufferGeometry | null {
+        if (this.lodGeometries.has(kind)) {
+            return this.lodGeometries.get(kind) ?? null;
+        }
+
+        const template = createAnimalModel(kind, palette, { phase: 0, gaitScale: 1, strideScale: 1 });
+        mergeMeshesWithVertexColors(template.visual, { targetMaterial: () => DISTANT_ANIMAL_MATERIAL });
+        const merged = template.visual.children.find(
+            (child): child is Mesh => child instanceof Mesh && child.material === DISTANT_ANIMAL_MATERIAL,
+        );
+        const geometry = merged?.geometry ?? null;
+        merged?.removeFromParent();
+        if (geometry) {
+            registerSharedGeometry(geometry);
+        }
+        this.lodGeometries.set(kind, geometry);
+        return geometry;
+    }
+
     private updateSittingPack(pack: Pack, dt: number, playerPosition: Vector3): void {
+        this.setPackDistant(pack, false);
         pack.sitRemaining = Math.max(0, pack.sitRemaining - dt);
         const sitting = pack.sitRemaining > 0;
 
@@ -1267,7 +1369,11 @@ function buildDeer(palette: Palette, variation: ModelVariation): AnimalModel {
         addLeg(visual, 0.19, -0.44, hipY, legLength, legThickness, palette, WALK_LEG_OFFSETS[3]),
     ];
 
+    mergeAnimatedParts(body, head, tail, legs);
     prepareMeshes(visual);
+    for (const leg of legs) {
+        leg.hoof.castShadow = false;
+    }
     return finishRig(
         {
             visual,
@@ -1361,7 +1467,11 @@ function buildWolf(palette: Palette, variation: ModelVariation): AnimalModel {
         addLeg(visual, 0.16, -0.34, hipY, legLength, legThickness, palette, WALK_LEG_OFFSETS[3], false),
     ];
 
+    mergeAnimatedParts(body, head, tail, legs);
     prepareMeshes(visual);
+    for (const leg of legs) {
+        leg.hoof.castShadow = false;
+    }
     return finishRig(
         {
             visual,
@@ -1435,6 +1545,28 @@ function addLeg(
     );
 
     return { pivot, lower, hoof, offset, hipY };
+}
+
+// Collapses the static meshes inside each animated pivot into one mesh per finish bucket. The
+// pivots themselves stay separate, so the body bob, head turn, tail wag, and leg/knee swings keep
+// working. Hooves stay separate so their tiny shadow footprint can be dropped.
+function mergeAnimatedParts(body: Group, head: Group, tail: Group, legs: LegRig[]): void {
+    mergeMeshesWithVertexColors(body, {
+        skip: (object) => object === head || object === tail,
+        targetMaterial: robotBodyMaterial,
+    });
+    mergeMeshesWithVertexColors(head, { targetMaterial: robotBodyMaterial });
+    mergeMeshesWithVertexColors(tail, { targetMaterial: robotBodyMaterial });
+    for (const leg of legs) {
+        mergeMeshesWithVertexColors(leg.pivot, {
+            skip: (object) => object === leg.lower,
+            targetMaterial: robotBodyMaterial,
+        });
+        mergeMeshesWithVertexColors(leg.lower, {
+            skip: (object) => object === leg.hoof,
+            targetMaterial: robotBodyMaterial,
+        });
+    }
 }
 
 function addEye(parent: Group, x: number, y: number, z: number, radius: number, palette: Palette): void {

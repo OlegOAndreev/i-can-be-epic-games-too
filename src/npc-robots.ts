@@ -20,6 +20,7 @@ import { getRadialGlowTexture, glowSpriteMaterial } from './glow';
 import { damp, dampAngle, wrapAngle } from './math-utils';
 import {
     disposeSceneGraph,
+    materialCastsShadow,
     mergeMeshesByMaterial,
     mergeMeshesWithVertexColors,
     registerSharedGeometry,
@@ -987,7 +988,9 @@ const UNIT_BOX_GEOMETRY = registerSharedGeometry(new BoxGeometry(1, 1, 1));
 export function prepareMeshes(root: Group): void {
     root.traverse((child) => {
         if (child instanceof Mesh) {
-            child.castShadow = true;
+            const materials = Array.isArray(child.material) ? child.material : [child.material];
+            // Emissive visors, eyes, and glow strips should never reserve a depth pass.
+            child.castShadow = materials.some(materialCastsShadow);
             child.receiveShadow = true;
         }
     });
@@ -1052,7 +1055,7 @@ const BODY_RUBBER = registerSharedMaterial(
 
 // Glow, textured, and transparent parts keep their own materials and meshes so emissive animation,
 // collectGlow(), and dimRobotModel() still see them individually.
-function robotBodyMaterial(source: MeshStandardMaterial): MeshStandardMaterial | null {
+export function robotBodyMaterial(source: MeshStandardMaterial): MeshStandardMaterial | null {
     if (source.emissive.getHex() !== 0 || source.map !== null || source.transparent || source.opacity < 1) {
         return null;
     }
