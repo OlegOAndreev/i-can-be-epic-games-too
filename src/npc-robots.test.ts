@@ -127,6 +127,71 @@ describe('caretaker dialogue', () => {
         npc.dispose();
     });
 
+    it('does not resume the intro after the player walks away from it', () => {
+        const terrain = testTerrain(1234);
+        const shown: string[] = [];
+        const npc = new NpcRobots(
+            terrain,
+            stubAudio(),
+            [
+                { speaker: 'matron', text: 'First line.' },
+                { speaker: 'walle', text: 'Second line.' },
+            ],
+            {
+                showLine: (line) => shown.push(line.text),
+                hideLine: () => undefined,
+            },
+        );
+        const atSpawn = new Vector3(terrain.spawn.x, 0, terrain.spawn.z);
+        const farAway = atSpawn.clone().add(new Vector3(60, 0, 0));
+
+        for (let elapsed = 0; elapsed < 1; elapsed += 0.05) {
+            npc.update(0.05, atSpawn);
+        }
+        expect(shown).toEqual(['First line.']);
+
+        npc.update(0.05, farAway);
+        for (let elapsed = 0; elapsed < 20; elapsed += 0.05) {
+            npc.update(0.05, atSpawn);
+        }
+
+        expect(shown).toEqual(['First line.']);
+        expect(npc.introSeen).toBe(true);
+        expect(npc.wrenchReady).toBe(true);
+
+        npc.dispose();
+    });
+
+    it('keeps a restored intro silent', () => {
+        const terrain = testTerrain(1234);
+        const shown: string[] = [];
+        const npc = new NpcRobots(
+            terrain,
+            stubAudio(),
+            [
+                { speaker: 'matron', text: 'First line.' },
+                { speaker: 'walle', text: 'Second line.' },
+            ],
+            {
+                showLine: (line) => shown.push(line.text),
+                hideLine: () => undefined,
+            },
+        );
+        const atSpawn = new Vector3(terrain.spawn.x, 0, terrain.spawn.z);
+
+        npc.restoreIntroSeen();
+        for (let elapsed = 0; elapsed < 20; elapsed += 0.05) {
+            npc.update(0.05, atSpawn);
+        }
+
+        expect(shown).toEqual([]);
+        expect(npc.introSeen).toBe(true);
+        expect(npc.storyFinished).toBe(true);
+        expect(npc.wrenchReady).toBe(true);
+
+        npc.dispose();
+    });
+
     it('loads optional content tags from the dialogue file', async () => {
         vi.stubGlobal(
             'fetch',

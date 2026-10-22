@@ -1,4 +1,4 @@
-import { Group, MeshStandardMaterial, Sprite, SpriteMaterial, Vector3 } from 'three';
+import { Group, Mesh, MeshStandardMaterial, Sprite, SpriteMaterial, Vector3 } from 'three';
 import type { CanvasTexture } from 'three';
 
 import { getRadialGlowTexture, glowSpriteMaterial } from './glow';
@@ -15,6 +15,7 @@ import {
     renderSpeechTexture,
 } from './npc-robots';
 import { mulberry32 } from './noise';
+import { PLAYER_RADIUS } from './player';
 import { WATER_LEVEL } from './terrain';
 import type { CylinderCollider, Terrain } from './terrain';
 
@@ -32,6 +33,16 @@ export const ANIMAL_EYE_COLOR = 0x49ff6b;
 
 const WATCH_TURN_RATE = 3.4;
 const ROAM_TURN_RATE = 2.6;
+// A sprint pumps the legs only up to this ground speed; past it the stride grows instead, so the
+// legs stay readable instead of blurring into a propeller.
+const RUN_CADENCE_SPEED_CAP = 8;
+// Phases for the legs in build order: front-left, front-right, back-left, back-right. The walk is a
+// four-beat gait, and the gallop keeps each pair close while still lagging every leg behind its
+// neighbour so no two legs ever move in lockstep.
+const WALK_LEG_OFFSETS = [0, Math.PI, Math.PI / 2, (Math.PI * 3) / 2];
+const RUN_LEG_OFFSETS = [0, 0.6, Math.PI + 0.3, Math.PI + 0.9];
+// Walk keeps the hooves low; a run folds the knee much harder to tuck them high into the air.
+const WALK_KNEE_BEND = 1.4;
 // The player must be roughly on the same level as the animal, not up a tower.
 const WATCH_HEIGHT = 5;
 const ROAM_GOAL_TIME = 12;
@@ -47,7 +58,9 @@ const RECYCLE_AHEAD_MIN = 120;
 const RECYCLE_AHEAD_MAX = 172.5;
 const RECYCLE_AHEAD_SPREAD = 1.2;
 // Deer bolt away from the player much faster than they roam, then settle down once they are safe.
-const DEER_FLEE_SPEED = 12;
+// This is twice their earlier bolt speed so the escape reads as a full sprint.
+const DEER_FLEE_SPEED = 24;
+const DEER_FLEE_ACCELERATION_SECONDS = 1;
 const DEER_FLEE_STOP_FACTOR = 2.4;
 const DEER_FLEE_TARGET_MIN = 45;
 const DEER_FLEE_TARGET_MAX = 70;
@@ -59,12 +72,14 @@ const DISTANT_PACK_DISTANCE = 120;
 const WALK_CHECK_DISTANCE = 0.4;
 const WALK_CHECK_INTERVAL = 0.12;
 // A petted wolf leads the player to the nearest emerald stone. It starts at a trot and
-// accelerates to a run over the first three seconds, then stops just outside the stone's collider
+// accelerates to a run over the first 1.5 seconds, then stops just outside the stone's collider
 // and waits long enough for the player to catch up.
 const GUIDE_START_SPEED = 5;
 const GUIDE_MAX_SPEED = 15;
-const GUIDE_ACCELERATION_SECONDS = 3;
+const GUIDE_ACCELERATION_SECONDS = 1.5;
 const GUIDE_STOP_MARGIN = 1.5;
+// Ease off over the last few metres so the run's wide turning circle cannot overshoot the stone.
+const GUIDE_ARRIVAL_SECONDS = 0.4;
 // A wolf's lines float above its head like the enemy speech labels, so petting reads as the animal
 // talking instead of the caretaker dialogue box.
 const WOLF_SPEECH_WORLD_WIDTH = 3.2;
@@ -75,6 +90,12 @@ const GUIDE_WAIT_SECONDS = 6;
 export function guideWolfSpeed(elapsed: number): number {
     const progress = Math.min(1, Math.max(0, elapsed / GUIDE_ACCELERATION_SECONDS));
     return GUIDE_START_SPEED + (GUIDE_MAX_SPEED - GUIDE_START_SPEED) * progress;
+}
+
+// Linear ramp from the deer's roaming speed to its full sprint.
+export function deerFleeSpeed(elapsed: number, startSpeed: number, sprintSpeed: number): number {
+    const progress = Math.min(1, Math.max(0, elapsed / DEER_FLEE_ACCELERATION_SECONDS));
+    return startSpeed + (sprintSpeed - startSpeed) * progress;
 }
 // The player and a wolf can only stand about a metre apart once their body cylinders touch, so
 // this vertical tolerance keeps petting from reaching a wolf on a ledge above or below.
@@ -125,6 +146,10 @@ const ANIMAL_COLLIDER: Record<AnimalKind, { radius: number; height: number }> = 
     wolf: { radius: 0.5, height: 1.15 },
 };
 
+// The player's radius contributes to the standoff, so the body radius is compensated to make the
+// centre-to-centre collision distance 1.5x larger.
+const COLLISION_DISTANCE_SCALE = 1.5;
+
 const COLORS: Record<AnimalKind, { shell: number; dark: number; metal: number; accent: number }> = {
     deer: { shell: 0xd7d0be, dark: 0x8c918d, metal: 0x2f3437, accent: 0xc28a4a },
     wolf: { shell: 0xa5adab, dark: 0x5f676a, metal: 0x202629, accent: 0xb9834f },
@@ -142,7 +167,23 @@ interface Palette {
 interface LegRig {
     pivot: Group;
     lower: Group;
+    hoof: Mesh;
     offset: number;
+}
+
+interface RunRig {
+    stride: number;
+    bobHeight: number;
+    lean: number;
+    // Multiplier on the walk cadence; the longer stride does most of the work.
+    cadence: number;
+    tailLift: number;
+    // How hard the knee folds through the forward swing; higher tucks the hoof toward the body.
+    kneeBend: number;
+    // Front legs can reach farther forward on a straighter knee, like a gallop's front reach.
+    frontStride?: number;
+    frontReach?: number;
+    frontKneeBend?: number;
 }
 
 interface AnimalRig {
@@ -154,14 +195,30 @@ interface AnimalRig {
     bobHeight: number;
     stride: number;
     gait: number;
+    // Ground speed's contribution to the leg cadence. A low value keeps a sprint from turning
+    // into a blur, since the stride grows instead (see strideSpeedGain).
+    speedGait: number;
+    // Extra stride (radians) added per unit of ground speed, so running animals reach farther
+    // instead of only cycling their legs faster.
+    strideSpeedGain: number;
     tailSway: number;
+    // Fleeing deer and guiding wolves swap the trot for this bounding gallop.
+    run: RunRig;
     // The tail rolls around the nose-tail axis when this is 'z'; otherwise it yaws around 'y'.
     tailWagAxis?: 'y' | 'z';
 }
 
 interface AnimalModel {
     visual: Group;
-    update: (dt: number, elapsed: number, moving: boolean, speed: number, headYaw: number, wagging?: boolean) => void;
+    update: (
+        dt: number,
+        elapsed: number,
+        moving: boolean,
+        speed: number,
+        headYaw: number,
+        wagging?: boolean,
+        running?: boolean,
+    ) => void;
 }
 
 interface ModelVariation {
@@ -215,6 +272,7 @@ interface Pack {
     watching: boolean;
     fleeing: boolean;
     fleeTimer: number;
+    fleeElapsed: number;
     // While guiding, the pack ignores its usual watch/roam cycle and walks to pack.target,
     // which points at the petting reward: the nearest emerald stone.
     guiding: boolean;
@@ -393,6 +451,7 @@ export class RobotAnimals {
             watching: false,
             fleeing: false,
             fleeTimer: 0,
+            fleeElapsed: 0,
             guiding: false,
             guideElapsed: 0,
         };
@@ -435,7 +494,7 @@ export class RobotAnimals {
                 kind: 'animal',
                 x,
                 z,
-                radius: body.radius * scale,
+                radius: (PLAYER_RADIUS + body.radius * scale) * COLLISION_DISTANCE_SCALE - PLAYER_RADIUS,
                 base: y,
                 top: y + height,
             };
@@ -745,17 +804,14 @@ export class RobotAnimals {
         }
 
         for (const animal of pack.members) {
-            // Sample before advancing the timer so the first step is exactly the starting speed.
-            const speed = guideWolfSpeed(pack.guideElapsed);
             const wobblePhase = this.elapsed * (0.6 + animal.phase * 0.08) + animal.phase;
-            const moving = this.moveAnimal(
-                animal,
-                target.x + animal.offsetX + Math.cos(wobblePhase) * animal.wobble * 0.4,
-                target.z + animal.offsetZ + Math.sin(wobblePhase * 1.3) * animal.wobble * 0.4,
-                dt,
-                speed,
-            );
-            animal.model.update(dt, this.elapsed, moving, speed, 0);
+            const targetX = target.x + animal.offsetX + Math.cos(wobblePhase) * animal.wobble * 0.4;
+            const targetZ = target.z + animal.offsetZ + Math.sin(wobblePhase * 1.3) * animal.wobble * 0.4;
+            const remaining = Math.hypot(targetX - animal.group.position.x, targetZ - animal.group.position.z);
+            // Sample before advancing the timer so the first step is exactly the starting speed.
+            const speed = Math.min(guideWolfSpeed(pack.guideElapsed), remaining / GUIDE_ARRIVAL_SECONDS);
+            const moving = this.moveAnimal(animal, targetX, targetZ, dt, speed);
+            animal.model.update(dt, this.elapsed, moving, speed, 0, false, true);
         }
         pack.guideElapsed += dt;
     }
@@ -798,6 +854,7 @@ export class RobotAnimals {
                 pack.idle = 0;
                 pack.watching = false;
                 pack.fleeTimer = 0;
+                pack.fleeElapsed = 0;
             }
             return;
         }
@@ -826,7 +883,8 @@ export class RobotAnimals {
         }
 
         for (const animal of pack.members) {
-            const fleeSpeed = DEER_FLEE_SPEED * animal.pace;
+            const sprintSpeed = DEER_FLEE_SPEED * animal.pace;
+            const fleeSpeed = deerFleeSpeed(pack.fleeElapsed, animal.speed, sprintSpeed);
             const wobblePhase = this.elapsed * (0.6 + animal.phase * 0.08) + animal.phase;
             const moving = this.moveAnimal(
                 animal,
@@ -835,8 +893,9 @@ export class RobotAnimals {
                 dt,
                 fleeSpeed,
             );
-            animal.model.update(dt, this.elapsed, moving, fleeSpeed, 0);
+            animal.model.update(dt, this.elapsed, moving, fleeSpeed, 0, false, true);
         }
+        pack.fleeElapsed += dt;
     }
 
     private pickFleeTarget(pack: Pack, playerPosition: Vector3, centerX: number, centerZ: number): boolean {
@@ -1179,10 +1238,10 @@ function buildDeer(palette: Palette, variation: ModelVariation): AnimalModel {
     tailBox.rotation.x = 0.45;
 
     const legs = [
-        addLeg(visual, -0.19, 0.44, hipY, legLength, legThickness, palette, 0),
-        addLeg(visual, 0.19, 0.44, hipY, legLength, legThickness, palette, Math.PI),
-        addLeg(visual, -0.19, -0.44, hipY, legLength, legThickness, palette, Math.PI),
-        addLeg(visual, 0.19, -0.44, hipY, legLength, legThickness, palette, 0),
+        addLeg(visual, -0.19, 0.44, hipY, legLength, legThickness, palette, WALK_LEG_OFFSETS[0]),
+        addLeg(visual, 0.19, 0.44, hipY, legLength, legThickness, palette, WALK_LEG_OFFSETS[1]),
+        addLeg(visual, -0.19, -0.44, hipY, legLength, legThickness, palette, WALK_LEG_OFFSETS[2]),
+        addLeg(visual, 0.19, -0.44, hipY, legLength, legThickness, palette, WALK_LEG_OFFSETS[3]),
     ];
 
     prepareMeshes(visual);
@@ -1194,9 +1253,19 @@ function buildDeer(palette: Palette, variation: ModelVariation): AnimalModel {
             tail,
             legs,
             bobHeight: 0.035,
-            stride: 0.5,
+            stride: 0.44,
             gait: 7.5,
+            speedGait: 0.8,
+            strideSpeedGain: 0.035,
             tailSway: 0.18,
+            run: {
+                stride: 1,
+                bobHeight: 0.09,
+                lean: 0.15,
+                cadence: 1.15,
+                tailLift: 0.45,
+                kneeBend: 3,
+            },
         },
         variation,
     );
@@ -1263,10 +1332,10 @@ function buildWolf(palette: Palette, variation: ModelVariation): AnimalModel {
     });
 
     const legs = [
-        addLeg(visual, -0.16, 0.34, hipY, legLength, legThickness, palette, 0),
-        addLeg(visual, 0.16, 0.34, hipY, legLength, legThickness, palette, Math.PI),
-        addLeg(visual, -0.16, -0.34, hipY, legLength, legThickness, palette, Math.PI),
-        addLeg(visual, 0.16, -0.34, hipY, legLength, legThickness, palette, 0),
+        addLeg(visual, -0.16, 0.34, hipY, legLength, legThickness, palette, WALK_LEG_OFFSETS[0]),
+        addLeg(visual, 0.16, 0.34, hipY, legLength, legThickness, palette, WALK_LEG_OFFSETS[1]),
+        addLeg(visual, -0.16, -0.34, hipY, legLength, legThickness, palette, WALK_LEG_OFFSETS[2]),
+        addLeg(visual, 0.16, -0.34, hipY, legLength, legThickness, palette, WALK_LEG_OFFSETS[3]),
     ];
 
     prepareMeshes(visual);
@@ -1278,9 +1347,23 @@ function buildWolf(palette: Palette, variation: ModelVariation): AnimalModel {
             tail,
             legs,
             bobHeight: 0.028,
-            stride: 0.55,
-            gait: 8.5,
+            stride: 0.85,
+            gait: 5,
+            speedGait: 0.9,
+            strideSpeedGain: 0.02,
             tailSway: 0.22,
+            run: {
+                stride: 1.45,
+                bobHeight: 0.06,
+                lean: 0.12,
+                cadence: 1.12,
+                tailLift: 0.22,
+                kneeBend: 2.7,
+                // The front legs pivot far forward with the calf almost in line with the hip.
+                frontStride: 1.75,
+                frontReach: 0.15,
+                frontKneeBend: 0.15,
+            },
             tailWagAxis: 'z',
         },
         variation,
@@ -1313,9 +1396,18 @@ function addLeg(
 
     addSphere(lower, thickness * 0.75, palette.metal, 0, 0, 0);
     addBox(lower, thickness * 0.82, lowerLength, thickness * 0.95, palette.metal, 0, -lowerLength / 2, 0);
-    addBox(lower, thickness * 1.3, thickness * 0.55, thickness * 1.9, palette.dark, 0, -lowerLength, thickness * 0.35);
+    const hoof = addBox(
+        lower,
+        thickness * 1.3,
+        thickness * 0.55,
+        thickness * 1.9,
+        palette.dark,
+        0,
+        -lowerLength,
+        thickness * 0.35,
+    );
 
-    return { pivot, lower, offset };
+    return { pivot, lower, hoof, offset };
 }
 
 function addEye(parent: Group, x: number, y: number, z: number, radius: number, palette: Palette): void {
@@ -1329,40 +1421,74 @@ function addEye(parent: Group, x: number, y: number, z: number, radius: number, 
 
 function finishRig(rig: AnimalRig, variation: ModelVariation): AnimalModel {
     let phase = variation.phase;
+    rig.body.name = 'body';
     rig.tail.name = 'tail';
+    rig.legs.forEach((leg, index) => {
+        leg.pivot.name = `leg-${index}`;
+        leg.lower.name = `knee-${index}`;
+        leg.hoof.name = `hoof-${index}`;
+    });
 
     return {
         visual: rig.visual,
-        update(dt, elapsed, moving, speed, headYaw, wagging = false) {
+        update(dt, elapsed, moving, speed, headYaw, wagging = false, running = false) {
             const time = elapsed + variation.phase;
 
             if (moving) {
-                phase += dt * (rig.gait * variation.gaitScale + speed * 1.8);
+                const cadence = rig.gait * variation.gaitScale + Math.min(speed, RUN_CADENCE_SPEED_CAP) * rig.speedGait;
+                phase += dt * cadence * (running ? rig.run.cadence : 1);
             }
 
-            const bob = moving
-                ? Math.abs(Math.sin(phase)) * rig.bobHeight
-                : Math.sin(time * 1.4) * rig.bobHeight * 0.25;
+            const walkStride = (rig.stride + speed * rig.strideSpeedGain) * variation.strideScale;
+            const bobHeight = running ? rig.run.bobHeight : rig.bobHeight;
+            const bob = moving ? Math.abs(Math.sin(phase)) * bobHeight : Math.sin(time * 1.4) * rig.bobHeight * 0.25;
             rig.body.position.y = damp(rig.body.position.y, bob, 10, dt);
 
-            const roll = moving ? Math.sin(phase) * 0.012 : 0;
+            const roll = moving ? Math.sin(phase) * (running ? 0.026 : 0.012) : 0;
             rig.body.rotation.z = damp(rig.body.rotation.z, roll, 8, dt);
+            // A runner tips its chest forward and streams its tail out behind it.
+            const lean = moving && running ? rig.run.lean : 0;
+            rig.body.rotation.x = damp(rig.body.rotation.x, lean, 8, dt);
 
-            for (const leg of rig.legs) {
-                const swing = moving ? Math.sin(phase + leg.offset) * rig.stride * variation.strideScale : 0;
+            for (let index = 0; index < rig.legs.length; index++) {
+                const leg = rig.legs[index];
+                // Legs 0 and 1 are the front pair. They can use their own reach and knee stiffness.
+                const front = index < 2;
+                const legStride = running
+                    ? (front ? (rig.run.frontStride ?? rig.run.stride) : rig.run.stride) * variation.strideScale
+                    : walkStride;
+                // The gallop gathers each pair instead of using the diagonal trot pattern.
+                const offset = running ? runLegOffset(index) : leg.offset;
+                // A negative pitch swings the leg forward. The front pair is biased ahead so it
+                // reaches out instead of hanging under the chest.
+                const reach = running && front ? (rig.run.frontReach ?? 0) : 0;
+                const swing = moving ? Math.sin(phase + offset) * legStride - reach : 0;
                 leg.pivot.rotation.x = damp(leg.pivot.rotation.x, swing, 12, dt);
 
-                const bend = moving
-                    ? -Math.max(0, Math.sin(phase + leg.offset)) * rig.stride * variation.strideScale * 0.7
-                    : 0;
+                // Fold the knee through the forward swing so the hoof tucks up high instead of
+                // dragging along the ground. The front knee can stay nearly straight so the hip and
+                // calf read as one line while that leg is reaching.
+                const kneeBend = running
+                    ? front
+                        ? (rig.run.frontKneeBend ?? rig.run.kneeBend)
+                        : rig.run.kneeBend
+                    : WALK_KNEE_BEND;
+                const bend = moving ? Math.max(0, -Math.sin(phase + offset)) * legStride * kneeBend : 0;
                 leg.lower.rotation.x = damp(leg.lower.rotation.x, bend, 12, dt);
             }
 
             const clamped = Math.max(-1.15, Math.min(1.15, headYaw));
             rig.head.rotation.y = dampAngle(rig.head.rotation.y, clamped, 7, dt);
             rig.head.rotation.x = Math.sin(time * 1.1) * 0.02;
-            const wag = Math.sin(time * (wagging ? 13.5 : 1.8) + phase * 0.35) * (wagging ? 0.6 : rig.tailSway);
+            rig.tail.rotation.x = damp(rig.tail.rotation.x, moving && running ? rig.run.tailLift : 0, 8, dt);
+            const wagAmplitude = wagging ? 0.6 : rig.tailSway * (running ? 0.5 : 1);
+            const wag = Math.sin(time * (wagging ? 13.5 : 1.8) + phase * 0.35) * wagAmplitude;
             rig.tail.rotation[rig.tailWagAxis ?? 'y'] = wag;
         },
     };
+}
+
+// The gallop keeps each pair close, but every leg trails its partner instead of landing together.
+function runLegOffset(index: number): number {
+    return RUN_LEG_OFFSETS[index];
 }

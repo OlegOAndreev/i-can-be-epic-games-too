@@ -85,6 +85,9 @@ const FORMATION: FormationSpot[] = [
     { id: 'probe', hover: 0.9, height: PLAYER_HEIGHT * 0.95, voicePitch: 178 },
 ];
 const ACTIVATION_RADIUS = 18;
+// The caretakers give up on the opening story once the player is this far away. It is deliberately
+// larger than the wrench handoff distance so the handoff does not end the conversation.
+const DIALOGUE_STOP_DISTANCE = 48;
 const NPC_RADIUS: Record<string, number> = { matron: 0.85, walle: 0.8, probe: 0.65 };
 // Multipliers on the reading-time estimate. The matron draws her lines out; the probe rattles
 // through them faster than the default pace.
@@ -169,6 +172,7 @@ export class NpcRobots {
     private speechBeeps: RobotBeepHandle | null = null;
     private excludedTags = new Set<string>();
     private wrenchClaimed = false;
+    private seeingIntro = false;
     private waving = false;
 
     constructor(terrain: Terrain, audio: GameAudio, dialogue: DialogueLine[], presenter?: DialoguePresenter) {
@@ -201,6 +205,12 @@ export class NpcRobots {
         return this.finished || this.dialogue.length === 0;
     }
 
+    // True once the caretakers' opening story has played or the player has walked away from it.
+    // Persisted with the player so a restored save never replays the intro.
+    get introSeen(): boolean {
+        return this.seeingIntro;
+    }
+
     // Keeps the story in step with the mode. Peaceful skips lines that describe hostile robots,
     // including the one already on screen when the setting changes.
     setDifficulty(difficulty: Difficulty): void {
@@ -213,6 +223,16 @@ export class NpcRobots {
             this.activeLine = null;
             this.gapTimer = 0;
         }
+    }
+
+    // Restores the one-shot intro state from a save. The caretakers stay silent until the
+    // finale, and the wrench is already considered handed over.
+    restoreIntroSeen(): void {
+        this.seeingIntro = true;
+        this.started = true;
+        this.finished = true;
+        this.lineIndex = this.dialogue.length;
+        this.wrenchClaimed = true;
     }
 
     // Replaces the current dialogue with the short celebration lines spoken once the ship is
@@ -228,9 +248,11 @@ export class NpcRobots {
         this.activeLine = null;
         this.finished = lines.length === 0;
         this.started = true;
+        this.seeingIntro = true;
     }
 
-    // Stops the current line immediately, used when the player skips the celebration cutscene.
+    // Stops the current line immediately and marks the conversation as over. Used when the player
+    // walks away from the intro or skips the celebration cutscene.
     stopDialogue(): void {
         this.presenter?.hideLine();
         this.stopSpeechBeeps();
@@ -279,6 +301,14 @@ export class NpcRobots {
             this.wrenchClaimed = true;
         }
 
+        // Walking out of the opening conversation dismisses it for good. The caretakers keep the
+        // wrench ready so leaving early can never soft-lock the run.
+        if (this.started && !this.seeingIntro && distance >= DIALOGUE_STOP_DISTANCE) {
+            this.seeingIntro = true;
+            this.wrenchClaimed = true;
+            this.stopDialogue();
+        }
+
         if (this.finished || this.dialogue.length === 0) {
             return;
         }
@@ -318,6 +348,7 @@ export class NpcRobots {
             return;
         }
         this.finished = true;
+        this.seeingIntro = true;
     }
 
     dispose(): void {

@@ -64,6 +64,7 @@ function singleEnemyLevel(
     difficulty: Difficulty = 'medium',
     ramps: Ramp[] = [],
     boxes: StructureBox[] = [],
+    seed = 1,
 ): {
     enemies: EnemyRobots;
     enemy: Group;
@@ -90,7 +91,7 @@ function singleEnemyLevel(
         storeys,
     };
     const terrain = fakeTerrain({
-        seed: 1,
+        seed,
         megastructures: { towers: [tower], ramps, boxes },
         walkSurfaceAt: (_x: number, _z: number, feetY: number) => feetY - 0.4,
     });
@@ -215,7 +216,8 @@ describe('enemy robots', () => {
                 enemiesEnabled: false,
                 fireInterval: 1.2,
                 hitPointDelta: -1,
-                secondEnemyChance: 0,
+                baseEnemyCount: 1,
+                extraEnemyChance: 0,
                 playerHitsToDestroy: 6,
                 maxShipSpeed: 80,
                 ringSpeedBonus: 10,
@@ -224,7 +226,8 @@ describe('enemy robots', () => {
                 enemiesEnabled: true,
                 fireInterval: 1.2,
                 hitPointDelta: -1,
-                secondEnemyChance: 0,
+                baseEnemyCount: 1,
+                extraEnemyChance: 0,
                 playerHitsToDestroy: 6,
                 maxShipSpeed: 80,
                 ringSpeedBonus: 10,
@@ -233,7 +236,8 @@ describe('enemy robots', () => {
                 enemiesEnabled: true,
                 fireInterval: 0.65,
                 hitPointDelta: 0,
-                secondEnemyChance: 0.6,
+                baseEnemyCount: 2,
+                extraEnemyChance: 0,
                 playerHitsToDestroy: 4,
                 maxShipSpeed: 120,
                 ringSpeedBonus: 20,
@@ -242,7 +246,8 @@ describe('enemy robots', () => {
                 enemiesEnabled: true,
                 fireInterval: 0.5,
                 hitPointDelta: 1,
-                secondEnemyChance: 1,
+                baseEnemyCount: 2,
+                extraEnemyChance: 0.6,
                 playerHitsToDestroy: 2,
                 maxShipSpeed: 160,
                 ringSpeedBonus: 30,
@@ -292,9 +297,9 @@ describe('enemy robots', () => {
         enemies.dispose();
     });
 
-    it('varies the second enemy per floor with difficulty', () => {
-        const firstFloorCount = (difficulty: Difficulty) => {
-            const { enemies } = singleEnemyLevel(difficulty);
+    it('varies the robot count per floor with difficulty', () => {
+        const firstFloorCount = (difficulty: Difficulty, seed = 1) => {
+            const { enemies } = singleEnemyLevel(difficulty, [], [], seed);
             const count = enemies.group.children.filter(
                 (child): child is Group =>
                     child instanceof Group && child.userData.enemy === true && child.userData.level === 1,
@@ -304,7 +309,15 @@ describe('enemy robots', () => {
         };
 
         expect(firstFloorCount('easy')).toBe(1);
-        expect(firstFloorCount('hard')).toBe(2);
+        expect(firstFloorCount('medium')).toBe(2);
+
+        const hardCounts = new Set<number>();
+        for (let seed = 1; seed <= 12; seed++) {
+            hardCounts.add(firstFloorCount('hard', seed));
+        }
+        expect(hardCounts.has(2)).toBe(true);
+        expect(hardCounts.has(3)).toBe(true);
+        expect([...hardCounts].every((count) => count === 2 || count === 3)).toBe(true);
     });
 
     it('applies difficulty hit counts to new and existing robots', () => {
@@ -582,10 +595,17 @@ describe('enemy robots', () => {
         }
 
         let pair: { level: number; a: Group; b: Group } | null = null;
+        let widestGap = -1;
         for (const [level, list] of byLevel) {
             if (level < levelCount && list.length === 2) {
-                pair = { level, a: list[0], b: list[1] };
-                break;
+                const gap = Math.hypot(
+                    list[0].position.x - list[1].position.x,
+                    list[0].position.z - list[1].position.z,
+                );
+                if (gap > widestGap) {
+                    widestGap = gap;
+                    pair = { level, a: list[0], b: list[1] };
+                }
             }
         }
         expect(pair).not.toBeNull();
@@ -621,7 +641,9 @@ describe('enemy robots', () => {
         const movedB = Math.hypot(pair!.b.position.x - startB.x, pair!.b.position.z - startB.z);
         const fast = Math.max(movedA, movedB);
         const slow = Math.min(movedA, movedB);
-        expect(slow / fast).toBeCloseTo(0.5, 1);
+        // Separation steering nudges the pair apart, so allow a little drift from the exact ratio.
+        expect(slow / fast).toBeGreaterThan(0.45);
+        expect(slow / fast).toBeLessThan(0.6);
         expect(fast).toBeCloseTo(4, 1);
 
         let volleys = 0;
@@ -900,7 +922,7 @@ describe('enemy robots', () => {
         enemies.dispose();
     });
 
-    it('stands one or two red-eyed robots on every storey below the crown', () => {
+    it('stands two red-eyed robots on every storey below the crown', () => {
         const terrain = testTerrain(20260419);
         const enemies = new EnemyRobots(terrain, { moveSpeed: 10, jumpSpeed: 7, gravity: 20 });
         expect(enemies.getColliders().length).toBeGreaterThan(0);
@@ -964,8 +986,7 @@ describe('enemy robots', () => {
             );
             for (let level = 1; level < tower.levelCount; level++) {
                 const count = counts.get(`${towerIndex}:${level}`) ?? 0;
-                expect(count).toBeGreaterThanOrEqual(1);
-                expect(count).toBeLessThanOrEqual(2);
+                expect(count).toBe(2);
 
                 const floorY = tower.storeys[level].baseY;
                 const previousRamp = towerRamps.find(
@@ -1080,6 +1101,83 @@ describe('enemy robots', () => {
         restored.enemies.dispose();
     });
 
+    it('leaves a fully cleared floor cleared after a respawn', () => {
+        const { enemies, enemy } = singleEnemyLevel('easy');
+        const kind = enemy.name.replace('enemy-', '') as keyof typeof ENEMY_HITS_TO_DEFEAT;
+        const required = Math.max(1, ENEMY_HITS_TO_DEFEAT[kind] + DIFFICULTY_SETTINGS.easy.hitPointDelta);
+        const away = new Vector3(500, 0, 500);
+        for (let hit = 0; hit < required; hit++) {
+            expect(enemies.wrenchStrike(enemy.position.clone())).toHaveLength(1);
+            if (hit < required - 1) {
+                enemies.update(HIT_IMMUNITY_SECONDS + 0.02, away);
+            }
+        }
+
+        const debris = enemies.group.children.find((child) => child.name === 'enemy-debris');
+        const debrisChunks = () =>
+            debris!.children.filter(
+                (child): child is InstancedMesh => child instanceof InstancedMesh && child.count > 0,
+            );
+        expect(debrisChunks().length).toBeGreaterThan(0);
+
+        enemies.respawnUnclearedFloors();
+
+        expect(enemies.getDefeatedEnemyIds()).toEqual([enemy.userData.enemyId]);
+        expect(debrisChunks()).toHaveLength(0);
+        expect(enemy.getObjectByName('enemy-visual')?.visible).toBe(false);
+        expect(enemies.getColliders()).toHaveLength(0);
+        expect(enemies.wrenchStrike(enemy.position.clone())).toHaveLength(0);
+        enemies.dispose();
+    });
+
+    it('respawns and heals the robots on a partly cleared floor', () => {
+        const { enemies } = singleEnemyLevel();
+        const floorRobots = enemies.group.children.filter(
+            (child): child is Group =>
+                child instanceof Group && child.userData.enemy === true && child.userData.level === 1,
+        );
+        expect(floorRobots).toHaveLength(2);
+        const [doomed, survivor] = floorRobots;
+        const doomedSpawn = doomed.position.clone();
+        const survivorSpawn = survivor.position.clone();
+
+        // Separate them so knockback cannot carry the doomed robot into wrench range of the other.
+        survivor.position.add(new Vector3(100, 0, 0));
+
+        const kind = doomed.name.replace('enemy-', '') as keyof typeof ENEMY_HITS_TO_DEFEAT;
+        const required = Math.max(1, ENEMY_HITS_TO_DEFEAT[kind] + DIFFICULTY_SETTINGS.medium.hitPointDelta);
+        const away = new Vector3(500, 0, 500);
+        for (let hit = 0; hit < required; hit++) {
+            expect(enemies.wrenchStrike(doomed.position.clone())).toHaveLength(1);
+            if (hit < required - 1) {
+                enemies.update(HIT_IMMUNITY_SECONDS + 0.02, away);
+            }
+        }
+        expect(enemies.getDefeatedEnemyIds()).toEqual([doomed.userData.enemyId]);
+
+        const survivorKind = survivor.name.replace('enemy-', '') as keyof typeof ENEMY_HITS_TO_DEFEAT;
+        const survivorMaximum = Math.max(
+            1,
+            ENEMY_HITS_TO_DEFEAT[survivorKind] + DIFFICULTY_SETTINGS.medium.hitPointDelta,
+        );
+        const damaged = enemies.wrenchStrike(survivor.position.clone());
+        expect(damaged).toHaveLength(1);
+        expect(damaged[0].health).toBeCloseTo((survivorMaximum - 1) / survivorMaximum, 5);
+
+        enemies.respawnUnclearedFloors();
+
+        expect(enemies.getDefeatedEnemyIds()).toEqual([]);
+        expect(doomed.getObjectByName('enemy-visual')?.visible).toBe(true);
+        expect(doomed.position.distanceTo(doomedSpawn)).toBeLessThan(1e-6);
+        expect(survivor.position.distanceTo(survivorSpawn)).toBeLessThan(1e-6);
+
+        const healed = enemies.wrenchStrike(survivor.position.clone());
+        const survivorHit = healed.find((hit) => hit.position.distanceTo(survivorSpawn) < 1e-6);
+        expect(survivorHit).toBeDefined();
+        expect(survivorHit!.health).toBeCloseTo(damaged[0].health, 5);
+        enemies.dispose();
+    });
+
     it('keeps the normal reach when the wrench is charged', () => {
         const near = singleEnemyLevel();
         const nearPlayer = near.enemy.position.clone().add(new Vector3(2, 0, 0));
@@ -1107,7 +1205,7 @@ describe('enemy robots', () => {
         // The charged spin passes no facing, so the same nearby distance must connect whether the
         // robot is ahead, behind, or to either side of the player.
         for (const [dx, dz] of directions) {
-            const { enemies, enemy, storeyBaseY } = singleEnemyLevel();
+            const { enemies, enemy, storeyBaseY } = singleEnemyLevel('easy');
             const player = new Vector3(enemy.position.x + dx * 4, storeyBaseY, enemy.position.z + dz * 4);
 
             expect(enemies.wrenchStrike(player)).toHaveLength(1);
@@ -1115,7 +1213,7 @@ describe('enemy robots', () => {
         }
 
         // The reach is a generous radius, not unlimited: a robot further away stays untouched.
-        const { enemies, enemy, storeyBaseY } = singleEnemyLevel();
+        const { enemies, enemy, storeyBaseY } = singleEnemyLevel('easy');
         const beyondReach = new Vector3(enemy.position.x + 5.5, storeyBaseY, enemy.position.z);
         expect(enemies.wrenchStrike(beyondReach)).toHaveLength(0);
         enemies.dispose();
@@ -1245,14 +1343,14 @@ describe('enemy robots', () => {
     });
 
     it('skips the next volley after a wrench hit', () => {
-        const { enemies, enemy, storeyBaseY } = singleEnemyLevel();
+        const { enemies, enemy, storeyBaseY } = singleEnemyLevel('easy');
         const player = enemy.position.clone();
         expect(enemies.wrenchStrike(player)).toHaveLength(1);
 
         // Stand on the floor so the level activates and its volley timer runs. Stop just after the
         // first volley, which should be consumed by the skip.
         const floorPlayer = new Vector3(0, storeyBaseY, 0);
-        const framesPerVolley = Math.ceil(DIFFICULTY_SETTINGS.medium.fireInterval / 0.1);
+        const framesPerVolley = Math.ceil(DIFFICULTY_SETTINGS.easy.fireInterval / 0.1);
         let beamsAfterHit = false;
         for (let step = 0; step < framesPerVolley + 1; step++) {
             enemies.update(0.1, floorPlayer);
@@ -1336,7 +1434,7 @@ describe('player floor state', () => {
             maxY: 10,
             axis: 'x',
         };
-        const { enemies, enemy, storeyBaseY } = singleEnemyLevel('medium', [previousRamp]);
+        const { enemies, enemy, storeyBaseY } = singleEnemyLevel('easy', [previousRamp]);
         const onFloor = new Vector3(0, storeyBaseY, 0);
 
         const floor = enemies.getPlayerFloor(onFloor);
@@ -1352,7 +1450,7 @@ describe('player floor state', () => {
         expect(enemies.getPlayerFloor(new Vector3(5, 5, 5))).toBeNull();
 
         const kind = enemy.name.replace('enemy-', '') as keyof typeof ENEMY_HITS_TO_DEFEAT;
-        const required = ENEMY_HITS_TO_DEFEAT[kind];
+        const required = ENEMY_HITS_TO_DEFEAT[kind] + DIFFICULTY_SETTINGS.easy.hitPointDelta;
         for (let hit = 0; hit < required; hit++) {
             expect(enemies.wrenchStrike(enemy.position.clone())).toHaveLength(1);
             if (hit < required - 1) {
@@ -1365,7 +1463,7 @@ describe('player floor state', () => {
     });
 
     it('keeps an uncleared storey dangerous above the attack band', () => {
-        const { enemies, enemy, storeyBaseY } = singleEnemyLevel('medium');
+        const { enemies, enemy, storeyBaseY } = singleEnemyLevel('easy');
         const onFloor = new Vector3(0, storeyBaseY, 0);
         const aboveAttackBand = new Vector3(0, storeyBaseY + 4.6, 0);
 
@@ -1376,7 +1474,7 @@ describe('player floor state', () => {
         expect(enemies.canPlayerRecover(new Vector3(30, storeyBaseY, 0))).toBe(true);
 
         const kind = enemy.name.replace('enemy-', '') as keyof typeof ENEMY_HITS_TO_DEFEAT;
-        const required = ENEMY_HITS_TO_DEFEAT[kind];
+        const required = ENEMY_HITS_TO_DEFEAT[kind] + DIFFICULTY_SETTINGS.easy.hitPointDelta;
         for (let hit = 0; hit < required; hit++) {
             expect(enemies.wrenchStrike(enemy.position.clone())).toHaveLength(1);
             if (hit < required - 1) {

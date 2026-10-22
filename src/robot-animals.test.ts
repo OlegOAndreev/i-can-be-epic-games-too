@@ -1,7 +1,7 @@
 import { Group, Mesh, MeshStandardMaterial, Sprite, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
-import { ANIMAL_EYE_COLOR, guideWolfSpeed, RobotAnimals } from './robot-animals';
+import { ANIMAL_EYE_COLOR, deerFleeSpeed, guideWolfSpeed, RobotAnimals } from './robot-animals';
 import { installCanvasDocument, testTerrain } from './test-helpers';
 
 installCanvasDocument(1024, 440);
@@ -134,10 +134,31 @@ describe('robot animals', () => {
         const starts = pack.map((group) => group.position.clone());
         const player = new Vector3(start.x + 10, pack[0].position.y, start.z);
         const before = Math.hypot(player.x - start.x, player.z - start.z);
+        const body = pack[0].getObjectByName('body');
+        expect(body).toBeDefined();
+        const hooves = [0, 1, 2, 3].map((index) => pack[0].getObjectByName(`hoof-${index}`));
+        expect(hooves.every((hoof) => hoof !== undefined)).toBe(true);
+        const hoofPosition = new Vector3();
+        const previous = pack[0].position.clone();
         let maxTailSpread = 0;
+        let maxStep = 0;
+        let firstStep = 0;
+        let maxLean = 0;
+        let maxHoofHeight = 0;
 
         for (let step = 0; step < 60; step++) {
+            previous.copy(pack[0].position);
             animals.update(0.05, player);
+            const stepDistance = pack[0].position.distanceTo(previous);
+            if (step === 0) {
+                firstStep = stepDistance;
+            }
+            maxStep = Math.max(maxStep, stepDistance);
+            maxLean = Math.max(maxLean, body?.rotation.x ?? 0);
+            for (const hoof of hooves) {
+                hoof!.getWorldPosition(hoofPosition);
+                maxHoofHeight = Math.max(maxHoofHeight, hoofPosition.y - pack[0].position.y);
+            }
             const tailAngles = pack.map((group) => group.getObjectByName('tail')?.rotation.y ?? 0);
             maxTailSpread = Math.max(maxTailSpread, Math.max(...tailAngles) - Math.min(...tailAngles));
         }
@@ -150,6 +171,44 @@ describe('robot animals', () => {
         const distances = pack.map((group, index) => group.position.distanceTo(starts[index]));
         expect(new Set(distances.map((distance) => distance.toFixed(2))).size).toBeGreaterThan(1);
         expect(maxTailSpread).toBeGreaterThan(0.05);
+        // The flee ramps up from a walk: the first 0.05 s step is walking pace, then it builds to the
+        // 24 m/s sprint over the next second.
+        expect(firstStep).toBeLessThan(0.2);
+        expect(maxStep).toBeGreaterThan(1);
+        // Fleeing deer lean into the gallop instead of trotting upright.
+        expect(maxLean).toBeGreaterThan(0.05);
+        // The hooves tuck well clear of the ground during the sprint.
+        expect(maxHoofHeight).toBeGreaterThan(0.5);
+
+        animals.dispose();
+    });
+
+    it('staggers every leg instead of moving them as synchronized pairs', () => {
+        const terrain = testTerrain(20260419, { meshes: false });
+        const animals = new RobotAnimals(terrain);
+        const deer = animalGroups(animals).find((group) => group.userData.kind === 'deer')!;
+        const legs = [0, 1, 2, 3].map((index) => deer.getObjectByName(`leg-${index}`));
+        expect(legs.every((leg) => leg !== undefined)).toBe(true);
+
+        const distinctLegs = () => new Set(legs.map((leg) => (leg?.rotation.x ?? 0).toFixed(2))).size;
+
+        // Keep the player far away so the deer wanders with its walk cycle.
+        const farPlayer = new Vector3(deer.position.x + 100, deer.position.y, deer.position.z);
+        let walkSpread = 0;
+        for (let step = 0; step < 300; step++) {
+            animals.update(0.05, farPlayer);
+            walkSpread = Math.max(walkSpread, distinctLegs());
+        }
+        expect(walkSpread).toBe(4);
+
+        // Step next to the deer to trigger the flee gallop.
+        const nearPlayer = new Vector3(deer.position.x + 1, deer.position.y, deer.position.z);
+        let runSpread = 0;
+        for (let step = 0; step < 60; step++) {
+            animals.update(0.05, nearPlayer);
+            runSpread = Math.max(runSpread, distinctLegs());
+        }
+        expect(runSpread).toBe(4);
 
         animals.dispose();
     });
@@ -182,9 +241,16 @@ describe('robot animals', () => {
 
     it('accelerates the guiding wolf from a trot to a run', () => {
         expect(guideWolfSpeed(0)).toBe(5);
-        expect(guideWolfSpeed(1.5)).toBe(10);
-        expect(guideWolfSpeed(3)).toBe(15);
+        expect(guideWolfSpeed(0.75)).toBe(10);
+        expect(guideWolfSpeed(1.5)).toBe(15);
         expect(guideWolfSpeed(10)).toBe(15);
+    });
+
+    it('accelerates deer from a walk to a sprint in one second', () => {
+        expect(deerFleeSpeed(0, 2.1, 24)).toBeCloseTo(2.1);
+        expect(deerFleeSpeed(0.5, 2.1, 24)).toBeCloseTo(13.05);
+        expect(deerFleeSpeed(1, 2.1, 24)).toBeCloseTo(24);
+        expect(deerFleeSpeed(5, 2.1, 24)).toBeCloseTo(24);
     });
 
     it('shows a wolf line above its head and fades it out', () => {
@@ -237,6 +303,18 @@ describe('robot animals', () => {
         const stone = terrain.nearestEmeraldStone(wolf.position.x, wolf.position.z);
         expect(stone).not.toBeNull();
         const before = Math.hypot(wolf.position.x - stone!.x, wolf.position.z - stone!.z);
+        const body = wolf.getObjectByName('body');
+        expect(body).toBeDefined();
+        const hooves = [0, 1, 2, 3].map((index) => wolf.getObjectByName(`hoof-${index}`));
+        expect(hooves.every((hoof) => hoof !== undefined)).toBe(true);
+        const knees = [0, 1, 2, 3].map((index) => wolf.getObjectByName(`knee-${index}`));
+        expect(knees.every((knee) => knee !== undefined)).toBe(true);
+        const legs = [0, 1, 2, 3].map((index) => wolf.getObjectByName(`leg-${index}`));
+        expect(legs.every((leg) => leg !== undefined)).toBe(true);
+        const hoofPosition = new Vector3();
+        const localHoof = new Vector3();
+        const frontReach = [0, 0];
+        const hindReach = [0, 0];
 
         expect(animals.guideWolf(target!.id)).toBe(true);
         const foundStones: number[] = [];
@@ -246,10 +324,44 @@ describe('robot animals', () => {
         animals.update(0.05, player);
         // The guide starts at 5 m/s, so one 0.05 s frame covers 0.25 m.
         expect(Math.hypot(wolf.position.x - firstStepX, wolf.position.z - firstStepZ)).toBeCloseTo(0.25, 2);
+        let maxLean = 0;
+        let maxHoofHeight = 0;
+        let frontKnee = 0;
+        let hindKnee = 0;
+        let frontPivot = 0;
+        let hindPivot = 0;
         for (let step = 1; step < 600; step++) {
             animals.update(0.05, player);
+            maxLean = Math.max(maxLean, body?.rotation.x ?? 0);
+            for (let index = 0; index < 4; index++) {
+                hooves[index]!.getWorldPosition(hoofPosition);
+                maxHoofHeight = Math.max(maxHoofHeight, hoofPosition.y - wolf.position.y);
+                wolf.worldToLocal(localHoof.copy(hoofPosition));
+                if (index < 2) {
+                    frontReach[index] = Math.max(frontReach[index], localHoof.z);
+                    frontKnee = Math.max(frontKnee, Math.abs(knees[index]!.rotation.x));
+                    frontPivot = Math.min(frontPivot, legs[index]!.rotation.x);
+                } else {
+                    hindReach[index - 2] = Math.max(hindReach[index - 2], localHoof.z);
+                    hindKnee = Math.max(hindKnee, Math.abs(knees[index]!.rotation.x));
+                    hindPivot = Math.min(hindPivot, legs[index]!.rotation.x);
+                }
+            }
         }
         expect(foundStones).toEqual([target!.id]);
+        // Guiding wolves gallop, leaning forward while they lead the player.
+        expect(maxLean).toBeGreaterThan(0.05);
+        // Their hooves also stay high off the ground while they run.
+        expect(maxHoofHeight).toBeGreaterThan(0.45);
+        // The front legs pivot out ahead of the body instead of hanging beneath it.
+        expect(Math.min(...frontReach)).toBeGreaterThan(0.5);
+        expect(Math.min(...frontReach)).toBeGreaterThan(Math.max(...hindReach) + 0.3);
+        // The front calf stays close to the hip line; the hind knee still folds deeply.
+        expect(frontKnee).toBeLessThan(0.4);
+        expect(hindKnee).toBeGreaterThan(1.5);
+        // Both pairs also swing higher at the hip during the run.
+        expect(frontPivot).toBeLessThan(-1.1);
+        expect(hindPivot).toBeLessThan(-0.8);
 
         const after = Math.hypot(wolf.position.x - stone!.x, wolf.position.z - stone!.z);
         expect(after).toBeLessThan(before);

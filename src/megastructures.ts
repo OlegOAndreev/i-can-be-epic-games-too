@@ -662,7 +662,8 @@ export class Megastructures {
 
     // Runs one pulse cycle per glow: the core swells from its minimum to its maximum radius, then
     // contracts back to its minimum while a hollow ring expands outward and fades. Each spire has
-    // its own phase so the towers do not pulse in lockstep. A charging switch calls the lightning
+    // its own phase so the towers do not pulse in lockstep. A drained crown has already turned
+    // blue, so it holds a steady glow instead of breathing. A charging switch calls the lightning
     // down onto the supplied player position when its charge completes.
     update(dt: number, playerPosition: Vector3 | null = null): void {
         this.glowTime += dt;
@@ -671,6 +672,13 @@ export class Megastructures {
         this.entranceGlowMaterial.opacity = 0.28 + 0.08 * (0.5 + 0.5 * Math.sin(this.glowTime * 1.6));
 
         for (const glow of this.crownGlows) {
+            // Once the switch is thrown the crown stays lit at a fixed size: no swell and no ring.
+            if (glow.blue) {
+                glow.core.scale.setScalar(GLOW_MIN_SCALE);
+                glow.ring.visible = false;
+                continue;
+            }
+
             const cycle = (((this.glowTime / GLOW_PULSE_PERIOD + glow.phase) % 1) + 1) % 1;
             const grow = Math.min(1, cycle / GLOW_GROW_FRACTION);
             const swell = grow * grow * (3 - 2 * grow);
@@ -1041,6 +1049,9 @@ export class Megastructures {
         glow.core.material = this.blueLampGlowMaterial;
         glow.sprite.material = this.blueLampGlowSpriteMaterial;
         glow.ring.material.color.setHex(0x4fa8ff);
+        // Settle the pulse right away so the strike frame does not leave a stray ring behind.
+        glow.core.scale.setScalar(GLOW_MIN_SCALE);
+        glow.ring.visible = false;
 
         const field = this.crownShockFields[towerIndex];
         if (field) {

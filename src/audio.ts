@@ -186,6 +186,80 @@ function effectUrl(wavUrl: string, opusUrl: string): string {
     return OPUS_SUPPORTED ? opusUrl : wavUrl;
 }
 
+// Two short synthesized barks. A falling sawtooth supplies the vocal pitch, a swept resonant
+// bandpass turns white noise into the growly vowel, and a sub-bass thump adds body. This reads as
+// a woof instead of the caretakers' musical speech beeps.
+function createWolfWoofBuffer(context: AudioContext): AudioBuffer {
+    const sampleRate = context.sampleRate;
+    const buffer = context.createBuffer(1, Math.ceil(0.9 * sampleRate), sampleRate);
+    const samples = buffer.getChannelData(0);
+    const rng = mulberry32(0x574f4f46);
+    const woofs = [
+        { start: 0, pitch: 1, gain: 1 },
+        { start: 0.5, pitch: 0.95, gain: 0.9 },
+    ];
+    const woofSeconds = 0.3;
+
+    for (const woof of woofs) {
+        const startSample = Math.floor(woof.start * sampleRate);
+        const lengthSamples = Math.floor(woofSeconds * sampleRate);
+        let phase = 0;
+        let subPhase = 0;
+        let toneLow = 0;
+        let low = 0;
+        let band = 0;
+
+        for (let index = 0; index < lengthSamples; index++) {
+            const t = index / sampleRate;
+            const progress = t / woofSeconds;
+
+            // The fundamental falls quickly from about 125 Hz to 70 Hz; keeping it low avoids the
+            // sharp, nasal quality that made the bark read as a sneeze.
+            const frequency = (125 - 55 * Math.sqrt(progress)) * woof.pitch;
+            phase += (Math.PI * 2 * frequency) / sampleRate;
+            subPhase += (Math.PI * 2 * 52 * woof.pitch) / sampleRate;
+
+            const saw = 2 * ((phase / (Math.PI * 2)) % 1) - 1;
+            // Soften the saw before mixing so its upper harmonics do not turn into a buzz.
+            toneLow += (saw - toneLow) * 0.13;
+            const sub = Math.sin(subPhase) * Math.exp(-t * 18);
+
+            // A resonant band sweeps down through the lower vowel; a little noise adds growl.
+            const noise = rng() * 2 - 1;
+            const cutoff = 680 - 340 * progress;
+            const coefficient = 2 * Math.sin((Math.PI * cutoff) / sampleRate);
+            low += coefficient * band;
+            const high = noise - low - 1.1 * band;
+            band += coefficient * high;
+
+            // Softer, slower attack than the beeps so the bark opens rather than clicks. The last
+            // twelfth fades quickly but smoothly to silence; without this the still-ringing filter
+            // tail cuts off at the end of the sample and sounds like a burst of noise.
+            const attack = Math.min(1, t / 0.024);
+            const decay = Math.exp(-t * 8.5) * (1 - progress * 0.45);
+            const releaseProgress = Math.min(1, (1 - progress) / 0.09);
+            const release = releaseProgress * releaseProgress * (3 - 2 * releaseProgress);
+            const envelope = attack * decay * release;
+
+            const value = (toneLow * 0.72 + band * 0.55 + sub * 0.5) * envelope * woof.gain;
+            samples[startSample + index] += value;
+        }
+    }
+
+    // Normalize once so the bark is loud without slamming the limiter.
+    let peak = 0;
+    for (let index = 0; index < samples.length; index++) {
+        peak = Math.max(peak, Math.abs(samples[index]));
+    }
+    if (peak > 0.001) {
+        const scale = 0.92 / peak;
+        for (let index = 0; index < samples.length; index++) {
+            samples[index] *= scale;
+        }
+    }
+    return buffer;
+}
+
 const FOOTSTEP_URLS = [
     effectUrl(footstep00WavUrl, footstep00OpusUrl),
     effectUrl(footstep01WavUrl, footstep01OpusUrl),
@@ -381,6 +455,7 @@ export class GameAudio {
     private shipEngineVolume = 1;
     private fallWindBuffer: AudioBuffer | null = null;
     private wrenchSwingBuffer: AudioBuffer | null = null;
+    private wolfWoofBuffer: AudioBuffer | null = null;
     private wrenchClangBuffers: AudioBuffer[] = [];
     private fallWindSource: AudioBufferSourceNode | null = null;
     private fallWindGain: GainNode | null = null;
@@ -689,6 +764,17 @@ export class GameAudio {
             playback.stop();
         }
         this.activeRobotBeeps.clear();
+    }
+
+    // Two low, noisy barks for the wolf. The waveform is synthesized once and reused: a descending
+    // sawtooth gives the vocal pitch, a swept bandpass adds the growly vowel, and a short sub-bass
+    // thump gives the woof its body.
+    playWolfWoof(position: Vector3 | null = null): void {
+        if (!this.context || !this.effectsGain || !this.settings.sounds || this.paused) {
+            return;
+        }
+        this.wolfWoofBuffer ??= createWolfWoofBuffer(this.context);
+        this.playOneShot(this.wolfWoofBuffer, { gain: 1.2, position });
     }
 
     // A short, high-pitched locator pulse. The caller passes 0 at the edge of the detector range

@@ -9,6 +9,9 @@ const MAX_PARTICLES_PER_HARD_LANDING = 46;
 const TEXTURE_VARIANTS = 3;
 // Hard landings throw up 46 puffs at once; this cap only binds when several clouds overlap.
 const MAX_ACTIVE_PARTICLES = 160;
+// Jump and landing clouds can surround the camera in first person, so render them 1.5x more
+// transparent.
+const LANDING_DUST_TRANSPARENCY = 1.5;
 // A hard landing knocks the player onto its face, so its dust hangs in the air and fades 2.0x
 // slower than an ordinary landing cloud.
 const HARD_LANDING_LIFETIME_SCALE = 2.0;
@@ -72,7 +75,7 @@ export class DustPuffs {
                 horizontalSpeed: 1.1 + Math.random() * 2.0,
                 upwardSpeed: 0.8 + Math.random() * 1.3,
                 lifetime: 0.5 + Math.random() * 0.3,
-                opacity: 0.8 + Math.random() * 0.2,
+                opacity: (0.8 + Math.random() * 0.2) / LANDING_DUST_TRANSPARENCY,
                 heightOffset: 0.1 + Math.random() * 0.14,
                 neutralMix: 0.18,
                 lightnessLift: 0.04,
@@ -100,7 +103,7 @@ export class DustPuffs {
                 horizontalSpeed: (2.0 + Math.random() * 3.4) * strength,
                 upwardSpeed: (1.1 + Math.random() * 2.2) * strength,
                 lifetime: (0.85 + Math.random() * 0.55) * HARD_LANDING_LIFETIME_SCALE,
-                opacity: 0.85 + Math.random() * 0.15,
+                opacity: (0.85 + Math.random() * 0.15) / LANDING_DUST_TRANSPARENCY,
                 heightOffset: 0.14 + Math.random() * 0.38,
                 neutralMix: 0.18,
                 lightnessLift: 0.05,
@@ -125,7 +128,7 @@ export class DustPuffs {
                 horizontalSpeed: 0.4 + Math.random() * 0.6,
                 upwardSpeed: 0.35 + Math.random() * 0.5,
                 lifetime: 0.4 + Math.random() * 0.2,
-                opacity: 0.5 + Math.random() * 0.18,
+                opacity: (0.5 + Math.random() * 0.18) / LANDING_DUST_TRANSPARENCY,
                 heightOffset: 0.16 + Math.random() * 0.12,
                 neutralMix: 0.35,
                 lightnessLift: 0.14,

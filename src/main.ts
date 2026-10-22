@@ -120,7 +120,7 @@ const PLAYER_MIN_OPACITY = 0.1;
 const PET_WOLF_DISTANCE = 2.5;
 const WOLF_DIALOGUE_SECONDS = 2.8;
 const MAX_PIXEL_RATIO = 1.5;
-type ShadowMode = 'cascaded' | 'baked';
+type ShadowMode = 'cascaded' | 'staticAtlas';
 const DOUBLE_JUMP_TRAIL_COUNT = 3;
 const DOUBLE_JUMP_TRAIL_INTERVAL = 0.1;
 // How long the destroyed chassis lies on the floor before it is rebuilt at the ramp foot. Long
@@ -134,9 +134,9 @@ const DAMAGE_VIGNETTE_BOOST = 1.6;
 const MAX_SHADOW_DISTANCE = 620;
 // The static shadow atlas spans the whole world; this leaves room for the tallest structures.
 const STATIC_SHADOW_MAX_HEIGHT = 400;
-// In baked mode one live cascade covers the near field at high resolution, while the atlas fills
-// in static shadows farther away. Fog starts at 90 m, so dynamic shadows beyond this barely show.
-const BAKED_LIVE_SHADOW_DISTANCE = 120;
+// In static atlas mode one live cascade covers the near field at high resolution, while the atlas
+// fills in static shadows farther away. Fog starts at 90 m, so dynamic shadows beyond this barely show.
+const STATIC_ATLAS_LIVE_DISTANCE = 120;
 const SEED_STORAGE_KEY = 'walking-game.seed';
 const PLAYER_STORAGE_KEY = 'walking-game.player';
 const SETTINGS_STORAGE_KEY = 'walking-game.settings';
@@ -199,7 +199,7 @@ const DEFAULT_SETTINGS = {
     thirdPersonFov: FOV,
     antialias: false,
     shadowQuality: 'high' as ShadowQuality,
-    shadowMode: 'baked' as ShadowMode,
+    shadowMode: 'staticAtlas' as ShadowMode,
     shadowSoftness: 2,
     grassRadius: DEFAULT_GRASS_RADIUS,
     difficulty: 'medium' as const,
@@ -237,6 +237,7 @@ interface StoredPlayerState {
     flippedSwitches?: number[];
     energyRemaining?: number;
     mineralsCollected?: number;
+    introSeen?: boolean;
 }
 
 const MAX_SAVED_IDS = 1000;
@@ -314,8 +315,9 @@ function readStoredPlayerState(): StoredPlayerState | null {
                 ? Math.min(100, Math.max(0, state.energyRemaining))
                 : undefined,
             mineralsCollected: isFiniteNumber(state.mineralsCollected)
-                ? Math.min(MINERAL_GOAL, Math.max(0, Math.floor(state.mineralsCollected)))
+                ? Math.max(0, Math.floor(state.mineralsCollected))
                 : undefined,
+            introSeen: state.introSeen === true,
         };
     } catch {
         return null;
@@ -343,6 +345,7 @@ function storePlayerState(): void {
             flippedSwitches: terrain.megastructures.getFlippedTowerIndices(),
             energyRemaining,
             mineralsCollected,
+            introSeen: npcRobots.introSeen,
         };
         window.localStorage.setItem(PLAYER_STORAGE_KEY, JSON.stringify(state));
     } catch {
@@ -411,7 +414,11 @@ function storedShadowQuality(settings: StoredSettings, fallback: ShadowQuality):
 
 function storedShadowMode(settings: StoredSettings, fallback: ShadowMode): ShadowMode {
     const value = settings.shadowMode;
-    return value === 'cascaded' || value === 'baked' ? value : fallback;
+    // 'baked' is the legacy name for the static atlas mode.
+    if (value === 'baked') {
+        return 'staticAtlas';
+    }
+    return value === 'cascaded' || value === 'staticAtlas' ? value : fallback;
 }
 
 function readStoredSeed(): number | null {
@@ -670,6 +677,7 @@ let playerRespawnFacing = 0;
 let robotStory: RobotDialogue = { intro: [], outro: [] };
 // The wolf being petted, held until the gesture finishes so the follow-up starts in sync.
 let pettingWolfId: number | null = null;
+const pettingWolfPosition = new Vector3();
 let finale: Finale | null = null;
 let grassField: GrassField;
 let dustPuffs: DustPuffs;
@@ -980,15 +988,12 @@ async function init(): Promise<void> {
         const wolfId = pettingWolfId;
         pettingWolfId = null;
         if (robotAnimals.guideWolf(wolfId)) {
+            gameAudio.playWolfWoof(pettingWolfPosition);
             showWolfSpeech(wolfId, t('wolf.pet', 'Woof woof, follow me'));
         }
     };
     player.onJump = (doubleJump) => gameAudio.playJump(doubleJump);
     player.onDoubleJump = (position) => {
-        // The ring trails the robot's own arc, which puts it right under the first-person camera.
-        if (cameraController.firstPerson) {
-            return;
-        }
         if (!isFullySubmerged(position)) {
             waterSplash.spawnDoubleJumpRing(position);
         }
@@ -1021,21 +1026,15 @@ async function init(): Promise<void> {
             }
         } else {
             const groundColor = terrain.groundColorAt(position.x, position.z);
-            // First person puts the camera among the landing puffs, so skip the cloud but keep the
-            // dent and its shadow patch, which stay part of the world.
-            if (!cameraController.firstPerson) {
-                if (onMetal) {
-                    dustPuffs.spawnMetalLanding(position, groundColor);
-                } else if (hardLanding) {
-                    dustPuffs.spawnHardLanding(position, impactSpeed, groundColor);
-                } else {
-                    dustPuffs.spawn(position, impactSpeed, groundColor);
-                }
-            }
-            if (hardLanding) {
+            if (onMetal) {
+                dustPuffs.spawnMetalLanding(position, groundColor);
+            } else if (hardLanding) {
+                dustPuffs.spawnHardLanding(position, impactSpeed, groundColor);
                 groundDents.spawn(position, impactSpeed, groundColor, terrain);
                 // Dent decals create a new lit material; add the static shadow uniforms to it.
                 staticSunShadow?.patchScene(view.scene);
+            } else {
+                dustPuffs.spawn(position, impactSpeed, groundColor);
             }
         }
     };
@@ -1051,9 +1050,7 @@ async function init(): Promise<void> {
 
         if (onMetal) {
             gameAudio.playMetalFootstep(0, METAL_FOOTSTEP_GAIN * boost);
-            if (!cameraController.firstPerson) {
-                dustPuffs.spawnMetalLanding(position, groundColor);
-            }
+            dustPuffs.spawnMetalLanding(position, groundColor);
             return;
         }
 
@@ -1066,9 +1063,7 @@ async function init(): Promise<void> {
         }
 
         footstepPosition.set(position.x, terrain.heightAt(position.x, position.z), position.z);
-        if (!cameraController.firstPerson) {
-            dustPuffs.spawn(footstepPosition, impactSpeed, groundColor);
-        }
+        dustPuffs.spawn(footstepPosition, impactSpeed, groundColor);
         footprints.spawn(footstepPosition, windDirection, footstepSide, groundColor, terrain);
         footstepSide *= -1;
     };
@@ -1105,6 +1100,9 @@ async function init(): Promise<void> {
         levelElapsedSeconds = storedPlayer.elapsedSeconds ?? 0;
         terrain.restoreMineralsCollected(mineralsCollected);
         partsRemaining = spaceshipParts.remaining;
+        if (storedPlayer.introSeen) {
+            npcRobots.restoreIntroSeen();
+        }
     }
     if (sharedPlayerState && sharedPlayerState.seed === worldSettings.seed) {
         player.restoreSnapshot(sharedPlayerState);
@@ -1282,7 +1280,7 @@ async function init(): Promise<void> {
     canvas.addEventListener('webglcontextrestored', () => {
         webglContextLost = false;
         profiler?.handleContextRestored();
-        // Render-target contents do not survive context loss; rebuild the baked shadow atlas.
+        // Render-target contents do not survive context loss; rebuild the static shadow atlas.
         if (staticSunShadow?.isBaked()) {
             staticSunShadow.bake(view.renderer, view.scene);
         }
@@ -1473,14 +1471,14 @@ function createLights(): void {
     // automatically to the view frustum, with the first one kept tight around the player so the
     // nearest objects get a high-resolution shadow map.
     const preset = SHADOW_PRESETS[renderSettings.shadowQuality];
-    const baked = renderSettings.shadowMode === 'baked';
-    // Baked mode spends its shadow budget on one high-resolution near cascade. The atlas already
-    // covers static geometry across the island, so extra live cascades mostly duplicate work.
-    const cascadeCount = baked ? 1 : preset.cascades;
-    const cascadeFractions = baked ? [] : preset.fractions;
-    const liveMapSize = baked ? Math.min(4096, preset.mapSize * 2) : preset.mapSize;
-    const liveDistance = baked
-        ? Math.min(renderSettings.shadowDistance, BAKED_LIVE_SHADOW_DISTANCE)
+    const staticAtlas = renderSettings.shadowMode === 'staticAtlas';
+    // Static atlas mode spends its shadow budget on one high-resolution near cascade. The atlas
+    // already covers static geometry across the island, so extra live cascades mostly duplicate work.
+    const cascadeCount = staticAtlas ? 1 : preset.cascades;
+    const cascadeFractions = staticAtlas ? [] : preset.fractions;
+    const liveMapSize = staticAtlas ? Math.min(4096, preset.mapSize * 2) : preset.mapSize;
+    const liveDistance = staticAtlas
+        ? Math.min(renderSettings.shadowDistance, STATIC_ATLAS_LIVE_DISTANCE)
         : renderSettings.shadowDistance;
     configureSunShadowCascades(cascadeCount);
     sun = new SunLight(0xfff0d3, 3);
@@ -1510,7 +1508,7 @@ function createLights(): void {
     view.scene.add(robotShadowSun);
     viewmodelLights.push(hemisphere, interiorFillLight, sun, robotShadowSun);
 
-    if (baked) {
+    if (staticAtlas) {
         // Static geometry is baked into a world-space tiled atlas once per world build. The single
         // live cascade above keeps near shadows crisp; the atlas extends them across the island.
         installStaticSunShadowShaderChunks();
@@ -1804,11 +1802,11 @@ function createGui(GuiConstructor: typeof GUI): GUI {
     const graphicsFolder = guiInstance.addFolder(t('gui.graphics', 'Graphics')).close();
     const shadowModeOptions: Record<string, ShadowMode> = {
         [t('gui.shadowMode.cascaded', 'Cascaded')]: 'cascaded',
-        [t('gui.shadowMode.baked', 'Tiled static')]: 'baked',
+        [t('gui.shadowMode.staticAtlas', 'Static atlas')]: 'staticAtlas',
     };
     graphicsFolder
         .add(renderSettings, 'shadowMode', shadowModeOptions)
-        .name(t('gui.shadowMode', 'Shadow implementation'))
+        .name(t('gui.shadowMode', 'Shadow method'))
         // Shader chunks and caster layers are chosen at startup.
         .onChange(() => {
             storeSettings();
@@ -2416,7 +2414,7 @@ function rebuildWorld(seed: number): void {
 function setShadowDistance(distance: number): void {
     renderSettings.shadowDistance = distance;
     sun.shadow.camera.far =
-        renderSettings.shadowMode === 'baked' ? Math.min(distance, BAKED_LIVE_SHADOW_DISTANCE) : distance;
+        renderSettings.shadowMode === 'staticAtlas' ? Math.min(distance, STATIC_ATLAS_LIVE_DISTANCE) : distance;
     robotShadowSun.shadow.camera.far = Math.min(distance, ROBOT_SHADOW_DISTANCE);
 }
 
@@ -2599,13 +2597,9 @@ function setFirstPerson(firstPerson: boolean): void {
     cameraController.setFirstPerson(firstPerson);
     syncViewModeButtons();
     if (firstPerson) {
-        // First person puts the camera inside the robot, so the wake streaks and its own dust
-        // would sometimes pop across the lens. Drop any live ones and stop emitting them while
-        // the view is inside.
+        // First person puts the camera inside the robot, so the wake streaks would sometimes
+        // pop across the lens. Drop any live ones and stop emitting while the view is inside.
         windTrails.clear();
-        dustPuffs.clear();
-        doubleJumpTrailRemaining = 0;
-        doubleJumpTrailTimer = 0;
     }
     updatePlayerAppearance();
     applyCameraFov();
@@ -2912,6 +2906,7 @@ function tryPetWolf(): boolean {
         return false;
     }
     pettingWolfId = wolf.id;
+    pettingWolfPosition.set(wolf.x, wolf.y + 0.8, wolf.z);
     return true;
 }
 
@@ -3046,6 +3041,7 @@ function finishPlayerRespawn(): void {
     player.revive();
     player.respawnAt(playerRespawnPosition, playerRespawnFacing);
     playerDebris.clear();
+    enemyRobots.respawnUnclearedFloors();
     playerHealth.reset();
     playerRecovering = false;
     damageVignette.reset();
@@ -3224,7 +3220,7 @@ function animate(): void {
     }
 
     // Leave the remaining splash circles at the robot's current point on its jump arc.
-    if (!cameraController.firstPerson && doubleJumpTrailRemaining > 0) {
+    if (doubleJumpTrailRemaining > 0) {
         doubleJumpTrailTimer -= dt;
         if (doubleJumpTrailTimer <= 0) {
             if (!isFullySubmerged(player.group.position)) {

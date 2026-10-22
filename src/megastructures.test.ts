@@ -740,6 +740,41 @@ describe('megastructures', () => {
         expect(minOpacity.every((opacity) => opacity < 0.05)).toBe(true);
     });
 
+    it('holds a drained crown glow steady while untouched crowns keep pulsing', () => {
+        const terrain = testTerrain();
+        const structures = terrain.megastructures;
+        const glowMeshes: Mesh[] = [];
+        structures.group.traverse((child) => {
+            if (child instanceof Mesh && child.name === 'crown-lamp-glow') {
+                glowMeshes.push(child);
+            }
+        });
+        const rings: Sprite[] = [];
+        structures.group.traverse((child) => {
+            if (child instanceof Sprite && child.name === 'crown-glow-ring') {
+                rings.push(child);
+            }
+        });
+        expect(glowMeshes.length).toBe(structures.towers.length);
+        expect(rings.length).toBe(structures.towers.length);
+
+        structures.restoreFlippedTowerIndices([structures.switches[0].towerIndex]);
+        structures.update(1 / 60);
+        const settledScale = glowMeshes[0].scale.x;
+
+        let liveSmallest = Infinity;
+        let liveLargest = 0;
+        for (let step = 0; step < 120; step++) {
+            structures.update(0.05);
+            expect(glowMeshes[0].scale.x).toBeCloseTo(settledScale, 5);
+            expect(rings[0].visible).toBe(false);
+            liveSmallest = Math.min(liveSmallest, glowMeshes[1].scale.x);
+            liveLargest = Math.max(liveLargest, glowMeshes[1].scale.x);
+        }
+
+        expect(liveLargest - liveSmallest).toBeGreaterThan(0.3);
+    });
+
     it('builds a crown above each tower', () => {
         const terrain = testTerrain();
         const structures = terrain.megastructures;

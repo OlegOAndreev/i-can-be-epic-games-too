@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { testTerrain, triangleCount, visibleMeshes } from './test-helpers';
 import type { RockWrenchHit } from './terrain';
+import { MINERAL_GOAL } from './terrain';
 
 describe('rock damage', () => {
     it('sprays sparks, dents the rock, and breaks it into rubble', () => {
@@ -232,6 +233,40 @@ describe('rock damage', () => {
 
         terrain.restoreMineralsCollected(3);
         expect(terrain.mineralsCollected).toBe(3);
+    });
+
+    it('keeps dropping emerald minerals after the collection goal is reached', () => {
+        const terrain = testTerrain(13579, { meshes: false });
+        terrain.restoreMineralsCollected(MINERAL_GOAL);
+        const emeraldCell = terrain.group.children.find(
+            (child): child is InstancedMesh =>
+                child instanceof InstancedMesh && child.name.startsWith('boulder-emerald-cell-'),
+        );
+        expect(emeraldCell).toBeDefined();
+        if (!emeraldCell) {
+            return;
+        }
+
+        const matrix = new Matrix4();
+        emeraldCell.getMatrixAt(0, matrix);
+        const position = new Vector3();
+        matrix.decompose(position, new Quaternion(), new Vector3());
+
+        for (let hit = 0; hit < 6; hit++) {
+            terrain.wrenchStrike(position.clone());
+        }
+
+        const mineral = terrain.group.getObjectByName('emerald-mineral');
+        expect(mineral).toBeInstanceOf(Mesh);
+        if (!(mineral instanceof Mesh)) {
+            return;
+        }
+
+        for (let step = 0; step < 12; step++) {
+            terrain.update(0.1, mineral.position);
+        }
+
+        expect(terrain.mineralsCollected).toBeGreaterThan(MINERAL_GOAL);
     });
 
     it('always places an emerald boulder near the crash site', () => {

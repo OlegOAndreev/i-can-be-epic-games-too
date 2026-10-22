@@ -383,10 +383,10 @@ export class Terrain {
     }
 
     // Saved progress only needs the count; the world itself is rebuilt from its seed. Harvested
-    // emerald boulders therefore come back after a reload until MINERAL_GOAL is reached. This is a
-    // known minor farming exploit, accepted because the objective is capped.
+    // emerald boulders come back after a reload, so surplus minerals can be gathered beyond the
+    // goal and the saved count keeps whatever the player actually collected.
     restoreMineralsCollected(count: number): void {
-        this.mineralsCollectedCount = Math.min(MINERAL_GOAL, Math.max(0, Math.floor(count)));
+        this.mineralsCollectedCount = Math.max(0, Math.floor(count));
     }
 
     get mineralsCollected(): number {
@@ -1566,7 +1566,9 @@ export class Terrain {
 
         this.rockEffects.shatter(boulder.x, boulder.y, boulder.z, boulder.scaleX, boulder.scaleY, boulder.scaleZ);
 
-        if (boulder.emerald && this.mineralsCollectedCount < MINERAL_GOAL) {
+        // Emerald seams always yield a shard, even once the collection goal is met, so the
+        // counter is allowed to run past MINERAL_GOAL.
+        if (boulder.emerald) {
             this.dropMineral(boulder);
         }
     }
@@ -1724,7 +1726,7 @@ export class Terrain {
             this.disposeMineralSparkles(drop);
             this.group.remove(drop.mesh);
             this.mineralDrops.splice(index, 1);
-            this.mineralsCollectedCount = Math.min(MINERAL_GOAL, this.mineralsCollectedCount + 1);
+            this.mineralsCollectedCount += 1;
             this.onMineralCollected?.(this.mineralsCollectedCount);
         }
     }

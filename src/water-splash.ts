@@ -19,6 +19,9 @@ const MAX_PARTICLES = 26;
 const MAX_FOAM_PATCHES = 32;
 const PARTICLE_GRAVITY = 16;
 const SURFACE_Y = WATER_LEVEL + 0.065;
+// The double-jump ring passes right under the first-person camera, so render it 1.5x more
+// transparent.
+const DOUBLE_JUMP_RING_OPACITY = 0.5 / 1.5;
 
 interface SplashParticle {
     mesh: Mesh;
@@ -100,7 +103,7 @@ export class WaterSplash {
     // double-jump arc. Main calls this every 0.1 s so the circles trace the arc instead of stacking
     // on one spot.
     spawnDoubleJumpRing(position: Vector3): void {
-        this.spawnFoamPatch(position.x, position.z, 0.14, 0.45, 0.5, 0.4, 0, position.y + 0.03);
+        this.spawnFoamPatch(position.x, position.z, 0.14, 0.45, DOUBLE_JUMP_RING_OPACITY, 0.4, 0, position.y + 0.03);
     }
 
     // Foam that hugs the legs while moving: a small patch ahead of the robot and a fading trail

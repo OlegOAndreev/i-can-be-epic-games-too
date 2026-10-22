@@ -48,8 +48,10 @@ export interface DifficultySettings {
     enemiesEnabled: boolean;
     fireInterval: number;
     hitPointDelta: number;
-    // Chance that a populated storey gets a second robot in addition to the guaranteed one.
-    secondEnemyChance: number;
+    // Robots guaranteed on every populated storey.
+    baseEnemyCount: number;
+    // Chance that a populated storey gets one extra robot beyond the guaranteed count.
+    extraEnemyChance: number;
     // Laser hits the player's robot can absorb on a tower floor before it is destroyed.
     playerHitsToDestroy: number;
     // Top speed of the repaired ship during the flight finale.
@@ -59,15 +61,16 @@ export interface DifficultySettings {
 }
 
 // Medium is the baseline. Peaceful removes every hostile robot; easy removes one hit from every
-// robot, slows the volleys, and keeps a single robot per floor; medium adds a second robot on 60%
-// of floors; hard adds one everywhere and fires faster. The interval is the time between
-// synchronized floor volleys.
+// robot, slows the volleys, and keeps a single robot per floor; medium puts two robots on every
+// floor; hard puts two on every floor and a third on 60% of them, and fires faster. The interval
+// is the time between synchronized floor volleys.
 export const DIFFICULTY_SETTINGS: Record<Difficulty, DifficultySettings> = {
     peaceful: {
         enemiesEnabled: false,
         fireInterval: 1.2,
         hitPointDelta: -1,
-        secondEnemyChance: 0,
+        baseEnemyCount: 1,
+        extraEnemyChance: 0,
         playerHitsToDestroy: 6,
         maxShipSpeed: 80,
         ringSpeedBonus: 10,
@@ -76,7 +79,8 @@ export const DIFFICULTY_SETTINGS: Record<Difficulty, DifficultySettings> = {
         enemiesEnabled: true,
         fireInterval: 1.2,
         hitPointDelta: -1,
-        secondEnemyChance: 0,
+        baseEnemyCount: 1,
+        extraEnemyChance: 0,
         playerHitsToDestroy: 6,
         maxShipSpeed: 80,
         ringSpeedBonus: 10,
@@ -85,7 +89,8 @@ export const DIFFICULTY_SETTINGS: Record<Difficulty, DifficultySettings> = {
         enemiesEnabled: true,
         fireInterval: 0.65,
         hitPointDelta: 0,
-        secondEnemyChance: 0.6,
+        baseEnemyCount: 2,
+        extraEnemyChance: 0,
         playerHitsToDestroy: 4,
         maxShipSpeed: 120,
         ringSpeedBonus: 20,
@@ -94,7 +99,8 @@ export const DIFFICULTY_SETTINGS: Record<Difficulty, DifficultySettings> = {
         enemiesEnabled: true,
         fireInterval: 0.5,
         hitPointDelta: 1,
-        secondEnemyChance: 1,
+        baseEnemyCount: 2,
+        extraEnemyChance: 0.6,
         playerHitsToDestroy: 2,
         maxShipSpeed: 160,
         ringSpeedBonus: 30,
@@ -216,6 +222,10 @@ interface Enemy {
     floorY: number;
     height: number;
     speedFactor: number;
+    // Initial spot, reused when the player is killed and the encounter starts over.
+    spawnX: number;
+    spawnZ: number;
+    spawnFacing: number;
     centreX: number;
     centreZ: number;
     crownClearance: number;
@@ -405,7 +415,7 @@ export function rollLaserAim(
     return { end, hit };
 }
 
-// The caretaker robots again, now hostile. One or two stand on every storey above ground in every
+// The caretaker robots again, now hostile. Robots stand on every storey above ground in every
 // tower, tracking the player inside that storey and firing deliberately inaccurate lasers once
 // they have spotted them.
 export class EnemyRobots {
@@ -484,9 +494,9 @@ export class EnemyRobots {
         });
 
         const towers = terrain.megastructures.towers;
-        const secondEnemyChance = DIFFICULTY_SETTINGS[difficulty].secondEnemyChance;
+        const { baseEnemyCount, extraEnemyChance } = DIFFICULTY_SETTINGS[difficulty];
         for (let towerIndex = 0; towerIndex < towers.length; towerIndex++) {
-            this.populateTower(terrain, towers[towerIndex], towerIndex, secondEnemyChance);
+            this.populateTower(terrain, towers[towerIndex], towerIndex, baseEnemyCount, extraEnemyChance);
         }
         if (this.enemiesEnabled) {
             for (const kind of ENEMY_KINDS) {
@@ -891,6 +901,49 @@ export class EnemyRobots {
             enemy.model.visual.visible = false;
             enemy.group.visible = false;
             this.hideBeam(enemy);
+        }
+    }
+
+    // Restores the robots on every floor the player has not fully cleared to their spawn spots with
+    // full health and a clean combat state. Called when the player is killed, so a partly cleared
+    // floor starts over while a floor already cleared of robots stays cleared. Debris from the
+    // previous attempt is removed at the same time.
+    respawnUnclearedFloors(): void {
+        this.debris.clear();
+        for (const burst of this.shockBursts) {
+            burst.group.visible = false;
+        }
+        for (const level of this.levels) {
+            if (level.enemies.every((enemy) => enemy.defeated)) {
+                continue;
+            }
+            if (level.speech) {
+                this.stopSpeech(level.speech);
+                level.speech.announcedMadness = false;
+                level.speech.announcedAnger = false;
+            }
+            level.active = false;
+            level.timer = this.fireInterval;
+            for (const enemy of level.enemies) {
+                this.hideBeam(enemy);
+                enemy.group.position.set(enemy.spawnX, enemy.floorY + ENEMY_HOVER[enemy.kind], enemy.spawnZ);
+                enemy.group.rotation.y = enemy.spawnFacing;
+                enemy.group.visible = true;
+                enemy.model.visual.visible = true;
+                enemy.maxHitPoints = Math.max(1, ENEMY_HITS_TO_DEFEAT[enemy.kind] + this.hitPointDelta);
+                enemy.hitPoints = enemy.maxHitPoints;
+                enemy.invulnerableRemaining = 0;
+                enemy.knockbackX = 0;
+                enemy.knockbackZ = 0;
+                enemy.knockbackRemaining = 0;
+                enemy.skipNextVolley = false;
+                enemy.hasSeenPlayer = false;
+                enemy.defeated = false;
+                enemy.wanderTarget = null;
+                enemy.wanderTimer = 0;
+                enemy.detourX = 0;
+                enemy.detourZ = 0;
+            }
         }
     }
 
@@ -1442,7 +1495,8 @@ export class EnemyRobots {
         terrain: Terrain,
         tower: MegastructureTower,
         towerIndex: number,
-        secondEnemyChance: number,
+        baseEnemyCount: number,
+        extraEnemyChance: number,
     ): void {
         const towerRamps = (terrain.megastructures.ramps ?? []).filter((ramp) => this.rampOverlapsTower(ramp, tower));
 
@@ -1463,7 +1517,7 @@ export class EnemyRobots {
                         Math.abs(Math.min(ramp.minY, ramp.maxY) - floorY) < 0.05,
                 ) ?? null;
 
-            const count = this.rng() < secondEnemyChance ? 2 : 1;
+            const count = baseEnemyCount + (this.rng() < extraEnemyChance ? 1 : 0);
             const spots = previousRamp ? this.findOppositeCorners(terrain, storey, previousRamp, count) : [];
             const occupied = spots.map(({ x, z }) => ({ x, z }));
             const centreX = (storey.minX + storey.maxX) / 2;
@@ -1704,7 +1758,8 @@ export class EnemyRobots {
         group.position.set(spot.x, spot.y + ENEMY_HOVER[kind], spot.z);
         const centreX = (tower.minX + tower.maxX) / 2;
         const centreZ = (tower.minZ + tower.maxZ) / 2;
-        group.rotation.y = Math.atan2(centreX - spot.x, centreZ - spot.z);
+        const spawnFacing = Math.atan2(centreX - spot.x, centreZ - spot.z);
+        group.rotation.y = spawnFacing;
         group.add(model.visual);
         group.userData.enemy = true;
         group.userData.towerIndex = towerIndex;
@@ -1756,6 +1811,9 @@ export class EnemyRobots {
             floorY: spot.y,
             height,
             speedFactor: ENEMY_SPEED_FACTOR,
+            spawnX: spot.x,
+            spawnZ: spot.z,
+            spawnFacing,
             centreX,
             centreZ,
             crownClearance,
