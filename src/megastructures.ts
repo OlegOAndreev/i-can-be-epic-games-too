@@ -124,8 +124,8 @@ const BOLT_FLICKER_INTERVAL = 0.055;
 const CROWN_CATWALK_LENGTH = 10;
 const CROWN_CATWALK_LEDGE_LENGTH = 3.2;
 const CROWN_CATWALK_LEDGE_WIDTH = 4.6;
-const CHARGE_GLOW_MIN_SCALE = 2.5;
-const CHARGE_GLOW_MAX_SCALE = 11;
+const CHARGE_GLOW_MIN_SCALE = 4;
+const CHARGE_GLOW_MAX_SCALE = 24;
 // Once the switch is thrown the crown is wrapped in a translucent white shield. The shell starts
 // at the outer edge of the spiral ramp, climbs with it, and closes over the cone and spire. The
 // same volume still shoves the robot back if it tries to climb in.
@@ -142,6 +142,10 @@ const CROWN_SHOCK_COOLDOWN_SECONDS = 0.75;
 const CROWN_SHIELD_DIM_START_DISTANCE = 100;
 const CROWN_SHIELD_DIM_END_DISTANCE = 300;
 const CROWN_SHIELD_MIN_DISTANCE_FACTOR = 0.5;
+// The powered trim bands share the crown shield's loop and per-tower phase, cycling their glow
+// from cyan to white and back. Only the colour moves, so the bands never fade toward darkness.
+const TRIM_GLOW_CYAN = new Color(0x2aa9a3);
+const TRIM_GLOW_WHITE = new Color(0xffffff);
 
 interface CrownGlow {
     lamp: Mesh;
@@ -372,6 +376,13 @@ interface PoweredDecor {
     signs: BufferGeometry[];
 }
 
+// Per-tower materials for the powered trim bands and their additive glow planes. A clone per
+// tower gives each one its own colour phase without touching the entrance frame's static trim.
+interface PoweredTrimMaterials {
+    trim: MeshStandardMaterial;
+    glow: MeshBasicMaterial;
+}
+
 // A handful of weathered metal towers in the style of Combine architecture, each walled on all four
 // sides with a single ground-level entrance. Storey footprints are randomly uneven rather than
 // tapering regularly, and broad storeys rest on and overhang narrower ones. Every level is a full
@@ -568,6 +579,7 @@ export class Megastructures {
     private stoneParts: BufferGeometry[] = [];
     private poweredDecorParts: PoweredDecor[] = [];
     private poweredDecorMeshes: Mesh[][] = [];
+    private poweredTrimMaterials: PoweredTrimMaterials[] = [];
     private poweredTowers = new Set<number>();
     private currentTowerIndex = 0;
     private entranceFrameParts: BufferGeometry[] = [];
@@ -680,6 +692,7 @@ export class Megastructures {
         this.floorPropGlowMaterial.uniforms.uTime.value = this.glowTime;
         // Breathe the entrance halos so the doorways stay noticeable against the walls.
         this.entranceGlowMaterial.opacity = 0.28 + 0.08 * (0.5 + 0.5 * Math.sin(this.glowTime * 1.6));
+        this.updatePoweredTrim();
 
         for (const glow of this.crownGlows) {
             // Once the switch is thrown the crown stays lit at a fixed size: no swell and no ring.
@@ -868,13 +881,14 @@ export class Megastructures {
             // Flicker the indicator while the structure builds up its charge.
             structureSwitch.indicatorMaterial.emissiveIntensity = 2.8 + Math.sin(this.glowTime * 26) * 1.4;
 
-            // A white halo at the crown swells and brightens through the whole charge.
-            structureSwitch.chargeMaterial.opacity = 0.15 + progress * progress * 0.85;
+            // A white halo at the crown swells and brightens through the whole charge. It starts
+            // large and climbs to a wide glare so the build-up reads from across the map.
+            structureSwitch.chargeMaterial.opacity = 0.3 + progress * 0.7;
             structureSwitch.chargeSprite.scale.setScalar(
                 CHARGE_GLOW_MIN_SCALE + (CHARGE_GLOW_MAX_SCALE - CHARGE_GLOW_MIN_SCALE) * progress,
             );
             this.boltLight.position.copy(structureSwitch.boltOrigin);
-            this.boltLight.intensity = 25 + progress * progress * 135;
+            this.boltLight.intensity = 60 + progress * 440;
 
             structureSwitch.sparkTimer -= dt;
             if (structureSwitch.sparkTimer <= 0) {
@@ -1084,6 +1098,21 @@ export class Megastructures {
         this.poweredTowers.add(towerIndex);
         for (const mesh of this.poweredDecorMeshes[towerIndex] ?? []) {
             mesh.visible = true;
+        }
+    }
+
+    // Matches the crown shield's pulse loop and phase offset per tower, but drives colour instead
+    // of opacity so the bands stay bright at every point in the cycle.
+    private updatePoweredTrim(): void {
+        for (const towerIndex of this.poweredTowers) {
+            const materials = this.poweredTrimMaterials[towerIndex];
+            if (!materials) {
+                continue;
+            }
+
+            const wave = 0.5 + 0.5 * Math.sin(this.glowTime * CROWN_SHIELD_PULSE_SPEED + towerIndex);
+            materials.trim.emissive.copy(TRIM_GLOW_CYAN).lerp(TRIM_GLOW_WHITE, wave);
+            materials.glow.color.copy(TRIM_GLOW_CYAN).lerp(TRIM_GLOW_WHITE, wave);
         }
     }
 
@@ -1429,6 +1458,11 @@ export class Megastructures {
             floors[0],
             previousRamp,
         );
+        // The ground storey sits directly on the terrain, so without an enclosure the grass beside
+        // the entrance ramp stays visible and walkable. Wall the ramp in on both sides, from below
+        // grade up to the first-floor slab (the walls also fill the extra margin around the ramp's
+        // floor opening).
+        this.addGroundRampWalls(previousRamp, groundStorey.baseY, floors[0]);
 
         // Walls are numbered like entranceSide: 0 = +Z, 1 = -Z, 2 = +X, 3 = -X. The ground ramp
         // points at the wall opposite the entrance; the flights then follow the wall loop, each
@@ -2805,6 +2839,24 @@ export class Megastructures {
         }
     }
 
+    // Turns the ground-floor ramp into a sealed corridor. Each wall sits just outside the ramp's
+    // walkway, reaches from below the terrain to the first-floor slab, and runs the full ramp
+    // length back into the entrance wall. The rest of the ground storey is therefore hidden and
+    // unreachable, while the ramp itself is untouched.
+    private addGroundRampWalls(ramp: RampFlight, baseY: number, topY: number): void {
+        const thickness = WALL_THICKNESS;
+        // Bite slightly into the ramp edge so the wall face is not coplanar with the ramp's side
+        // rail; the overlap only reaches into the rail, not the walkable width.
+        const overlap = 0.05;
+        if (ramp.axis === 'x') {
+            this.addStoneBox(ramp.minX, ramp.maxX, ramp.minZ - thickness, ramp.minZ + overlap, baseY, topY);
+            this.addStoneBox(ramp.minX, ramp.maxX, ramp.maxZ - overlap, ramp.maxZ + thickness, baseY, topY);
+        } else {
+            this.addStoneBox(ramp.minX - thickness, ramp.minX + overlap, ramp.minZ, ramp.maxZ, baseY, topY);
+            this.addStoneBox(ramp.maxX - overlap, ramp.maxX + thickness, ramp.minZ, ramp.maxZ, baseY, topY);
+        }
+    }
+
     private addRampSegment(
         minX: number,
         maxX: number,
@@ -2934,9 +2986,13 @@ export class Megastructures {
     private finishPoweredDecor(): void {
         for (let towerIndex = 0; towerIndex < this.poweredDecorParts.length; towerIndex++) {
             const parts = this.poweredDecorParts[towerIndex];
+            const trimMaterial = this.trimMaterial.clone();
+            const trimGlowMaterial = this.trimGlowMaterial.clone();
+            this.materials.push(trimMaterial, trimGlowMaterial);
+            this.poweredTrimMaterials[towerIndex] = { trim: trimMaterial, glow: trimGlowMaterial };
             const meshes = [
-                this.createPartsMesh(parts.trim, this.trimMaterial, false, true, `level-trim-${towerIndex}`),
-                this.createPartsMesh(parts.glow, this.trimGlowMaterial, false, false, `level-trim-glow-${towerIndex}`),
+                this.createPartsMesh(parts.trim, trimMaterial, false, true, `level-trim-${towerIndex}`),
+                this.createPartsMesh(parts.glow, trimGlowMaterial, false, false, `level-trim-glow-${towerIndex}`),
                 this.createPartsMesh(
                     parts.signs,
                     this.floorPropGlowMaterial,

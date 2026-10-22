@@ -243,7 +243,7 @@ export class SpaceshipParts {
         }
     }
 
-    update(dt: number, playerPosition: Vector3, cameraYaw: number): void {
+    update(dt: number, playerPosition: Vector3, cameraYaw: number, detectorEnabled = true): void {
         this.elapsed += dt;
 
         // Movement and the camera share the same heading convention: forward is (-sin, -cos).
@@ -276,7 +276,7 @@ export class SpaceshipParts {
             }
         }
 
-        this.updateDetector(dt, nearestDistance, nearestInFront);
+        this.updateDetector(dt, nearestDistance, nearestInFront, detectorEnabled);
     }
 
     dispose(): void {
@@ -702,7 +702,13 @@ export class SpaceshipParts {
         }
     }
 
-    private updateDetector(dt: number, nearestDistance: number, inFront: boolean): void {
+    private updateDetector(dt: number, nearestDistance: number, inFront: boolean, enabled: boolean): void {
+        if (!enabled) {
+            // Drop the queued beep so leaving the structure alerts on the very next frame.
+            this.beepTimer = 0;
+            return;
+        }
+
         if (!Number.isFinite(nearestDistance) || nearestDistance > DETECTOR_RANGE) {
             this.beepTimer = 0;
             return;

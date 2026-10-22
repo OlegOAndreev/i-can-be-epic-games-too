@@ -1,4 +1,5 @@
 import {
+    Color,
     LatheGeometry,
     Mesh,
     MeshBasicMaterial,
@@ -551,6 +552,44 @@ describe('megastructures', () => {
         }
     });
 
+    it('cycles powered trim from cyan to white and back without dimming', () => {
+        const terrain = testTerrain();
+        const structures = terrain.megastructures;
+        structures.restoreFlippedTowerIndices([0, 1]);
+
+        const trim = structures.group.getObjectByName('level-trim-0') as Mesh;
+        const trimGlow = structures.group.getObjectByName('level-trim-glow-0') as Mesh;
+        const otherTrim = structures.group.getObjectByName('level-trim-1') as Mesh;
+        const trimMaterial = trim.material as MeshStandardMaterial;
+        const trimGlowMaterial = trimGlow.material as MeshBasicMaterial;
+        const otherTrimMaterial = otherTrim.material as MeshStandardMaterial;
+        const cyan = new Color(0x2aa9a3);
+
+        let whitest = 0;
+        let cyanest = Infinity;
+        let phaseGap = 0;
+        // Just over two crown shield cycles, sampled finely enough to catch both ends of the wave.
+        for (let step = 0; step < 500; step++) {
+            structures.update(0.02);
+            const red = trimMaterial.emissive.r;
+            whitest = Math.max(whitest, red);
+            cyanest = Math.min(cyanest, red);
+            phaseGap = Math.max(phaseGap, Math.abs(red - otherTrimMaterial.emissive.r));
+
+            // The additive glow planes track the bands, and no channel ever drops below cyan, so
+            // the pulse never reads as dimming toward darkness.
+            expect(trimGlowMaterial.color.r).toBeCloseTo(red, 5);
+            expect(red).toBeGreaterThanOrEqual(cyan.r - 1e-4);
+            expect(trimMaterial.emissive.g).toBeGreaterThanOrEqual(cyan.g - 1e-4);
+            expect(trimMaterial.emissive.b).toBeGreaterThanOrEqual(cyan.b - 1e-4);
+        }
+
+        expect(whitest).toBeGreaterThan(0.98);
+        expect(cyanest).toBeLessThan(cyan.r + 0.03);
+        // Neighbouring towers share the loop but not its phase, like the crown shield pulse.
+        expect(phaseGap).toBeGreaterThan(0.05);
+    });
+
     it('builds a taper and a continuous walkable spiral ramp up each crown', () => {
         const terrain = testTerrain();
         const structures = terrain.megastructures;
@@ -897,6 +936,8 @@ describe('megastructures', () => {
         expect(terrain.isOnStructure(x, z, deck!.topY)).toBe(true);
         expect(terrain.isOnStructure(x, z, deck!.topY + 1)).toBe(false);
         expect(structures.isInside(x, deck!.topY + 1, z)).toBe(true);
+        expect(terrain.isOnOrInsideStructure(x, deck!.topY, z)).toBe(true);
+        expect(terrain.isOnOrInsideStructure(x, deck!.topY + 1, z)).toBe(true);
 
         // The open-topped crown storey is not interior: reverb stops as soon as the player steps
         // onto the last floor.

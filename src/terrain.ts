@@ -653,6 +653,12 @@ export class Terrain {
         return ramp.minY + (ramp.maxY - ramp.minY) * t;
     }
 
+    // True when a point is enclosed by a tower or resting on any of its floors, ramps, or crown.
+    // Used to mute the ship-part locator while the robot is on a megastructure.
+    isOnOrInsideStructure(x: number, y: number, z: number): boolean {
+        return this.megastructures.isInside(x, y, z) || this.isOnStructure(x, z, y);
+    }
+
     // True when the feet are resting on a megastructure floor, ramp, crown spiral, or landing
     // rather than natural ground, so the robot should make a metallic step sound.
     isOnStructure(x: number, z: number, feetY: number, tolerance = 0.35): boolean {

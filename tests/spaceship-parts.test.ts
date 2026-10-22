@@ -231,6 +231,29 @@ describe('spaceship parts', () => {
         parts.dispose();
     });
 
+    it('mutes detector beeps while the sensor is disabled', () => {
+        const terrain = testTerrain(1234);
+        const { audio, calls } = stubAudio();
+        const parts = new SpaceshipParts(terrain, audio);
+        const target = parts.getSites()[0];
+        const pulses: number[] = [];
+        parts.onDetectorBeep = (closeness) => {
+            pulses.push(closeness);
+        };
+
+        const player = new Vector3(target.x + 60, target.y, target.z);
+        parts.update(0.016, player, 0, false);
+        expect(pulses).toHaveLength(0);
+        expect(calls.beeps).toBe(0);
+
+        // Re-enabling the locator outside the structure alerts on the next frame.
+        parts.update(0.016, player, 0, true);
+        expect(pulses).toHaveLength(1);
+        expect(calls.beeps).toBe(1);
+
+        parts.dispose();
+    });
+
     it('ticks the detector 30% faster while the tracked piece is in view', () => {
         const terrain = testTerrain(1234);
         const { audio } = stubAudio();

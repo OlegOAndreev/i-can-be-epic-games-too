@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { RAMP_PARAPET_THICKNESS } from '../src/megastructures';
+import { RAMP_PARAPET_THICKNESS, WALL_THICKNESS } from '../src/megastructures';
 import type { Ramp } from '../src/megastructures';
 import { PLAYER_RADIUS } from '../src/player';
 import { stepPlayer, testPlayer, testTerrain } from './test-helpers';
@@ -150,6 +150,33 @@ describe('megastructure ramps', () => {
             expect(transverse, `tower ${towerIndex}, ${ramp.axis} ramp`).toBeGreaterThanOrEqual(minSide + limit - 1e-3);
             expect(transverse, `tower ${towerIndex}, ${ramp.axis} ramp`).toBeLessThanOrEqual(maxSide - limit + 1e-3);
             expect(player.isGrounded, `tower ${towerIndex}, ${ramp.axis} ramp`).toBe(true);
+        }
+    });
+
+    it('seals the ground floor on both sides of the entrance ramp', () => {
+        const terrain = testTerrain(1234);
+
+        for (let towerIndex = 0; towerIndex < terrain.megastructures.towers.length; towerIndex++) {
+            const tower = terrain.megastructures.towers[towerIndex];
+            const ramp = towerRamps(terrain, towerIndex)[0];
+            const y = tower.firstFloorY - 1;
+            const along = ramp.axis === 'x' ? (ramp.minX + ramp.maxX) / 2 : (ramp.minZ + ramp.maxZ) / 2;
+            const probes =
+                ramp.axis === 'x'
+                    ? [
+                          { x: along, z: ramp.minZ - WALL_THICKNESS / 2 },
+                          { x: along, z: ramp.maxZ + WALL_THICKNESS / 2 },
+                      ]
+                    : [
+                          { x: ramp.minX - WALL_THICKNESS / 2, z: along },
+                          { x: ramp.maxX + WALL_THICKNESS / 2, z: along },
+                      ];
+
+            for (const probe of probes) {
+                expect(terrain.intersectsStructure(probe.x, y, probe.z), `tower ${towerIndex} ${ramp.axis} ramp`).toBe(
+                    true,
+                );
+            }
         }
     });
 

@@ -152,7 +152,7 @@ const PLAYER_STORAGE_KEY = 'walking-game.player';
 const SETTINGS_STORAGE_KEY = 'walking-game.settings';
 const PLAYER_SAVE_INTERVAL = 10;
 // Full-screen overlays snap to full colour over 240 ms and fade back over 520 ms. The lightning
-// strike lingers while its whiteout timer runs and then clears over 160 ms.
+// whiteout starts fading in just before the bolt and then clears after its hold over 160 ms.
 const SCREEN_FADE_OUT_SECONDS = 0.24;
 const SCREEN_FADE_IN_SECONDS = 0.52;
 // Hold the full-white frame for a beat, like the death respawn, before revealing the finale.
@@ -174,8 +174,8 @@ const INTERIOR_FILL_INTENSITY = 0.35;
 const INTERIOR_FILL_FADE_SPEED = 4;
 // Any four of the six towers empty the meter; the remaining towers are optional.
 const ENERGY_PER_SWITCH = 25;
-// The strike is visible for a moment before the screen goes fully white.
-const WHITEOUT_DELAY = 0.25;
+// The screen begins fading to white just before the bolt lands, then holds before clearing.
+const WHITEOUT_LEAD_SECONDS = 0.1;
 const WHITEOUT_SECONDS = 1;
 // Let the wrench hit and its click land before the camera takes over.
 const SWITCH_CINEMATIC_DELAY = 0.5;
@@ -784,7 +784,7 @@ let cinematicShakePhase = 0;
 let cinematicDelayRemaining = 0;
 let cinematicActive = false;
 let cinematicCameraEngaged = false;
-let whiteoutDelay = 0;
+let whiteoutLeadRemaining = 0;
 let whiteoutRemaining = 0;
 let lastDisplayedSpeed = -1;
 let speedFormatter = new Intl.NumberFormat('en', {
@@ -1966,13 +1966,16 @@ function wireMegastructureSwitches(): void {
         switchLookRemaining = chargeSeconds;
         cinematicShakePhase = 0;
         cinematicDelayRemaining = SWITCH_CINEMATIC_DELAY;
+        // Kick off the screen fade while the bolt is still building, so it starts turning white
+        // just before the strike lands instead of after it.
+        whiteoutLeadRemaining = Math.max(0, chargeSeconds - WHITEOUT_LEAD_SECONDS);
+        whiteoutRemaining = 0;
     };
     terrain.megastructures.onLightningStrike = (towerIndex) => {
         gameAudio.stopStructureBuzz('structure');
         gameAudio.playLightningStrike();
         startMegastructureHum(towerIndex);
         player.flashWhite(1.5);
-        whiteoutDelay = WHITEOUT_DELAY;
     };
     terrain.megastructures.onShockPlayer = (direction) => {
         player.shock(direction.x, direction.z);
@@ -2383,11 +2386,13 @@ function updateCinematicCamera(dt: number): void {
 }
 
 function updateWhiteout(dt: number): void {
-    if (whiteoutDelay > 0) {
-        whiteoutDelay = Math.max(0, whiteoutDelay - dt);
-        if (whiteoutDelay === 0) {
-            whiteoutRemaining = WHITEOUT_SECONDS;
-            lightningFlash.setOpacity(1);
+    if (whiteoutLeadRemaining > 0) {
+        whiteoutLeadRemaining = Math.max(0, whiteoutLeadRemaining - dt);
+        if (whiteoutLeadRemaining === 0) {
+            // The fade takes 0.24 s, so the strike lands during the first part of it and the
+            // screen reaches full white just after the bolt appears.
+            whiteoutRemaining = SCREEN_FADE_OUT_SECONDS + WHITEOUT_SECONDS;
+            lightningFlash.fadeTo(1, SCREEN_FADE_OUT_SECONDS, 'in');
         }
         return;
     }
@@ -2429,7 +2434,7 @@ function rebuildWorld(seed: number): void {
     cinematicDelayRemaining = 0;
     cinematicActive = false;
     cinematicCameraEngaged = false;
-    whiteoutDelay = 0;
+    whiteoutLeadRemaining = 0;
     whiteoutRemaining = 0;
     pettingWolfId = null;
     lightningFlash.setOpacity(0);
@@ -3396,7 +3401,15 @@ function animate(): void {
     updateFloorHealth(dt, laserHits);
     robotAnimals.update(dt, player.group.position);
     robotRemains.update(dt, player.group.position);
-    spaceshipParts.update(dt, player.group.position, cameraController.yaw);
+    const playerPosition = player.group.position;
+    spaceshipParts.update(
+        dt,
+        playerPosition,
+        cameraController.yaw,
+        // The locator goes quiet on a megastructure so its beeps do not compete with the interior
+        // ambience and the climbing route's own visual language.
+        !terrain.isOnOrInsideStructure(playerPosition.x, playerPosition.y, playerPosition.z),
+    );
     wreckMap.update(
         player.group.position.x,
         player.group.position.z,
@@ -3516,7 +3529,6 @@ function animate(): void {
     gameAudio.setFallWindSpeed(-player.verticalSpeed);
 
     const speed = player.horizontalSpeed;
-    const playerPosition = player.group.position;
     const inWater = playerPosition.y < WATER_LEVEL - 0.02;
     const insideStructure = terrain.megastructures.isInside(playerPosition.x, playerPosition.y, playerPosition.z);
     gameAudio.setStructureReverb(insideStructure);
