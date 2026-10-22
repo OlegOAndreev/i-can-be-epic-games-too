@@ -15,6 +15,7 @@ const STATE: SharedPlayerState = {
     speed: 10.5,
     verticalSpeed: -2.25,
     grounded: false,
+    difficulty: 'hard',
 };
 
 const STATE_INDEX = {
@@ -29,6 +30,7 @@ const STATE_INDEX = {
     speed: 8,
     verticalSpeed: 9,
     grounded: 10,
+    difficulty: 11,
 } as const;
 
 function decodeState(params: URLSearchParams): unknown[] {
@@ -58,6 +60,19 @@ describe('shareable player state', () => {
         writeSharedPlayerState(params, STATE);
 
         expect(readSharedSeed(params)).toBe(STATE.seed);
+    });
+
+    it('reads older links that do not carry a difficulty', () => {
+        const params = new URLSearchParams();
+        writeSharedPlayerState(params, STATE);
+        const data = decodeState(params);
+        data.pop();
+        params.set('state', encodeState(data));
+
+        const state = readSharedPlayerState(params);
+        expect(state).not.toBeNull();
+        expect(state!.difficulty).toBeUndefined();
+        expect(state!.seed).toBe(STATE.seed);
     });
 
     it('reads a seed-only link without inventing a player state', () => {
@@ -93,6 +108,7 @@ describe('shareable player state', () => {
         ['vertical speed', STATE_INDEX.verticalSpeed, 1000],
         ['first person', STATE_INDEX.firstPerson, 'yes'],
         ['grounded', STATE_INDEX.grounded, 'yes'],
+        ['difficulty', STATE_INDEX.difficulty, 'impossible'],
     ])('rejects an out-of-range %s', (_name, index, value) => {
         const params = new URLSearchParams();
         writeSharedPlayerState(params, STATE);

@@ -1,3 +1,4 @@
+import type { Difficulty } from './enemies';
 import { WORLD_HALF_SIZE } from './terrain';
 
 // Player, camera and world state encoded in a shareable URL. A shared link restores this state
@@ -14,9 +15,12 @@ export interface SharedPlayerState {
     speed: number;
     verticalSpeed: number;
     grounded: boolean;
+    // Absent in links written before difficulty was part of the shared state.
+    difficulty?: Difficulty;
 }
 
 const STATE_PARAM = 'state';
+// Old links carry the first eleven fields. Difficulty is appended as an optional twelfth value.
 const STATE_LENGTH = 11;
 // Parameters used by the previous, field-per-query-parameter link format. They are removed when
 // a new link is written so the address bar does not keep both representations.
@@ -73,6 +77,9 @@ export function readSharedPlayerState(params: URLSearchParams): SharedPlayerStat
     const speed = parseFinite(data[8]);
     const verticalSpeed = parseFinite(data[9]);
     const grounded = parseFlag(data[10]);
+    const difficultyValue = data[11];
+    const difficulty =
+        difficultyValue === undefined || difficultyValue === null ? undefined : parseDifficulty(difficultyValue);
 
     if (
         seed === null ||
@@ -92,7 +99,8 @@ export function readSharedPlayerState(params: URLSearchParams): SharedPlayerStat
         verticalSpeed === null ||
         Math.abs(verticalSpeed) > MAX_SPEED ||
         firstPerson === null ||
-        grounded === null
+        grounded === null ||
+        (difficultyValue !== undefined && difficultyValue !== null && difficulty === null)
     ) {
         return null;
     }
@@ -109,6 +117,7 @@ export function readSharedPlayerState(params: URLSearchParams): SharedPlayerStat
         speed,
         verticalSpeed,
         grounded,
+        difficulty: difficulty ?? undefined,
     };
 }
 
@@ -121,8 +130,8 @@ export function writeSharedPlayerState(params: URLSearchParams, state: SharedPla
 
 function encodeSharedState(state: SharedPlayerState): string {
     // Compact ordered tuple: seed, x, y, z, facing, cameraYaw, cameraPitch, firstPerson,
-    // speed, verticalSpeed, grounded.
-    const data = [
+    // speed, verticalSpeed, grounded, difficulty.
+    const data: Array<number | string | boolean> = [
         state.seed,
         round(state.x, POSITION_DIGITS),
         round(state.y, POSITION_DIGITS),
@@ -135,6 +144,9 @@ function encodeSharedState(state: SharedPlayerState): string {
         round(state.verticalSpeed, SPEED_DIGITS),
         state.grounded,
     ];
+    if (state.difficulty !== undefined) {
+        data.push(state.difficulty);
+    }
     return toBase64Url(JSON.stringify(data));
 }
 
@@ -175,6 +187,10 @@ function parseFinite(value: unknown): number | null {
 
 function parseFlag(value: unknown): boolean | null {
     return typeof value === 'boolean' ? value : null;
+}
+
+function parseDifficulty(value: unknown): Difficulty | null {
+    return value === 'peaceful' || value === 'easy' || value === 'medium' || value === 'hard' ? value : null;
 }
 
 function round(value: number, digits: number): number {

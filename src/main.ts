@@ -118,6 +118,8 @@ const PLAYER_FADE_END_DISTANCE = 0.5;
 const PLAYER_MIN_OPACITY = 0.1;
 // Petting starts while the player is within three metres of the wolf's centre.
 const PET_WOLF_DISTANCE = 2.5;
+// A petted wolf sits and thanks the player before it gets up and leads the way.
+const WOLF_SIT_SECONDS = 2.6;
 const WOLF_DIALOGUE_SECONDS = 2.8;
 const MAX_PIXEL_RATIO = 1.5;
 type ShadowMode = 'cascaded' | 'staticAtlas';
@@ -144,6 +146,7 @@ const ULTRA_LIVE_SHADOW_MAP_SIZE = 4096;
 // The robot map covers 80 m instead of 120 m and is only read by the player model. At 2048² it
 // lands at the same ~12 cm per texel while costing about 44% of the main map's pixels.
 const MAX_ROBOT_SHADOW_MAP_SIZE = 2048;
+const SHADOW_QUALITIES: readonly ShadowQuality[] = ['low', 'medium', 'high', 'ultra'];
 const SEED_STORAGE_KEY = 'walking-game.seed';
 const PLAYER_STORAGE_KEY = 'walking-game.player';
 const SETTINGS_STORAGE_KEY = 'walking-game.settings';
@@ -210,6 +213,7 @@ const DEFAULT_SETTINGS = {
     shadowSoftness: 1.75,
     grassRadius: DEFAULT_GRASS_RADIUS,
     difficulty: 'medium' as const,
+    leftHanded: true,
     volume: 0.8,
     music: true,
     sounds: true,
@@ -245,6 +249,7 @@ interface StoredPlayerState {
     energyRemaining?: number;
     mineralsCollected?: number;
     introSeen?: boolean;
+    guidedWolfIds?: number[];
 }
 
 const MAX_SAVED_IDS = 1000;
@@ -259,7 +264,7 @@ function readSavedIds(value: unknown): string[] {
         .slice(0, MAX_SAVED_IDS);
 }
 
-function readSavedTowerIndices(value: unknown): number[] {
+function readSavedIndices(value: unknown): number[] {
     if (!Array.isArray(value)) {
         return [];
     }
@@ -317,7 +322,8 @@ function readStoredPlayerState(): StoredPlayerState | null {
             defeatedEnemies: readSavedIds(state.defeatedEnemies),
             claimedRemains: readSavedIds(state.claimedRemains),
             claimedParts: readSavedIds(state.claimedParts),
-            flippedSwitches: readSavedTowerIndices(state.flippedSwitches),
+            flippedSwitches: readSavedIndices(state.flippedSwitches),
+            guidedWolfIds: readSavedIndices(state.guidedWolfIds),
             energyRemaining: isFiniteNumber(state.energyRemaining)
                 ? Math.min(100, Math.max(0, state.energyRemaining))
                 : undefined,
@@ -353,6 +359,7 @@ function storePlayerState(): void {
             energyRemaining,
             mineralsCollected,
             introSeen: npcRobots.introSeen,
+            guidedWolfIds: robotAnimals.getGuidedWolfIds(),
         };
         window.localStorage.setItem(PLAYER_STORAGE_KEY, JSON.stringify(state));
     } catch {
@@ -371,6 +378,7 @@ function updateUrlWithPlayerState(): void {
             cameraYaw: cameraController.yaw,
             cameraPitch: cameraController.pitch,
             firstPerson: viewSettings.firstPerson,
+            difficulty: gameSettings.difficulty,
         });
         window.history.replaceState(window.history.state, '', url);
     } catch {
@@ -466,6 +474,7 @@ function storeSettings(): void {
             shadowSoftness: renderSettings.shadowSoftness,
             grassRadius: renderSettings.grassRadius,
             difficulty: gameSettings.difficulty,
+            leftHanded: wrenchSettings.leftHanded,
             volume: gameAudio.settings.volume,
             music: gameAudio.settings.music,
             sounds: gameAudio.settings.sounds,
@@ -528,6 +537,11 @@ const viewSettings = {
     thirdPersonFov: storedNumber(storedSettings, 'thirdPersonFov', 40, 110, DEFAULT_SETTINGS.thirdPersonFov),
 };
 
+// Which hand holds the wrench. The default is the original screen-left pose.
+const wrenchSettings = {
+    leftHanded: storedBoolean(storedSettings, 'leftHanded', DEFAULT_SETTINGS.leftHanded),
+};
+
 // Mouse input is a persisted preference. The GUI binds to a mirror so an unsupported platform can
 // show the control unchecked without discarding the player's choice for a supported browser.
 const mouseSettings = {
@@ -539,6 +553,12 @@ const mouseInputControl = { unacceleratedMouse: mouseSettings.unacceleratedMouse
 const gameSettings = {
     difficulty: storedDifficulty(storedSettings, DEFAULT_SETTINGS.difficulty),
 };
+
+// A shared link carries the difficulty it was created with. Older links omit it and keep the
+// stored setting.
+if (sharedPlayerState?.difficulty !== undefined) {
+    gameSettings.difficulty = sharedPlayerState.difficulty;
+}
 
 // Diagnostic switches for isolating rendering costs. They are exposed in the Debug GUI folder.
 let lastShowTrees = storedBoolean(storedSettings, 'showTrees', DEFAULT_SETTINGS.showTrees);
@@ -833,6 +853,11 @@ function createWorldActors(terrain: Terrain): void {
     view.scene.add(playerDebris.group);
 
     robotAnimals = new RobotAnimals(terrain);
+    robotAnimals.onWolfGuideStart = (id) => {
+        showWolfSpeech(id, t('wolf.pet', 'Woof woof, follow me'));
+        // Persist the retirement immediately so a reload cannot make this wolf lead again.
+        storePlayerState();
+    };
     robotAnimals.onWolfFoundStone = (id) => {
         showWolfSpeech(id, t('wolf.foundStone', "look what I've found. I am a good boy"));
     };
@@ -853,6 +878,7 @@ function createWorldActors(terrain: Terrain): void {
     };
     spaceshipParts.onDetectorBeep = (closeness, interval) => {
         player.pulseDetectorAntenna(closeness, interval);
+        firstPersonWrench.pulseDetectorGlow(closeness, interval);
     };
     view.scene.add(spaceshipParts.group);
     partsRemaining = spaceshipParts.remaining;
@@ -864,6 +890,7 @@ async function init(): Promise<void> {
     await initI18n();
     canvas = getById<HTMLCanvasElement>('threejs');
     view = new View(canvas);
+    constrainShadowQualityToGpu(view.renderer.capabilities.maxTextureSize);
     loadingScreen = getById<HTMLDivElement>('loading-screen');
     loadingStatus = getById<HTMLSpanElement>('loading-status');
     loadingPercent = getById<HTMLSpanElement>('loading-percent');
@@ -978,6 +1005,8 @@ async function init(): Promise<void> {
 
     player = new Player(terrain, playerSettings);
     player.setDifficulty(gameSettings.difficulty);
+    player.setLeftHanded(wrenchSettings.leftHanded);
+    firstPersonWrench.setLeftHanded(wrenchSettings.leftHanded);
     playerHealth = new PlayerHealth(gameSettings.difficulty);
     // The wrench connects once per swing, partway through the animation: a third of the way
     // through a regular swing and halfway through the charged spin. Interrupting the swing before
@@ -987,16 +1016,22 @@ async function init(): Promise<void> {
     };
     // Fires for an immediate charge and for one buffered from a press during the previous swing.
     player.onWrenchChargeStart = () => gameAudio.playStructureBuzz(WRENCH_CHARGE_SECONDS, 'wrench');
-    // The wolf only leads the player to the stone once the petting gesture has played out.
+    // A first pet sends the wolf running to an emerald; later pets make it sit and thank the
+    // player. The wolf itself enforces the once-only guide.
     player.onPettingEnd = () => {
         if (pettingWolfId === null) {
             return;
         }
         const wolfId = pettingWolfId;
         pettingWolfId = null;
-        if (robotAnimals.guideWolf(wolfId)) {
-            gameAudio.playWolfWoof(pettingWolfPosition);
-            showWolfSpeech(wolfId, t('wolf.pet', 'Woof woof, follow me'));
+        const petResult = robotAnimals.petWolf(wolfId, WOLF_SIT_SECONDS);
+        if (petResult === null) {
+            return;
+        }
+        gameAudio.playWolfWoof(pettingWolfPosition);
+        // The guide start line comes from onWolfGuideStart; "thanks" belongs to later pets.
+        if (petResult === 'sit') {
+            showWolfSpeech(wolfId, t('wolf.thanks', 'thank you for the pets, human'));
         }
     };
     player.onJump = (doubleJump) => gameAudio.playJump(doubleJump);
@@ -1110,6 +1145,7 @@ async function init(): Promise<void> {
         if (storedPlayer.introSeen) {
             npcRobots.restoreIntroSeen();
         }
+        robotAnimals.restoreGuidedWolfIds(storedPlayer.guidedWolfIds ?? []);
     }
     if (sharedPlayerState && sharedPlayerState.seed === worldSettings.seed) {
         player.restoreSnapshot(sharedPlayerState);
@@ -1634,8 +1670,14 @@ function syncViewModeButtons(): void {
     getById<HTMLButtonElement>('third-person-button').setAttribute('aria-pressed', String(!viewSettings.firstPerson));
 }
 
+function syncWrenchHandButtons(): void {
+    getById<HTMLButtonElement>('wrench-left-button').setAttribute('aria-pressed', String(wrenchSettings.leftHanded));
+    getById<HTMLButtonElement>('wrench-right-button').setAttribute('aria-pressed', String(!wrenchSettings.leftHanded));
+}
+
 function syncMenuSettings(): void {
     syncViewModeButtons();
+    syncWrenchHandButtons();
     getById<HTMLInputElement>('antialias-checkbox').checked = renderSettings.antialias;
     getById<HTMLSelectElement>('shadow-quality-select').value = renderSettings.shadowQuality;
     const volume = getById<HTMLInputElement>('volume-slider');
@@ -1656,6 +1698,16 @@ function setupMenuSettings(): void {
     thirdPerson.addEventListener('click', () => {
         setFirstPerson(false);
         storeSettings();
+    });
+
+    const wrenchLeft = getById<HTMLButtonElement>('wrench-left-button');
+    wrenchLeft.addEventListener('click', () => {
+        setWrenchHand(true);
+    });
+
+    const wrenchRight = getById<HTMLButtonElement>('wrench-right-button');
+    wrenchRight.addEventListener('click', () => {
+        setWrenchHand(false);
     });
 
     const antialias = getById<HTMLInputElement>('antialias-checkbox');
@@ -1694,6 +1746,7 @@ function setupMenuSettings(): void {
         storeSettings();
     });
 
+    disableUnsupportedShadowQualities(view.renderer.capabilities.maxTextureSize);
     syncMenuSettings();
 }
 
@@ -1731,6 +1784,9 @@ function resetSettingsToDefaults(): void {
     viewSettings.firstPersonFov = DEFAULT_SETTINGS.firstPersonFov;
     viewSettings.thirdPersonFov = DEFAULT_SETTINGS.thirdPersonFov;
     setFirstPerson(DEFAULT_SETTINGS.firstPerson);
+    wrenchSettings.leftHanded = DEFAULT_SETTINGS.leftHanded;
+    player.setLeftHanded(DEFAULT_SETTINGS.leftHanded);
+    firstPersonWrench.setLeftHanded(DEFAULT_SETTINGS.leftHanded);
 
     const shadowQualityChanged = renderSettings.shadowQuality !== DEFAULT_SETTINGS.shadowQuality;
     const antialiasChanged = renderSettings.antialias !== DEFAULT_SETTINGS.antialias;
@@ -1758,6 +1814,7 @@ function resetSettingsToDefaults(): void {
 
     gui?.controllersRecursive().forEach((controller) => controller.updateDisplay());
     storeSettings();
+    updateUrlWithPlayerState();
     if (shadowQualityChanged || antialiasChanged || shadowModeChanged) {
         window.location.reload();
     }
@@ -1847,6 +1904,12 @@ function createGui(GuiConstructor: typeof GUI): GUI {
             : t('gui.isolation.no', 'no — reduced-resolution timer'),
     };
     debugFolder.add(isolationStatus, 'status').name(t('gui.isolation', 'Cross-origin isolated')).disable();
+    const spawnActions = {
+        spawnWolf: () => robotAnimals.spawnWolf(player.group.position),
+        spawnDeer: () => robotAnimals.spawnDeer(player.group.position),
+    };
+    debugFolder.add(spawnActions, 'spawnWolf').name(t('gui.spawnWolf', 'Spawn wolf'));
+    debugFolder.add(spawnActions, 'spawnDeer').name(t('gui.spawnDeer', 'Spawn deer'));
     debugFolder.add(debugSettings, 'showWater').name(t('gui.water', 'Water')).onChange(applyDebugSettings);
     debugFolder.add(debugSettings, 'showShoreFoam').name(t('gui.shoreFoam', 'Shore foam')).onChange(applyDebugSettings);
     debugFolder.add(debugSettings, 'showGrass').name(t('gui.grass', 'Grass')).onChange(applyDebugSettings);
@@ -1961,6 +2024,7 @@ function wireDifficultySelect(): void {
         playerHealth.setDifficulty(value);
         showPlayerDamage();
         storeSettings();
+        updateUrlWithPlayerState();
     });
 }
 
@@ -2437,6 +2501,55 @@ function applyShadowSoftness(value: number): void {
     staticSunShadow?.setSoftness(value);
 }
 
+function liveShadowMapSize(quality: ShadowQuality): number {
+    const preset = SHADOW_PRESETS[quality];
+    const cap = quality === 'ultra' ? ULTRA_LIVE_SHADOW_MAP_SIZE : MAX_LIVE_SHADOW_MAP_SIZE;
+    return Math.min(cap, preset.mapSize * 2);
+}
+
+// The largest texture a quality needs: the static atlas in static-atlas mode, or the packed
+// cascade strip in cascaded mode. The live and robot maps are smaller than both.
+function requiredShadowTextureSize(quality: ShadowQuality, mode: ShadowMode): number {
+    const preset = SHADOW_PRESETS[quality];
+    if (mode === 'staticAtlas') {
+        return Math.max(preset.staticTiles * preset.staticTileSize, liveShadowMapSize(quality));
+    }
+    return preset.mapSize * preset.cascades;
+}
+
+// Three silently clamps a shadow atlas that exceeds maxTextureSize. Fall back to the best preset
+// this GPU can actually hold so the menu reflects what is running.
+function constrainShadowQualityToGpu(maxTextureSize: number): void {
+    const required = requiredShadowTextureSize(renderSettings.shadowQuality, renderSettings.shadowMode);
+    if (required <= maxTextureSize) {
+        return;
+    }
+
+    let fallback: ShadowQuality = 'low';
+    for (const quality of SHADOW_QUALITIES) {
+        if (requiredShadowTextureSize(quality, renderSettings.shadowMode) <= maxTextureSize) {
+            fallback = quality;
+        }
+    }
+
+    console.warn(
+        `Shadow quality "${renderSettings.shadowQuality}" needs a ${required}px texture, ` +
+            `but this GPU supports ${maxTextureSize}px. Falling back to "${fallback}".`,
+    );
+    renderSettings.shadowQuality = fallback;
+    renderSettings.shadowDistance = Math.min(renderSettings.shadowDistance, SHADOW_PRESETS[fallback].distance);
+}
+
+function disableUnsupportedShadowQualities(maxTextureSize: number): void {
+    const select = getById<HTMLSelectElement>('shadow-quality-select');
+    for (const option of Array.from(select.options)) {
+        const quality = option.value as ShadowQuality;
+        const supported = requiredShadowTextureSize(quality, renderSettings.shadowMode) <= maxTextureSize;
+        option.disabled = !supported;
+        option.title = supported ? '' : t('gui.shadowQuality.unsupported', 'Not supported by this GPU');
+    }
+}
+
 function setShadowQuality(quality: ShadowQuality): void {
     const preset = SHADOW_PRESETS[quality];
     renderSettings.shadowQuality = quality;
@@ -2617,6 +2730,14 @@ function setFirstPerson(firstPerson: boolean): void {
     }
     updatePlayerAppearance();
     applyCameraFov();
+}
+
+function setWrenchHand(leftHanded: boolean): void {
+    wrenchSettings.leftHanded = leftHanded;
+    player.setLeftHanded(leftHanded);
+    firstPersonWrench.setLeftHanded(leftHanded);
+    syncWrenchHandButtons();
+    storeSettings();
 }
 
 function updatePlayerAppearance(): void {

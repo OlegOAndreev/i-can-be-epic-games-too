@@ -28,8 +28,12 @@ export interface WolfPetTarget {
     z: number;
 }
 
+export type WolfPetResult = 'guide' | 'sit';
+
 // The animals share the caretaker robot palette, but their eyes are a bright machine green.
 export const ANIMAL_EYE_COLOR = 0x49ff6b;
+// A petted wolf keeps a warm rose eye instead of the default green.
+export const WOLF_PET_EYE_COLOR = 0xff6f91;
 
 const WATCH_TURN_RATE = 3.4;
 const ROAM_TURN_RATE = 2.6;
@@ -47,16 +51,6 @@ const WALK_KNEE_BEND = 1.4;
 const WATCH_HEIGHT = 5;
 const ROAM_GOAL_TIME = 12;
 const TARGET_REACHED = 0.7;
-// When an animal is left this far behind, it is quietly moved to fresh land near the player. This
-// keeps wildlife encounters spread across the whole island instead of only around the spawn. The
-// distances are 1.5 times the original spacing, so encounters happen twice as often as before.
-const RECYCLE_DISTANCE = 210;
-const RECYCLE_MIN_DISTANCE = 42;
-const RECYCLE_MAX_DISTANCE = 93;
-// Where the player is heading, animals reappear ahead of them to set up the next meeting.
-const RECYCLE_AHEAD_MIN = 120;
-const RECYCLE_AHEAD_MAX = 172.5;
-const RECYCLE_AHEAD_SPREAD = 1.2;
 // Deer bolt away from the player much faster than they roam, then settle down once they are safe.
 // This is twice their earlier bolt speed so the escape reads as a full sprint.
 const DEER_FLEE_SPEED = 24;
@@ -65,8 +59,8 @@ const DEER_FLEE_STOP_FACTOR = 2.4;
 const DEER_FLEE_TARGET_MIN = 45;
 const DEER_FLEE_TARGET_MAX = 70;
 // Packs farther than this are out of sight; their wander timers and animation pause until the
-// player comes closer. Recycling still runs first so wildlife keeps following the player.
-const DISTANT_PACK_DISTANCE = 120;
+// player comes closer. Guiding wolves keep updating so they can finish leading the way.
+const DISTANT_PACK_DISTANCE = 300;
 // A walkability query is only repeated after the animal has moved this far, or after the fallback
 // interval, whichever comes first. Both are well inside one terrain cell.
 const WALK_CHECK_DISTANCE = 0.4;
@@ -84,7 +78,7 @@ const GUIDE_ARRIVAL_SECONDS = 0.4;
 // talking instead of the caretaker dialogue box.
 const WOLF_SPEECH_WORLD_WIDTH = 3.2;
 const WOLF_SPEECH_HEIGHT_OFFSET = 0.2;
-const GUIDE_WAIT_SECONDS = 6;
+const GUIDE_ARRIVAL_SIT_SECONDS = 6;
 
 // Linear ramp from the starting trot to the full run.
 export function guideWolfSpeed(elapsed: number): number {
@@ -103,7 +97,6 @@ const PET_HEIGHT = 1.6;
 
 interface AnimalSpec {
     kind: AnimalKind;
-    // Each entry is one pack. Pack sizes are kept small so wildlife stays a rare sight.
     packSizes: number[];
     speed: number;
     roamRadius: number;
@@ -113,26 +106,26 @@ interface AnimalSpec {
     angle: number;
 }
 
-// A deer pair and two lone wolves, spread across the compass around the spawn.
+// Twenty deer packs and ten lone wolves, spread across the island from the spawn.
 const SPECS: AnimalSpec[] = [
     {
         kind: 'deer',
-        packSizes: [2],
+        packSizes: [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
         speed: 2.1,
         roamRadius: 11,
         alertRadius: 22,
-        minDistance: 26,
-        maxDistance: 55,
+        minDistance: 40,
+        maxDistance: 560,
         angle: 0.4,
     },
     {
         kind: 'wolf',
-        packSizes: [1, 1],
+        packSizes: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
         speed: 2.8,
         roamRadius: 12,
         alertRadius: 20,
-        minDistance: 32,
-        maxDistance: 62,
+        minDistance: 40,
+        maxDistance: 560,
         angle: 4.5,
     },
 ];
@@ -169,6 +162,7 @@ interface LegRig {
     lower: Group;
     hoof: Mesh;
     offset: number;
+    hipY: number;
 }
 
 interface RunRig {
@@ -218,6 +212,7 @@ interface AnimalModel {
         headYaw: number,
         wagging?: boolean,
         running?: boolean,
+        sitting?: boolean,
     ) => void;
 }
 
@@ -245,6 +240,7 @@ interface Animal {
     wobble: number;
     turnScale: number;
     eye: MeshStandardMaterial;
+    glow: SpriteMaterial;
     roamRadius: number;
     alertRadius: number;
     phase: number;
@@ -258,6 +254,8 @@ interface Animal {
     walkCheckZ: number;
     walkCheckTimer: number;
     walkBlocked: boolean;
+    // A wolf only leads the player to an emerald once; the flag survives a reload with the save.
+    guided: boolean;
 }
 
 interface Pack {
@@ -268,7 +266,6 @@ interface Pack {
     roamRadius: number;
     idle: number;
     roamTimer: number;
-    relocateDelay: number;
     watching: boolean;
     fleeing: boolean;
     fleeTimer: number;
@@ -277,12 +274,17 @@ interface Pack {
     // which points at the petting reward: the nearest emerald stone.
     guiding: boolean;
     guideElapsed: number;
+    // A petted wolf sits and faces the player for a moment before it stands again.
+    sitting: boolean;
+    sitRemaining: number;
 }
 
 // A handful of robotic deer and wolves that wander the land around the spawn. When the
 // player comes close they stop, turn, and stare with their green eyes until the player leaves.
 export class RobotAnimals {
     readonly group = new Group();
+    // Called when a wolf starts leading the player to an emerald.
+    onWolfGuideStart: ((id: number) => void) | null = null;
     // Called when a guiding wolf reaches its emerald stone.
     onWolfFoundStone: ((id: number) => void) | null = null;
 
@@ -294,10 +296,7 @@ export class RobotAnimals {
     private readonly paletteByKind = new Map<AnimalKind, Palette>();
     private readonly wolves: Animal[] = [];
     private readonly speechTextures = new Map<string, CanvasTexture>();
-    private readonly lastPlayerPosition = new Vector3();
-    private readonly playerDirection = new Vector3();
     private nextAnimalId = 0;
-    private hasPlayerPosition = false;
     private elapsed = 0;
 
     constructor(terrain: Terrain) {
@@ -320,7 +319,6 @@ export class RobotAnimals {
 
     update(dt: number, playerPosition: Vector3): void {
         this.elapsed += dt;
-        this.trackPlayerDirection(dt, playerPosition);
 
         for (const pack of this.packs) {
             this.updatePack(pack, dt, playerPosition);
@@ -363,6 +361,7 @@ export class RobotAnimals {
         for (const pack of this.packs) {
             for (const animal of pack.members) {
                 animal.eye.dispose();
+                animal.glow.dispose();
             }
         }
 
@@ -447,13 +446,14 @@ export class RobotAnimals {
             roamRadius: spec.roamRadius,
             idle: 0.5 + this.rng() * 3.5,
             roamTimer: ROAM_GOAL_TIME,
-            relocateDelay: 0,
             watching: false,
             fleeing: false,
             fleeTimer: 0,
             fleeElapsed: 0,
             guiding: false,
             guideElapsed: 0,
+            sitting: false,
+            sitRemaining: 0,
         };
         const packId = this.packs.length;
         this.packs.push(pack);
@@ -475,7 +475,8 @@ export class RobotAnimals {
                 strideScale: 0.92 + this.rng() * 0.16,
             };
             const eye = palette.eye.clone();
-            const animalPalette: Palette = { ...palette, eye };
+            const glow = palette.glow.clone();
+            const animalPalette: Palette = { ...palette, eye, glow };
             const model = createAnimalModel(spec.kind, animalPalette, variation);
             const scale = 0.88 + this.rng() * 0.2;
             model.visual.scale.setScalar(scale);
@@ -518,6 +519,7 @@ export class RobotAnimals {
                 wobble,
                 turnScale: 0.85 + this.rng() * 0.3,
                 eye,
+                glow,
                 roamRadius: spec.roamRadius,
                 alertRadius: spec.alertRadius,
                 phase,
@@ -530,6 +532,7 @@ export class RobotAnimals {
                 walkCheckZ: z,
                 walkCheckTimer: 0,
                 walkBlocked: false,
+                guided: false,
                 speech: null,
             };
             group.userData.id = animal.id;
@@ -583,15 +586,57 @@ export class RobotAnimals {
         };
     }
 
-    // Sends a petted wolf to the closest standing emerald stone. Returns false when the wolf is
-    // unknown or there is no reachable stone, so the caller can skip the invitation.
-    guideWolf(id: number): boolean {
+    // Pets a wolf. Its eyes warm to rose immediately; a wolf that has never guided the player runs
+    // off to the nearest emerald and sits there, while a wolf that already led the way sits down
+    // next to the player and accepts the thanks.
+    petWolf(id: number, seconds: number): WolfPetResult | null {
         const animal = this.wolves.find((candidate) => candidate.id === id);
         if (!animal) {
+            return null;
+        }
+        const pack = this.packs.find((candidate) => candidate.members.includes(animal));
+        if (!pack) {
+            return null;
+        }
+
+        // Warm the eyes and their glow so a petted wolf is visibly distinct from the rest of the pack.
+        animal.eye.color.set(0x3d1820);
+        animal.eye.emissive.set(WOLF_PET_EYE_COLOR);
+        animal.glow.color.set(WOLF_PET_EYE_COLOR);
+
+        // The first pet starts the guide right away; the wolf shows off by sitting at the stone.
+        if (!animal.guided && this.startGuide(pack, animal)) {
+            return 'guide';
+        }
+
+        pack.sitting = true;
+        pack.sitRemaining = Math.max(0.1, seconds);
+        pack.guiding = false;
+        pack.target = null;
+        pack.watching = false;
+        pack.fleeing = false;
+        pack.idle = 0;
+        return 'sit';
+    }
+
+    // Sends a petted wolf to the closest standing emerald stone. Returns false when the wolf is
+    // unknown, has already led the player once, or there is no reachable stone, so the caller can
+    // skip the invitation.
+    guideWolf(id: number): boolean {
+        const animal = this.wolves.find((candidate) => candidate.id === id);
+        if (!animal || animal.guided) {
             return false;
         }
         const pack = this.packs.find((candidate) => candidate.members.includes(animal));
         if (!pack) {
+            return false;
+        }
+
+        return this.startGuide(pack, animal);
+    }
+
+    private startGuide(pack: Pack, animal: Animal): boolean {
+        if (pack.guiding) {
             return false;
         }
 
@@ -619,13 +664,74 @@ export class RobotAnimals {
             pack.guiding = true;
             pack.watching = false;
             pack.fleeing = false;
+            pack.sitting = false;
+            pack.sitRemaining = 0;
             pack.guideElapsed = 0;
             pack.idle = 0;
             pack.target = new Vector3(targetX, this.terrain.heightAt(targetX, targetZ), targetZ);
+            // Only the wolf that actually led the way is retired, not its pack mates.
+            animal.guided = true;
+            this.onWolfGuideStart?.(animal.id);
             return true;
         }
 
         return false;
+    }
+
+    // Restores the wolves that already led the player in a previous session. The animal ids are
+    // deterministic for a world seed, so the same wolves stay retired after a reload.
+    restoreGuidedWolfIds(ids: number[]): void {
+        const guided = new Set(ids);
+        for (const animal of this.wolves) {
+            if (guided.has(animal.id)) {
+                animal.guided = true;
+            }
+        }
+    }
+
+    // Stable ids of the wolves that have already led the player to an emerald.
+    getGuidedWolfIds(): number[] {
+        return this.wolves.filter((animal) => animal.guided).map((animal) => animal.id);
+    }
+
+    // Debug spawn: adds one animal on walkable ground a few metres from the player.
+    spawnWolf(playerPosition: Vector3): number | null {
+        return this.spawnAnimal('wolf', playerPosition);
+    }
+
+    spawnDeer(playerPosition: Vector3): number | null {
+        return this.spawnAnimal('deer', playerPosition);
+    }
+
+    private spawnAnimal(kind: AnimalKind, playerPosition: Vector3): number | null {
+        const spec = SPECS.find((candidate) => candidate.kind === kind);
+        if (!spec) {
+            return null;
+        }
+
+        const clearance = PACK_SPREAD[kind] + 1.2;
+        for (let attempt = 0; attempt < 24; attempt++) {
+            const angle = this.rng() * Math.PI * 2;
+            const radius = 4 + this.rng() * 4;
+            const x = playerPosition.x + Math.sin(angle) * radius;
+            const z = playerPosition.z + Math.cos(angle) * radius;
+            if (!this.isWalkable(x, z, clearance)) {
+                continue;
+            }
+
+            const crowded = this.blockerColliders.some(
+                (collider) => Math.hypot(x - collider.x, z - collider.z) < collider.radius + clearance,
+            );
+            if (crowded) {
+                continue;
+            }
+
+            const y = this.terrain.heightAt(x, z);
+            this.addPack(spec, new Vector3(x, y, z), 1, this.palette(kind));
+            return this.nextAnimalId - 1;
+        }
+
+        return null;
     }
 
     // Shows a line above a wolf's head. The label is baked once per unique text and then follows
@@ -669,8 +775,10 @@ export class RobotAnimals {
     }
 
     private updatePack(pack: Pack, dt: number, playerPosition: Vector3): void {
-        if (pack.relocateDelay > 0) {
-            pack.relocateDelay -= dt;
+        // The petted wolf stays put while it sits, even if the player walks away.
+        if (pack.sitting) {
+            this.updateSittingPack(pack, dt, playerPosition);
+            return;
         }
 
         let centerX = 0;
@@ -683,12 +791,7 @@ export class RobotAnimals {
         centerZ /= pack.members.length;
 
         const playerDistance = Math.hypot(playerPosition.x - centerX, playerPosition.z - centerZ);
-        if (playerDistance > RECYCLE_DISTANCE && pack.relocateDelay <= 0 && !pack.guiding) {
-            this.relocatePack(pack, playerPosition);
-            return;
-        }
-        // A guiding wolf keeps walking even when the player falls far behind; recycling it would
-        // teleport the guide away mid-journey.
+        // Far packs sleep in place. A guiding wolf keeps walking even when the player falls behind.
         if (playerDistance > DISTANT_PACK_DISTANCE && !pack.guiding) {
             return;
         }
@@ -699,7 +802,7 @@ export class RobotAnimals {
         }
 
         if (pack.guiding) {
-            this.updateGuidePack(pack, dt);
+            this.updateGuidePack(pack, dt, playerPosition);
             return;
         }
 
@@ -776,7 +879,32 @@ export class RobotAnimals {
         }
     }
 
-    private updateGuidePack(pack: Pack, dt: number): void {
+    private updateSittingPack(pack: Pack, dt: number, playerPosition: Vector3): void {
+        pack.sitRemaining = Math.max(0, pack.sitRemaining - dt);
+        const sitting = pack.sitRemaining > 0;
+
+        for (const animal of pack.members) {
+            const dx = playerPosition.x - animal.group.position.x;
+            const dz = playerPosition.z - animal.group.position.z;
+            const bearing = Math.atan2(dx, dz);
+            animal.group.rotation.y = dampAngle(
+                animal.group.rotation.y,
+                bearing,
+                WATCH_TURN_RATE * animal.turnScale,
+                dt,
+            );
+            animal.model.update(dt, this.elapsed, false, animal.speed, 0, true, false, sitting);
+        }
+
+        if (sitting) {
+            return;
+        }
+
+        pack.sitting = false;
+        pack.idle = 1.2 + this.rng() * 1.4;
+    }
+
+    private updateGuidePack(pack: Pack, dt: number, playerPosition: Vector3): void {
         const target = pack.target;
         if (!target) {
             pack.guiding = false;
@@ -795,11 +923,12 @@ export class RobotAnimals {
         if (Math.hypot(target.x - centerX, target.z - centerZ) < TARGET_REACHED) {
             pack.guiding = false;
             pack.target = null;
-            pack.idle = GUIDE_WAIT_SECONDS;
+            pack.idle = 0;
+            // The guide ends with a proud sit beside the stone while it shows off the find.
+            pack.sitting = true;
+            pack.sitRemaining = GUIDE_ARRIVAL_SIT_SECONDS;
             this.onWolfFoundStone?.(pack.members[0].id);
-            for (const animal of pack.members) {
-                this.updateIdleAnimal(animal, dt);
-            }
+            this.updateSittingPack(pack, dt, playerPosition);
             return;
         }
 
@@ -997,112 +1126,6 @@ export class RobotAnimals {
         }
 
         pack.idle = 1 + this.rng() * 2;
-    }
-
-    private trackPlayerDirection(dt: number, playerPosition: Vector3): void {
-        if (this.hasPlayerPosition) {
-            const dx = playerPosition.x - this.lastPlayerPosition.x;
-            const dz = playerPosition.z - this.lastPlayerPosition.z;
-            const distance = Math.hypot(dx, dz);
-            if (distance > 1e-3) {
-                const blend = 1 - Math.exp(-dt * 1.5);
-                this.playerDirection.x += (dx / distance - this.playerDirection.x) * blend;
-                this.playerDirection.z += (dz / distance - this.playerDirection.z) * blend;
-                const length = Math.hypot(this.playerDirection.x, this.playerDirection.z);
-                if (length > 1e-4) {
-                    this.playerDirection.x /= length;
-                    this.playerDirection.z /= length;
-                }
-            }
-        }
-
-        this.lastPlayerPosition.copy(playerPosition);
-        this.hasPlayerPosition = true;
-    }
-
-    // Moves a whole pack that has been left behind to fresh land near the player, usually just
-    // ahead of their travel direction so the next encounter is only a short walk away.
-    private relocatePack(pack: Pack, playerPosition: Vector3): boolean {
-        const hasDirection = Math.hypot(this.playerDirection.x, this.playerDirection.z) > 0.01;
-        const heading = Math.atan2(this.playerDirection.x, this.playerDirection.z);
-        const clearance = PACK_SPREAD[pack.kind] + 1.2;
-
-        for (let attempt = 0; attempt < 16; attempt++) {
-            let x: number;
-            let z: number;
-
-            if (hasDirection && attempt < 8) {
-                const angle = heading + (this.rng() - 0.5) * RECYCLE_AHEAD_SPREAD;
-                const radius = RECYCLE_AHEAD_MIN + this.rng() * (RECYCLE_AHEAD_MAX - RECYCLE_AHEAD_MIN);
-                x = playerPosition.x + Math.sin(angle) * radius;
-                z = playerPosition.z + Math.cos(angle) * radius;
-            } else {
-                const angle = this.rng() * Math.PI * 2;
-                const radius = RECYCLE_MIN_DISTANCE + this.rng() * (RECYCLE_MAX_DISTANCE - RECYCLE_MIN_DISTANCE);
-                x = playerPosition.x + Math.sin(angle) * radius;
-                z = playerPosition.z + Math.cos(angle) * radius;
-            }
-
-            if (!this.isWalkable(x, z, clearance)) {
-                continue;
-            }
-
-            const y = this.terrain.heightAt(x, z);
-            if (this.terrain.megastructures.isInside(x, y + 1, z)) {
-                continue;
-            }
-
-            let membersOnLand = true;
-            for (const animal of pack.members) {
-                const memberY = this.terrain.heightAt(x + animal.offsetX, z + animal.offsetZ);
-                if (memberY < WATER_LEVEL + 0.5) {
-                    membersOnLand = false;
-                    break;
-                }
-            }
-            if (!membersOnLand) {
-                continue;
-            }
-
-            const crowded = this.packs.some(
-                (other) => other !== pack && Math.hypot(x - other.home.x, z - other.home.z) < 10,
-            );
-            if (crowded) {
-                continue;
-            }
-
-            pack.home.set(x, y, z);
-            pack.target = null;
-            pack.idle = this.rng() * 1.5;
-            pack.roamTimer = ROAM_GOAL_TIME;
-            pack.watching = false;
-            pack.fleeing = false;
-            pack.fleeTimer = 0;
-            pack.guideElapsed = 0;
-
-            for (const animal of pack.members) {
-                const memberX = x + animal.offsetX;
-                const memberZ = z + animal.offsetZ;
-                const memberY = this.terrain.heightAt(memberX, memberZ);
-                animal.group.position.set(memberX, memberY, memberZ);
-                animal.group.rotation.y = this.rng() * Math.PI * 2;
-                animal.groundX = memberX;
-                animal.groundY = memberY;
-                animal.groundZ = memberZ;
-                animal.walkCheckX = memberX;
-                animal.walkCheckZ = memberZ;
-                animal.walkCheckTimer = 0;
-                animal.walkBlocked = false;
-                animal.obstacles = this.terrain.colliders.filter(
-                    (collider) => Math.hypot(collider.x - x, collider.z - z) < animal.roamRadius + collider.radius + 4,
-                );
-            }
-
-            return true;
-        }
-
-        pack.relocateDelay = 1;
-        return false;
     }
 
     private isWalkable(x: number, z: number, clearance: number): boolean {
@@ -1332,10 +1355,10 @@ function buildWolf(palette: Palette, variation: ModelVariation): AnimalModel {
     });
 
     const legs = [
-        addLeg(visual, -0.16, 0.34, hipY, legLength, legThickness, palette, WALK_LEG_OFFSETS[0]),
-        addLeg(visual, 0.16, 0.34, hipY, legLength, legThickness, palette, WALK_LEG_OFFSETS[1]),
-        addLeg(visual, -0.16, -0.34, hipY, legLength, legThickness, palette, WALK_LEG_OFFSETS[2]),
-        addLeg(visual, 0.16, -0.34, hipY, legLength, legThickness, palette, WALK_LEG_OFFSETS[3]),
+        addLeg(visual, -0.16, 0.34, hipY, legLength, legThickness, palette, WALK_LEG_OFFSETS[0], false),
+        addLeg(visual, 0.16, 0.34, hipY, legLength, legThickness, palette, WALK_LEG_OFFSETS[1], false),
+        addLeg(visual, -0.16, -0.34, hipY, legLength, legThickness, palette, WALK_LEG_OFFSETS[2], false),
+        addLeg(visual, 0.16, -0.34, hipY, legLength, legThickness, palette, WALK_LEG_OFFSETS[3], false),
     ];
 
     prepareMeshes(visual);
@@ -1379,6 +1402,7 @@ function addLeg(
     thickness: number,
     palette: Palette,
     offset: number,
+    accentJoint = true,
 ): LegRig {
     const pivot = new Group();
     pivot.position.set(x, hipY, z);
@@ -1387,7 +1411,10 @@ function addLeg(
     const upperLength = length * 0.55;
     const lowerLength = length - upperLength;
 
-    addSphere(pivot, thickness * 1.1, palette.accent, 0, 0, 0);
+    // Deer keep an orange hip cap; the wolf's leg meets the body without one.
+    if (accentJoint) {
+        addSphere(pivot, thickness * 1.1, palette.accent, 0, 0, 0);
+    }
     addBox(pivot, thickness, upperLength, thickness * 1.15, palette.dark, 0, -upperLength / 2, 0);
 
     const lower = new Group();
@@ -1407,7 +1434,7 @@ function addLeg(
         thickness * 0.35,
     );
 
-    return { pivot, lower, hoof, offset };
+    return { pivot, lower, hoof, offset, hipY };
 }
 
 function addEye(parent: Group, x: number, y: number, z: number, radius: number, palette: Palette): void {
@@ -1421,6 +1448,8 @@ function addEye(parent: Group, x: number, y: number, z: number, radius: number, 
 
 function finishRig(rig: AnimalRig, variation: ModelVariation): AnimalModel {
     let phase = variation.phase;
+    // Smoothed 0..1 sit amount, so the wolf folds down and stands back up instead of snapping.
+    let sit = 0;
     rig.body.name = 'body';
     rig.tail.name = 'tail';
     rig.legs.forEach((leg, index) => {
@@ -1431,8 +1460,9 @@ function finishRig(rig: AnimalRig, variation: ModelVariation): AnimalModel {
 
     return {
         visual: rig.visual,
-        update(dt, elapsed, moving, speed, headYaw, wagging = false, running = false) {
+        update(dt, elapsed, moving, speed, headYaw, wagging = false, running = false, sitting = false) {
             const time = elapsed + variation.phase;
+            sit = damp(sit, sitting ? 1 : 0, 8, dt);
 
             if (moving) {
                 const cadence = rig.gait * variation.gaitScale + Math.min(speed, RUN_CADENCE_SPEED_CAP) * rig.speedGait;
@@ -1442,12 +1472,14 @@ function finishRig(rig: AnimalRig, variation: ModelVariation): AnimalModel {
             const walkStride = (rig.stride + speed * rig.strideSpeedGain) * variation.strideScale;
             const bobHeight = running ? rig.run.bobHeight : rig.bobHeight;
             const bob = moving ? Math.abs(Math.sin(phase)) * bobHeight : Math.sin(time * 1.4) * rig.bobHeight * 0.25;
-            rig.body.position.y = damp(rig.body.position.y, bob, 10, dt);
+            // Sitting drops the haunches toward the ground; the front legs stay under the chest.
+            rig.body.position.y = damp(rig.body.position.y, bob - sit * 0.34, 10, dt);
 
             const roll = moving ? Math.sin(phase) * (running ? 0.026 : 0.012) : 0;
             rig.body.rotation.z = damp(rig.body.rotation.z, roll, 8, dt);
-            // A runner tips its chest forward and streams its tail out behind it.
-            const lean = moving && running ? rig.run.lean : 0;
+            // A runner tips its chest forward and streams its tail out behind it. A sitting wolf
+            // lifts its chest instead, so it looks up at the player instead of slumping.
+            const lean = (moving && running ? rig.run.lean : 0) - sit * 0.2;
             rig.body.rotation.x = damp(rig.body.rotation.x, lean, 8, dt);
 
             for (let index = 0; index < rig.legs.length; index++) {
@@ -1462,7 +1494,12 @@ function finishRig(rig: AnimalRig, variation: ModelVariation): AnimalModel {
                 // A negative pitch swings the leg forward. The front pair is biased ahead so it
                 // reaches out instead of hanging under the chest.
                 const reach = running && front ? (rig.run.frontReach ?? 0) : 0;
-                const swing = moving ? Math.sin(phase + offset) * legStride - reach : 0;
+                const walkSwing = moving ? Math.sin(phase + offset) * legStride - reach : 0;
+                // Sitting folds the hind legs forward under the body while the front pair stays
+                // nearly straight, so the wolf sits on its haunches. The hind hips drop with the
+                // haunches instead of floating above the lowered rump.
+                const swing = walkSwing * (1 - sit) + (front ? 0.12 : -1.3) * sit;
+                leg.pivot.position.y = leg.hipY - (front ? 0 : sit * 0.3);
                 leg.pivot.rotation.x = damp(leg.pivot.rotation.x, swing, 12, dt);
 
                 // Fold the knee through the forward swing so the hoof tucks up high instead of
@@ -1473,16 +1510,20 @@ function finishRig(rig: AnimalRig, variation: ModelVariation): AnimalModel {
                         ? (rig.run.frontKneeBend ?? rig.run.kneeBend)
                         : rig.run.kneeBend
                     : WALK_KNEE_BEND;
-                const bend = moving ? Math.max(0, -Math.sin(phase + offset)) * legStride * kneeBend : 0;
+                const walkBend = moving ? Math.max(0, -Math.sin(phase + offset)) * legStride * kneeBend : 0;
+                const bend = walkBend * (1 - sit) + (front ? 0.05 : 2.5) * sit;
                 leg.lower.rotation.x = damp(leg.lower.rotation.x, bend, 12, dt);
             }
 
             const clamped = Math.max(-1.15, Math.min(1.15, headYaw));
             rig.head.rotation.y = dampAngle(rig.head.rotation.y, clamped, 7, dt);
-            rig.head.rotation.x = Math.sin(time * 1.1) * 0.02;
-            rig.tail.rotation.x = damp(rig.tail.rotation.x, moving && running ? rig.run.tailLift : 0, 8, dt);
-            const wagAmplitude = wagging ? 0.6 : rig.tailSway * (running ? 0.5 : 1);
-            const wag = Math.sin(time * (wagging ? 13.5 : 1.8) + phase * 0.35) * wagAmplitude;
+            rig.head.rotation.x = -sit * 0.22 + Math.sin(time * 1.1) * 0.02;
+            rig.tail.rotation.x = damp(rig.tail.rotation.x, moving && running ? rig.run.tailLift : -sit * 0.2, 8, dt);
+            // A sitting wolf wags happily through the whole gesture, even if the caller did not
+            // request the watching wag.
+            const happy = wagging || sitting;
+            const wagAmplitude = happy ? 0.6 : rig.tailSway * (running ? 0.5 : 1);
+            const wag = Math.sin(time * (happy ? 13.5 : 1.8) + phase * 0.35) * wagAmplitude;
             rig.tail.rotation[rig.tailWagAxis ?? 'y'] = wag;
         },
     };

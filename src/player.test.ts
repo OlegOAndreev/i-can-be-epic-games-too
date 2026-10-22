@@ -250,6 +250,44 @@ describe('wrench attack', () => {
         expect(player.swingWrench()).toBe(false);
     });
 
+    it('moves the third-person wrench between hands', () => {
+        const player = testPlayer();
+        const wrench = player.group.getObjectByName('wrench');
+        expect(wrench).toBeDefined();
+        const startingArm = wrench!.parent;
+        expect(startingArm).toBeDefined();
+        expect(wrench!.position.x).toBeGreaterThan(0);
+
+        player.setLeftHanded(false);
+        expect(wrench!.parent).not.toBe(startingArm);
+        expect(wrench!.position.x).toBeLessThan(0);
+        expect(wrench!.rotation.z).toBeLessThan(0);
+
+        player.setLeftHanded(true);
+        expect(wrench!.parent).toBe(startingArm);
+        expect(wrench!.position.x).toBeGreaterThan(0);
+        expect(wrench!.rotation.z).toBeGreaterThan(0);
+    });
+
+    it('swings the arm that holds the wrench after changing hands', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        const wrench = player.group.getObjectByName('wrench');
+        expect(wrench).toBeDefined();
+        player.setLeftHanded(false);
+        const wrenchArm = wrench!.parent!;
+        const otherArm = wrenchArm.parent!.children.find(
+            (child): child is Group => child instanceof Group && child !== wrenchArm,
+        );
+        expect(otherArm).toBeDefined();
+
+        player.setWrenchEquipped(true);
+        player.swingWrench();
+        player.update(WRENCH_ATTACK_SECONDS * 0.375, NO_INPUT, 0, terrain);
+        expect(wrenchArm.rotation.x).toBeGreaterThan(1);
+        expect(otherArm!.rotation.x).toBeLessThan(0);
+    });
+
     it('reports when a swing plays to completion, not when it is interrupted', () => {
         const terrain = testTerrain();
         const player = testPlayer(terrain);

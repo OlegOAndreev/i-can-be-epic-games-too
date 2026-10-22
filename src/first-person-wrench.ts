@@ -2,6 +2,7 @@ import {
     AdditiveBlending,
     BoxGeometry,
     BufferGeometry,
+    Color,
     DataTexture,
     DirectionalLight,
     Group,
@@ -17,6 +18,7 @@ import {
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
 import { buildElectricBolts } from './electric-bolts';
+import { DetectorPulse } from './detector-pulse';
 import { getRadialGlowTexture, glowMaterial as createGlowMaterial } from './glow';
 import { clamp, smoothstep, wrapAngle } from './math-utils';
 
@@ -28,7 +30,7 @@ export const FIRST_PERSON_WRENCH_SCALE = 0.58;
 // the hand-held tool so it still reads as the same wrench.
 export const FIRST_PERSON_WRENCH_LENGTH_SCALE = 0.9 * 1.4;
 const BASE_X = -0.45;
-const BASE_Y = -0.4;
+const BASE_Y = -0.5;
 const BASE_Z = -0.7;
 const BASE_PITCH = -0.22;
 const BASE_YAW = -0.38;
@@ -141,10 +143,22 @@ type WearRegion = readonly [number, number];
 // distinct light and dark sides. It lives in the viewmodel scene and never touches the world.
 const FILL_LIGHT_COLOR = 0xbcd8e6;
 const FILL_LIGHT_INTENSITY = 0.4;
-// A faint additive halo makes the cyan band read as a light source without a bloom pass.
+// A faint additive halo makes the cyan band read as a light source without a bloom pass. The
+// detector beep drives the band's emissive intensity and the halo's opacity and size with the same
+// closeness-scaled pulse as the robot's third-person antenna. The resting colour is 50% of the
+// antenna cyan, and a beep brings both the band and the halo back to the full colour.
+const GLOW_COLOR = new Color(0x5fe6da);
+const GLOW_IDLE_COLOR = new Color(0x30736d);
 const GLOW_HALO_WIDTH = 0.3;
 const GLOW_HALO_HEIGHT = 0.11;
-const GLOW_HALO_OPACITY = 0.3;
+// The idle halo stays subtle; a beep drives it up to this peak.
+const GLOW_HALO_OPACITY = 0.18;
+const GLOW_HALO_PEAK_OPACITY = 0.75;
+const GLOW_IDLE_EMISSIVE = 1.4;
+// Brings the full-closeness peak (idle + pulse) to 25% below the previous maximum.
+const GLOW_PULSE_EMISSIVE = 4.15;
+// The third-person antenna halo grows by roughly 57% at the peak of a pulse.
+const GLOW_HALO_PULSE_SCALE = 0.6;
 
 // Poses the regular hit from a normalized swing progress: raise the tool during the wind-up, sweep
 // it forward by FIRST_PERSON_SWING_ARC during the strike, then bring it back to the rest pose.
@@ -233,6 +247,9 @@ export class FirstPersonWrench {
     private readonly wrenchChargeFill = { value: 0 };
     private readonly wrenchRingStep = { value: 1 / BOLT_RINGS };
     private readonly glowMaterial: MeshStandardMaterial;
+    private readonly glowHalo: Mesh;
+    private readonly glowHaloMaterial: MeshBasicMaterial;
+    private readonly detectorPulse = new DetectorPulse();
     private elapsed = 0;
     private pop = 1;
     private wasVisible = false;
@@ -244,6 +261,9 @@ export class FirstPersonWrench {
     private lagPitchVelocity = 0;
     private landingDipElapsed = LANDING_DIP_SECONDS;
     private landingDipStrength = 0;
+    // The original pose hangs the wrench from the hand that renders on the left of the screen.
+    private leftHanded = true;
+    private readonly fillLight: DirectionalLight;
 
     constructor(metalWear: Texture = getFallbackMetalWearTexture()) {
         this.attachment.name = 'first-person-wrench';
@@ -254,22 +274,24 @@ export class FirstPersonWrench {
         this.attachment.add(this.group);
         this.glowMaterial = new MeshStandardMaterial({
             color: 0x102024,
-            emissive: 0x5fe6da,
-            emissiveIntensity: 1.4,
+            emissive: GLOW_IDLE_COLOR,
+            emissiveIntensity: GLOW_IDLE_EMISSIVE,
             roughness: 0.35,
             metalness: 0.2,
         });
-        this.buildWrench(metalWear);
+        const { halo, material } = this.buildWrench(metalWear);
+        this.glowHalo = halo;
+        this.glowHaloMaterial = material;
 
         // Parented to the attachment so it rotates with the tool rather than with the camera. It is
-        // aimed from above-left and slightly behind the viewer, which keeps one side of every
-        // face brighter than the other at all times of day.
-        const fill = new DirectionalLight(FILL_LIGHT_COLOR, FILL_LIGHT_INTENSITY);
-        fill.name = 'first-person-wrench-fill';
-        fill.position.set(-0.7, 0.6, 0.4);
-        fill.target.position.set(-0.45, -0.45, -0.7);
-        fill.castShadow = false;
-        this.attachment.add(fill, fill.target);
+        // aimed from above the tool's side and slightly behind the viewer, which keeps one side of
+        // every face brighter than the other at all times of day.
+        this.fillLight = new DirectionalLight(FILL_LIGHT_COLOR, FILL_LIGHT_INTENSITY);
+        this.fillLight.name = 'first-person-wrench-fill';
+        this.fillLight.position.set(-0.7, 0.6, 0.4);
+        this.fillLight.target.position.set(-0.45, -0.45, -0.7);
+        this.fillLight.castShadow = false;
+        this.attachment.add(this.fillLight, this.fillLight.target);
 
         this.wrenchBoltMaterial = new MeshBasicMaterial({
             color: 0xffffff,
@@ -314,6 +336,23 @@ export class FirstPersonWrench {
         this.wasVisible = false;
     }
 
+    // Mirrors the viewmodel across the camera plane so the tool hangs from the other hand. The
+    // third-person arm is mirrored the same way by Player, so both views agree on the hand.
+    setLeftHanded(leftHanded: boolean): void {
+        if (leftHanded === this.leftHanded) {
+            return;
+        }
+        this.leftHanded = leftHanded;
+        const side = leftHanded ? 1 : -1;
+        this.fillLight.position.x = -0.7 * side;
+        this.fillLight.target.position.x = -0.45 * side;
+        // Drop the trailing spring so the tool does not swing across the view when it changes hands.
+        this.lagYaw = 0;
+        this.lagPitch = 0;
+        this.lagYawVelocity = 0;
+        this.lagPitchVelocity = 0;
+    }
+
     // Drops the viewmodel when the robot lands. Main calls this for both normal landings and the
     // pre-touchdown jump grace, which snaps the player to the ground before impact.
     land(impactSpeed: number): void {
@@ -332,6 +371,12 @@ export class FirstPersonWrench {
         return this.jawCenter.getWorldPosition(target);
     }
 
+    // Called once for every detector beep. Mirrors Player.pulseDetectorAntenna so the wrench's cyan
+    // band blinks with the same cadence as the robot's antenna while playing in first person.
+    pulseDetectorGlow(closeness: number, interval: number): void {
+        this.detectorPulse.trigger(closeness, interval);
+    }
+
     update(dt: number, frame: FirstPersonWrenchFrame): void {
         // Keep the landing response running even while the viewmodel is hidden, so switching back
         // to first person does not replay a stale dip.
@@ -341,6 +386,10 @@ export class FirstPersonWrench {
         if (this.landingDipElapsed >= LANDING_DIP_SECONDS) {
             this.landingDipStrength = 0;
         }
+
+        // Keep the detector pulse running while the viewmodel is hidden, so switching back to first
+        // person does not replay a stale flash.
+        this.updateDetectorGlow(dt);
 
         if (!frame.visible) {
             this.hide();
@@ -360,13 +409,14 @@ export class FirstPersonWrench {
         }
         this.group.visible = true;
         this.elapsed += dt;
+        const side = this.leftHanded ? 1 : -1;
         // The trailing pose is a camera-space rotation, so it works equally well while standing
         // still and while strafing: only the head's rotation drags the tool.
         const yawRate = dt > 1e-5 ? wrapAngle(frame.cameraYaw - this.previousCameraYaw) / dt : 0;
         const pitchRate = dt > 1e-5 ? (frame.cameraPitch - this.previousCameraPitch) / dt : 0;
         this.previousCameraYaw = frame.cameraYaw;
         this.previousCameraPitch = frame.cameraPitch;
-        const targetLagYaw = clamp(-yawRate * VIEW_LAG_SPEED, -VIEW_LAG_YAW_LIMIT, VIEW_LAG_YAW_LIMIT);
+        const targetLagYaw = side * clamp(-yawRate * VIEW_LAG_SPEED, -VIEW_LAG_YAW_LIMIT, VIEW_LAG_YAW_LIMIT);
         const targetLagPitch = clamp(-pitchRate * VIEW_LAG_SPEED, -VIEW_LAG_PITCH_LIMIT, VIEW_LAG_PITCH_LIMIT);
         let remaining = dt;
         while (remaining > 0) {
@@ -386,13 +436,12 @@ export class FirstPersonWrench {
         this.pop = Math.min(1, this.pop + dt * 7);
         const popEase = 1 - (1 - this.pop) ** 3;
         this.model.scale.setScalar(FIRST_PERSON_WRENCH_SCALE * (0.01 + 0.99 * popEase));
-        this.glowMaterial.emissiveIntensity = 1.25 + Math.sin(this.elapsed * 2.6) * 0.3;
 
         const running = clamp(frame.speed / Math.max(frame.moveSpeed, 0.01), 0, 1);
         const bobY = Math.sin(frame.walkPhase * 2) * WALK_BOB_Y * running;
-        // Mirrored so the tool on the left sways the same way as the third-person arm.
-        const swayX = -Math.cos(frame.walkPhase) * WALK_SWAY_X * running;
-        const swayRoll = -Math.sin(frame.walkPhase) * WALK_SWAY_ROLL * running;
+        // Mirrored so the tool sways the same way as the third-person arm holding it.
+        const swayX = -side * Math.cos(frame.walkPhase) * WALK_SWAY_X * running;
+        const swayRoll = -side * Math.sin(frame.walkPhase) * WALK_SWAY_ROLL * running;
         const breath = Math.sin(this.elapsed * 1.9) * IDLE_BREATH_Y * (1 - running);
         const pitchSway = -PITCH_SWAY * frame.cameraPitch;
         // The regular hit lifts the wrench before dropping it through the strike arc. The charged
@@ -405,7 +454,7 @@ export class FirstPersonWrench {
         const chargedKick = Math.abs(chargedSwing);
         const facePlantDrop = FACE_PLANT_DROP * frame.knockdownProgress;
         const petReach = frame.petting ? frame.petReach : 0;
-        const petSide = Math.sin(frame.petProgress * Math.PI * 4) * PET_SIDE * petReach;
+        const petSide = side * Math.sin(frame.petProgress * Math.PI * 4) * PET_SIDE * petReach;
 
         // The regular strike pivots around the jaw-line axis, so the head moves forward and down
         // instead of sweeping sideways across the view. The hand and wrench ride above that pivot,
@@ -415,7 +464,7 @@ export class FirstPersonWrench {
         this.model.position.y = -this.handOffset - swingPose.arcLift;
         this.model.position.z = -swingPose.forward;
         this.group.position.set(
-            BASE_X + swayX + chargedSwing * SWING_X + petReach * PET_CENTER + petSide,
+            side * (BASE_X + chargedSwing * SWING_X + petReach * PET_CENTER) + swayX + petSide,
             BASE_Y +
                 bobY +
                 breath +
@@ -429,14 +478,14 @@ export class FirstPersonWrench {
         );
         this.group.rotation.set(
             BASE_PITCH - chargedKick * 0.28 + petReach * PET_PITCH,
-            BASE_YAW - chargedSwing * 0.12 + petReach * PET_YAW,
-            BASE_ROLL + swayRoll - chargedSwing * SWING_ROLL + petReach * PET_ROLL,
+            side * (BASE_YAW - chargedSwing * 0.12 + petReach * PET_YAW),
+            side * (BASE_ROLL - chargedSwing * SWING_ROLL + petReach * PET_ROLL) + swayRoll,
         );
         this.petPivot.rotation.x = petReach * PET_PIVOT_ANGLE;
         this.updateWrenchBolts(dt, frame.chargeProgress);
     }
 
-    private buildWrench(metalWear: Texture): void {
+    private buildWrench(metalWear: Texture): { halo: Mesh; material: MeshBasicMaterial } {
         // The loaded wear map drives both roughness and bump: dull patches, pitting, and polished
         // scratches break up the highlight without adding a colour texture.
         const steel = new MeshStandardMaterial({
@@ -508,15 +557,13 @@ export class FirstPersonWrench {
         add(0.32, length(0.12), 0.1, steel, 0, length(-0.66), 0, WRENCH_BEVEL_RADIUS, WRENCH_WEAR_REGIONS.head).name =
             'first-person-wrench-head';
         // The band is proud of the head on both faces so it cannot z-fight with the steel.
-        add(0.18, length(0.035), 0.11, this.glowMaterial, 0, length(-0.66));
-        const glowHalo = new Mesh(
-            new PlaneGeometry(GLOW_HALO_WIDTH, GLOW_HALO_HEIGHT),
-            createGlowMaterial({
-                map: getRadialGlowTexture(),
-                color: 0x5fe6da,
-                opacity: GLOW_HALO_OPACITY,
-            }),
-        );
+        add(0.18, length(0.035), 0.11, this.glowMaterial, 0, length(-0.66)).name = 'first-person-wrench-glow-band';
+        const glowHaloMaterial = createGlowMaterial({
+            map: getRadialGlowTexture(),
+            color: GLOW_IDLE_COLOR,
+            opacity: GLOW_HALO_OPACITY,
+        });
+        const glowHalo = new Mesh(new PlaneGeometry(GLOW_HALO_WIDTH, GLOW_HALO_HEIGHT), glowHaloMaterial);
         glowHalo.name = 'first-person-wrench-glow-halo';
         glowHalo.position.set(0, length(-0.66), 0.058);
         glowHalo.castShadow = false;
@@ -575,6 +622,20 @@ export class FirstPersonWrench {
         this.swingPivot.add(this.model);
         this.petPivot.add(this.swingPivot);
         this.group.add(this.petPivot);
+
+        return { halo: glowHalo, material: glowHaloMaterial };
+    }
+
+    // The light rests at the darker colour and faint halo. A beep flashes it to the full antenna
+    // cyan and the strongest glow, then the pulse decays both back to the resting values before the
+    // next beep. Closeness scales how bright the flash is.
+    private updateDetectorGlow(dt: number): void {
+        const { pulse, level } = this.detectorPulse.update(dt);
+        this.glowMaterial.emissive.lerpColors(GLOW_IDLE_COLOR, GLOW_COLOR, pulse);
+        this.glowHaloMaterial.color.lerpColors(GLOW_IDLE_COLOR, GLOW_COLOR, pulse);
+        this.glowMaterial.emissiveIntensity = GLOW_IDLE_EMISSIVE + GLOW_PULSE_EMISSIVE * level * pulse;
+        this.glowHaloMaterial.opacity = Math.max(GLOW_HALO_OPACITY, level * pulse * GLOW_HALO_PEAK_OPACITY);
+        this.glowHalo.scale.setScalar(1 + GLOW_HALO_PULSE_SCALE * pulse);
     }
 
     // Mirrors Player.updateWrenchBolts, but with the first-person cage and thinning.

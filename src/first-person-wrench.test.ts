@@ -52,7 +52,7 @@ describe('first-person wrench', () => {
     it('pops the tool into view and then holds it in front of the camera', () => {
         const wrench = new FirstPersonWrench();
         wrench.update(0, RESTING);
-        expect(wrench.group.position).toMatchObject({ x: -0.45, y: -0.4, z: -0.7 });
+        expect(wrench.group.position).toMatchObject({ x: -0.45, y: -0.5, z: -0.7 });
 
         const model = wrench.group.getObjectByName('first-person-wrench-model');
         expect(model?.scale.x).toBeCloseTo(FIRST_PERSON_WRENCH_SCALE * 0.01);
@@ -118,6 +118,94 @@ describe('first-person wrench', () => {
         expect(material.blending).toBe(AdditiveBlending);
         expect(material.opacity).toBeGreaterThan(0);
         expect(material.opacity).toBeLessThanOrEqual(0.5);
+    });
+
+    it('blinks the cyan band and halo with the detector beep', () => {
+        const wrench = new FirstPersonWrench();
+        const band = wrench.group.getObjectByName('first-person-wrench-glow-band') as Mesh;
+        const bandMaterial = band.material as MeshStandardMaterial;
+        const halo = wrench.group.getObjectByName('first-person-wrench-glow-halo') as Mesh;
+        const haloMaterial = halo.material as MeshBasicMaterial;
+
+        wrench.update(1 / 60, RESTING);
+        const idleIntensity = bandMaterial.emissiveIntensity;
+        const idleOpacity = haloMaterial.opacity;
+        const idleScale = halo.scale.x;
+
+        wrench.pulseDetectorGlow(1, 0.2);
+        wrench.update(1 / 60, RESTING);
+
+        expect(bandMaterial.emissiveIntensity).toBeGreaterThan(idleIntensity * 2);
+        expect(haloMaterial.opacity).toBeGreaterThan(idleOpacity * 2);
+        expect(halo.scale.x).toBeGreaterThan(idleScale);
+
+        // The pulse lasts for the beep interval plus the fade tail.
+        for (let frame = 0; frame < 60; frame++) {
+            wrench.update(1 / 60, RESTING);
+        }
+        expect(bandMaterial.emissiveIntensity).toBeCloseTo(idleIntensity);
+        expect(haloMaterial.opacity).toBeCloseTo(idleOpacity);
+        expect(halo.scale.x).toBeCloseTo(idleScale);
+    });
+
+    it('darkens the resting cyan and restores the full colour on a beep', () => {
+        const wrench = new FirstPersonWrench();
+        const band = wrench.group.getObjectByName('first-person-wrench-glow-band') as Mesh;
+        const bandMaterial = band.material as MeshStandardMaterial;
+        const halo = wrench.group.getObjectByName('first-person-wrench-glow-halo') as Mesh;
+        const haloMaterial = halo.material as MeshBasicMaterial;
+
+        wrench.update(1 / 60, RESTING);
+        expect(bandMaterial.emissive.getHex()).toBe(0x30736d);
+        expect(haloMaterial.color.getHex()).toBe(0x30736d);
+
+        wrench.pulseDetectorGlow(1, 0.2);
+        // Sample the beep itself, before the pulse starts decaying.
+        wrench.update(0, RESTING);
+        expect(bandMaterial.emissive.getHex()).toBe(0x5fe6da);
+        expect(haloMaterial.color.getHex()).toBe(0x5fe6da);
+
+        for (let frame = 0; frame < 60; frame++) {
+            wrench.update(1 / 60, RESTING);
+        }
+        expect(bandMaterial.emissive.getHex()).toBe(0x30736d);
+        expect(haloMaterial.color.getHex()).toBe(0x30736d);
+    });
+
+    it('makes the detector blink brighter as the tracked piece gets closer', () => {
+        const near = new FirstPersonWrench();
+        const far = new FirstPersonWrench();
+        const bandMaterial = (wrench: FirstPersonWrench) =>
+            (wrench.group.getObjectByName('first-person-wrench-glow-band') as Mesh).material as MeshStandardMaterial;
+        const haloMaterial = (wrench: FirstPersonWrench) =>
+            (wrench.group.getObjectByName('first-person-wrench-glow-halo') as Mesh).material as MeshBasicMaterial;
+
+        near.pulseDetectorGlow(1, 1);
+        far.pulseDetectorGlow(0.2, 1);
+        near.update(1 / 60, RESTING);
+        far.update(1 / 60, RESTING);
+
+        expect(bandMaterial(near).emissiveIntensity).toBeGreaterThan(bandMaterial(far).emissiveIntensity);
+        expect(haloMaterial(near).opacity).toBeGreaterThan(haloMaterial(far).opacity);
+    });
+
+    it('expires a beep while the viewmodel is hidden', () => {
+        const wrench = new FirstPersonWrench();
+        const band = wrench.group.getObjectByName('first-person-wrench-glow-band') as Mesh;
+        const bandMaterial = band.material as MeshStandardMaterial;
+
+        wrench.update(1 / 60, RESTING);
+        const idleIntensity = bandMaterial.emissiveIntensity;
+
+        wrench.pulseDetectorGlow(1, 0.2);
+        wrench.update(1 / 60, { ...RESTING, visible: false });
+        expect(bandMaterial.emissiveIntensity).toBeGreaterThan(idleIntensity);
+
+        for (let frame = 0; frame < 60; frame++) {
+            wrench.update(1 / 60, { ...RESTING, visible: false });
+        }
+        wrench.update(1 / 60, RESTING);
+        expect(bandMaterial.emissiveIntensity).toBeCloseTo(idleIntensity);
     });
 
     it('gives the two jaws different regions of the wear atlas', () => {
@@ -205,6 +293,15 @@ describe('first-person wrench', () => {
         expect(wrench.group.position.x).toBeLessThan(resting.x);
         expect(wrench.group.position.y).toBeGreaterThan(resting.y);
         expect(wrench.group.rotation.z).toBeLessThan(restingRoll);
+    });
+
+    it('mirrors the viewmodel when held in the right hand', () => {
+        const wrench = new FirstPersonWrench();
+        wrench.setLeftHanded(false);
+        wrench.update(0, RESTING);
+        expect(wrench.group.position).toMatchObject({ x: 0.45, y: -0.5, z: -0.7 });
+        expect(wrench.group.rotation.y).toBeCloseTo(0.38, 5);
+        expect(wrench.group.rotation.z).toBeCloseTo(-(Math.PI - 0.12), 5);
     });
 
     it('pivots the arm at the shoulder and sweeps the wolf twice while petting', () => {

@@ -12,6 +12,7 @@ import {
 import type { Material } from 'three';
 
 import { buildElectricBolts } from './electric-bolts';
+import { DetectorPulse } from './detector-pulse';
 import type { Difficulty } from './enemies';
 import { GLOW_RING_TEXTURE_INNER_RADIUS } from './glow';
 import { angleDelta, clamp, damp, dampAngle, smoothstep } from './math-utils';
@@ -20,6 +21,7 @@ import {
     ANTENNA_IDLE_HALO_SCALE,
     ANTENNA_TIP_RADIUS,
     buildPlayerModel,
+    mountWrench,
     THRUSTER_BASE_GLOW,
     THRUSTER_BASE_HALO_OPACITY,
     THRUSTER_BASE_HALO_SCALE,
@@ -164,7 +166,6 @@ const ANTENNA_RING_OPACITY = 1;
 // A distant beep still leaves a faint ring, while a piece underfoot drives it to full opacity.
 const ANTENNA_RING_MIN_BRIGHTNESS = 0.2;
 const ANTENNA_RING_MAX_INNER_RADIUS = 0.75;
-const ANTENNA_PULSE_FADE_SECONDS = 0.35;
 const ANTENNA_IDLE_GLOW = 0.35;
 const ANTENNA_PULSE_GLOW = 5;
 // The electrified crown throws the robot clear at the same speed a wrench hit shoves a caretaker,
@@ -229,6 +230,8 @@ export class Player {
     private wrenchBoltSize = 1;
     private readonly rightArmRestZ: number;
     private readonly leftArmRestZ: number;
+    // The original pose hangs the wrench from the hand that renders on the left of the screen.
+    private leftHanded = true;
     private velocity = new Vector3();
     private turnVelocity = 0;
     private verticalVelocity = 0;
@@ -266,16 +269,29 @@ export class Player {
     private antennaGlowSpriteMaterial: SpriteMaterial;
     private antennaRing: Sprite;
     private antennaRingMaterial: SpriteMaterial;
-    private antennaPulseElapsed = 0;
-    private antennaPulseInterval = 0;
-    private antennaPulseTimeout = 0;
-    private antennaPulseCloseness = 0;
+    private readonly antennaPulse = new DetectorPulse();
     private eyeGlowMaterial: MeshBasicMaterial;
     private thrusterGlowMaterial: MeshStandardMaterial;
     private thrusterHaloMaterial: MeshBasicMaterial;
     private thrusterSpriteGlowMaterial: SpriteMaterial;
     private thrusterHalos: Mesh[];
     private thrusterGlowSprites: Sprite[];
+
+    private get wrenchArm(): Group {
+        return this.leftHanded ? this.rightArm : this.leftArm;
+    }
+
+    private get offArm(): Group {
+        return this.leftHanded ? this.leftArm : this.rightArm;
+    }
+
+    private get wrenchArmRestZ(): number {
+        return this.leftHanded ? this.rightArmRestZ : this.leftArmRestZ;
+    }
+
+    private get offArmRestZ(): number {
+        return this.leftHanded ? this.leftArmRestZ : this.rightArmRestZ;
+    }
 
     constructor(terrain: Terrain, settings: PlayerSettings) {
         this.settings = settings;
@@ -480,16 +496,25 @@ export class Player {
         this.wrench.visible = equipped;
     }
 
+    // Swaps the third-person wrench between the robot's hands. Any swing or pet in progress is
+    // dropped so the arm pose does not carry over to the other side.
+    setLeftHanded(leftHanded: boolean): void {
+        if (leftHanded === this.leftHanded) {
+            return;
+        }
+        this.leftHanded = leftHanded;
+        this.stopWrenchAttack();
+        this.stopPetting();
+        mountWrench(this.wrench, this.leftArm, this.rightArm, leftHanded);
+    }
+
     // Called once for every detector beep. interval is the time until the next beep, so a pulse
     // completes exactly as the following beep arrives and the ripple tracks the beep cadence.
     pulseDetectorAntenna(closeness: number, interval: number): void {
         if (this.destroyed) {
             return;
         }
-        this.antennaPulseElapsed = 0;
-        this.antennaPulseInterval = Math.max(0.05, interval);
-        this.antennaPulseTimeout = this.antennaPulseInterval + ANTENNA_PULSE_FADE_SECONDS;
-        this.antennaPulseCloseness = clamp(closeness, 0, 1);
+        this.antennaPulse.trigger(closeness, interval);
         this.antennaRing.visible = true;
     }
 
@@ -624,11 +649,8 @@ export class Player {
         this.wrenchSwingCharged = false;
         this.wrenchChargeBufferRemaining = 0;
         this.wrenchBoltMesh.visible = false;
-        this.rightArm.rotation.x = 0;
-        this.rightArm.rotation.y = 0;
-        this.rightArm.rotation.z = this.rightArmRestZ;
-        this.leftArm.rotation.x = 0;
-        this.leftArm.rotation.z = this.leftArmRestZ;
+        this.wrenchArm.rotation.set(0, 0, this.wrenchArmRestZ);
+        this.offArm.rotation.set(0, 0, this.offArmRestZ);
     }
 
     // Starts the petting gesture: the robot turns toward the wolf and reaches out with the wrench.
@@ -657,9 +679,7 @@ export class Player {
             return;
         }
         this.petElapsed = -1;
-        this.rightArm.rotation.x = 0;
-        this.rightArm.rotation.y = 0;
-        this.rightArm.rotation.z = this.rightArmRestZ;
+        this.wrenchArm.rotation.set(0, 0, this.wrenchArmRestZ);
     }
 
     setOpacity(opacity: number): void {
@@ -1225,9 +1245,9 @@ export class Player {
             // the ground.
             const reach = this.petReach;
             const sweep = Math.sin(this.petProgress * Math.PI * 4) * PET_ARM_SWEEP * reach;
-            this.rightArm.rotation.x = (-Math.PI / 2) * reach;
-            this.rightArm.rotation.y = 0;
-            this.rightArm.rotation.z = this.rightArmRestZ + sweep;
+            this.wrenchArm.rotation.x = (-Math.PI / 2) * reach;
+            this.wrenchArm.rotation.y = 0;
+            this.wrenchArm.rotation.z = this.wrenchArmRestZ + sweep;
         }
 
         if (this.wrenchAttackElapsed >= 0) {
@@ -1264,13 +1284,13 @@ export class Player {
                         // The charged strike spins the whole robot through two full turns, with the
                         // wrench raised in front and lowered again over the last 30°.
                         this.group.rotation.y = this.wrenchSwingStartYaw + chargedWrenchSpinAngle(progress);
-                        this.rightArm.rotation.x = chargedWrenchArmAngle(progress);
+                        this.wrenchArm.rotation.x = chargedWrenchArmAngle(progress);
                     } else {
                         // The regular swing circles only the wrench arm, in the same forward/back
                         // plane as the jump pose.
-                        this.rightArm.rotation.x = wrenchCircleAngle(progress);
+                        this.wrenchArm.rotation.x = wrenchCircleAngle(progress);
                         // The other arm makes a small counter-sway instead of following the circle.
-                        this.leftArm.rotation.x = -Math.sin(progress * Math.PI * 2) * 0.25;
+                        this.offArm.rotation.x = -Math.sin(progress * Math.PI * 2) * 0.25;
                     }
                 }
             }
@@ -1303,12 +1323,8 @@ export class Player {
     // and disappear when the swing finishes.
     // The crown glow's timing, scaled down to the antenna and to the current beep interval.
     private updateAntennaPulse(dt: number): void {
-        this.antennaPulseTimeout = Math.max(0, this.antennaPulseTimeout - dt);
-        const active =
-            this.antennaPulseInterval > 0 ? Math.min(1, this.antennaPulseTimeout / ANTENNA_PULSE_FADE_SECONDS) : 0;
+        const { active, closeness, cycle, pulse, level } = this.antennaPulse.update(dt);
         if (active <= 0) {
-            this.antennaPulseInterval = 0;
-            this.antennaPulseCloseness = 0;
             this.antennaRing.visible = false;
             this.antennaRingMaterial.opacity = 0;
             this.antennaGlowMaterial.emissiveIntensity = ANTENNA_IDLE_GLOW;
@@ -1316,11 +1332,6 @@ export class Player {
             this.antennaGlowSprite.scale.setScalar(ANTENNA_IDLE_HALO_SCALE);
             return;
         }
-
-        this.antennaPulseElapsed += dt;
-        const cycle = Math.min(1, this.antennaPulseElapsed / this.antennaPulseInterval);
-        const pulse = 1 - cycle;
-        const level = this.antennaPulseCloseness * active;
 
         // Unlike the spire lamp, the antenna flashes brightest at the beep itself and decays
         // until the next one.
@@ -1332,8 +1343,7 @@ export class Player {
         );
         this.antennaGlowSprite.scale.setScalar(ANTENNA_IDLE_HALO_SCALE + 0.16 * pulse);
 
-        const ringBrightness =
-            ANTENNA_RING_MIN_BRIGHTNESS + (1 - ANTENNA_RING_MIN_BRIGHTNESS) * this.antennaPulseCloseness;
+        const ringBrightness = ANTENNA_RING_MIN_BRIGHTNESS + (1 - ANTENNA_RING_MIN_BRIGHTNESS) * closeness;
         const ringProgress = cycle;
         if (ringProgress >= 1) {
             this.antennaRing.visible = false;

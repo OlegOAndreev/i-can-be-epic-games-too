@@ -74,6 +74,21 @@ export interface PlayerModel {
     robotMaterials: MeshStandardMaterial[];
 }
 
+// The wrench sits in the palm with its handle running down past the fingers. Mirroring x and the
+// outward lean lets the same local pose fit either hand.
+const WRENCH_HAND_OFFSET = { x: 0.08, y: -0.88, z: 0.08 } as const;
+const WRENCH_HAND_ROTATION = { x: -0.1, z: 0.12 } as const;
+
+export function mountWrench(wrench: Group, leftArm: Group, rightArm: Group, leftHanded: boolean): void {
+    // The model's rightArm group renders on the left of the third-person view, which is where the
+    // wrench was designed to sit. Mirroring across to leftArm puts it on the other side.
+    const side = leftHanded ? 1 : -1;
+    const arm = leftHanded ? rightArm : leftArm;
+    arm.add(wrench);
+    wrench.position.set(WRENCH_HAND_OFFSET.x * side, WRENCH_HAND_OFFSET.y, WRENCH_HAND_OFFSET.z);
+    wrench.rotation.set(WRENCH_HAND_ROTATION.x, 0, WRENCH_HAND_ROTATION.z * side);
+}
+
 // Builds the explorer robot from procedural primitives. The returned visual group has its origin at
 // the feet and the robot faces +Z, matching the animation pivots in Player.
 export function buildPlayerModel(): PlayerModel {
@@ -324,11 +339,9 @@ export function buildPlayerModel(): PlayerModel {
     }
 
     // The caretakers hand this wrench over after the intro. It stays hidden until the player
-    // carries it far enough from them, then shows up in the right hand.
+    // carries it far enough from them, then shows up in the hand the menu labels Left.
     const wrench = new Group();
     wrench.name = 'wrench';
-    wrench.position.set(0.08, -0.88, 0.08);
-    wrench.rotation.set(-0.1, 0, 0.12);
 
     // Shrink the tool lengthwise by 10% to balance the arm's proportions; its width stays put.
     const wrenchLength = (value: number) => value * 0.9;
@@ -372,7 +385,7 @@ export function buildPlayerModel(): PlayerModel {
     wrench.add(wrenchJawCenter);
 
     wrench.visible = false;
-    rightArm.add(wrench);
+    mountWrench(wrench, leftArm, rightArm, true);
 
     // Merge every static part inside its animated pivot. Arms are children of upperBody, so they
     // must be skipped here or their meshes would be baked into the body and stop following the

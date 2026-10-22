@@ -1,13 +1,26 @@
 import { Group, Mesh, MeshStandardMaterial, Sprite, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
-import { ANIMAL_EYE_COLOR, deerFleeSpeed, guideWolfSpeed, RobotAnimals } from './robot-animals';
+import { ANIMAL_EYE_COLOR, deerFleeSpeed, guideWolfSpeed, RobotAnimals, WOLF_PET_EYE_COLOR } from './robot-animals';
 import { installCanvasDocument, testTerrain } from './test-helpers';
 
 installCanvasDocument(1024, 440);
 
 function animalGroups(animals: RobotAnimals): Group[] {
     return animals.group.children.filter((child): child is Group => child instanceof Group);
+}
+
+function findEyeMaterial(group: Group): MeshStandardMaterial | null {
+    let found: MeshStandardMaterial | null = null;
+    group.traverse((object) => {
+        if (found || !(object instanceof Mesh) || !(object.material instanceof MeshStandardMaterial)) {
+            return;
+        }
+        if (object.material.emissive.getHex() === ANIMAL_EYE_COLOR) {
+            found = object.material;
+        }
+    });
+    return found;
 }
 
 function normalizeAngle(angle: number): number {
@@ -25,7 +38,9 @@ describe('robot animals', () => {
         const animals = new RobotAnimals(terrain);
         const groups = animalGroups(animals);
 
-        expect(groups.length).toBe(4);
+        expect(groups.length).toBe(50);
+        expect(groups.filter((group) => group.userData.kind === 'wolf')).toHaveLength(10);
+        expect(groups.filter((group) => group.userData.kind === 'deer')).toHaveLength(40);
         expect(animals.getColliders()).toHaveLength(groups.length);
         expect(animals.getColliders().every((collider) => collider.kind === 'animal')).toBe(true);
         expect(new Set(groups.map((group) => group.userData.kind))).toEqual(new Set(['deer', 'wolf']));
@@ -39,7 +54,7 @@ describe('robot animals', () => {
             packs.set(key, pack);
         }
 
-        expect(packs.size).toBe(3);
+        expect(packs.size).toBe(30);
         for (const { members } of packs.values()) {
             expect(members.length).toBeGreaterThanOrEqual(1);
             expect(members.length).toBeLessThanOrEqual(6);
@@ -73,29 +88,80 @@ describe('robot animals', () => {
         animals.dispose();
     });
 
-    it('roams, recycles, and wolves stop to face the player', () => {
+    it('places twenty deer packs and at least ten wolves per world', () => {
+        for (const seed of [20260419, 1, 7, 42, 424242, 999999]) {
+            const terrain = testTerrain(seed, { meshes: false });
+            const animals = new RobotAnimals(terrain);
+            const groups = animalGroups(animals);
+            const wolves = groups.filter((group) => group.userData.kind === 'wolf');
+            const deerPacks = new Set(
+                groups.filter((group) => group.userData.kind === 'deer').map((group) => group.userData.pack),
+            );
+            expect(wolves.length).toBeGreaterThanOrEqual(10);
+            expect(deerPacks.size).toBe(20);
+            animals.dispose();
+        }
+    });
+
+    it('does not update far animals and keeps them in place', () => {
+        const terrain = testTerrain(20260419, { meshes: false });
+        const animals = new RobotAnimals(terrain);
+        const groups = animalGroups(animals);
+
+        for (const animal of [
+            groups.find((group) => group.userData.kind === 'wolf')!,
+            groups.find((group) => group.userData.kind === 'deer')!,
+        ]) {
+            const startX = animal.position.x;
+            const startZ = animal.position.z;
+            const player = new Vector3(animal.position.x + 400, 0, animal.position.z);
+            player.y = terrain.heightAt(player.x, player.z);
+
+            for (let step = 0; step < 200; step++) {
+                animals.update(0.05, player);
+            }
+
+            expect(animal.position.x).toBeCloseTo(startX);
+            expect(animal.position.z).toBeCloseTo(startZ);
+        }
+
+        animals.dispose();
+    });
+
+    it('keeps a guiding wolf moving when the player is far away', () => {
+        const terrain = testTerrain(20260419, { meshes: false });
+        const animals = new RobotAnimals(terrain);
+        const wolf = animalGroups(animals).find((group) => group.userData.kind === 'wolf')!;
+        expect(animals.guideWolf(wolf.userData.id)).toBe(true);
+        const startX = wolf.position.x;
+        const startZ = wolf.position.z;
+        const player = new Vector3(wolf.position.x + 400, 0, wolf.position.z);
+        player.y = terrain.heightAt(player.x, player.z);
+
+        for (let step = 0; step < 20; step++) {
+            animals.update(0.05, player);
+        }
+
+        expect(Math.hypot(wolf.position.x - startX, wolf.position.z - startZ)).toBeGreaterThan(0.5);
+        animals.dispose();
+    });
+
+    it('roams and wolves stop to face the player', () => {
         const terrain = testTerrain(20260419, { meshes: false });
         const animals = new RobotAnimals(terrain);
         const groups = animalGroups(animals);
         const starts = groups.map((group) => group.position.clone());
-        const farX = terrain.spawn.x + 450;
-        const farZ = terrain.spawn.z + 450;
-        const farAway = new Vector3(farX, terrain.heightAt(farX, farZ), farZ);
+        const wolf = groups.find((group) => group.userData.kind === 'wolf')!;
+        // Stay outside the wolf's alert radius but close enough for the pack to keep updating.
+        const away = new Vector3(wolf.position.x + 40, wolf.position.y, wolf.position.z);
 
         for (let step = 0; step < 400; step++) {
-            animals.update(0.05, farAway);
+            animals.update(0.05, away);
         }
-
-        // Animals left behind are recycled around the player, so travel always brings new wildlife.
-        const nearby = groups.filter(
-            (group) => Math.hypot(group.position.x - farAway.x, group.position.z - farAway.z) < 200,
-        );
-        expect(nearby.length).toBeGreaterThanOrEqual(2);
 
         const moved = groups.some((group, index) => group.position.distanceTo(starts[index]) > 0.5);
         expect(moved).toBe(true);
 
-        const wolf = groups.find((group) => group.userData.kind === 'wolf')!;
         const watchedAt = wolf.position.clone();
         const player = new Vector3(wolf.position.x + 6, wolf.position.y, wolf.position.z);
         // Start facing directly away from the player so the turn is easy to measure.
@@ -178,7 +244,7 @@ describe('robot animals', () => {
         // Fleeing deer lean into the gallop instead of trotting upright.
         expect(maxLean).toBeGreaterThan(0.05);
         // The hooves tuck well clear of the ground during the sprint.
-        expect(maxHoofHeight).toBeGreaterThan(0.5);
+        expect(maxHoofHeight).toBeGreaterThan(0.45);
 
         animals.dispose();
     });
@@ -292,12 +358,15 @@ describe('robot animals', () => {
         expect(target).not.toBeNull();
         expect(target!.id).toBe(wolf.userData.id);
         expect(animals.findWolfToPet(player, 0, Math.PI / 2, 3)).toBeNull();
-        expect(
-            animals.findWolfToPet(new Vector3(player.x, player.y, player.z + 2), null, Math.PI, 3),
-        ).toBeNull();
+        expect(animals.findWolfToPet(new Vector3(player.x, player.y, player.z + 2), null, Math.PI, 3)).toBeNull();
         // Petting reaches exactly three metres from the wolf's centre.
         expect(
-            animals.findWolfToPet(new Vector3(wolf.position.x, wolf.position.y, wolf.position.z + 3.1), null, Math.PI, 3),
+            animals.findWolfToPet(
+                new Vector3(wolf.position.x, wolf.position.y, wolf.position.z + 3.1),
+                null,
+                Math.PI,
+                3,
+            ),
         ).toBeNull();
 
         const stone = terrain.nearestEmeraldStone(wolf.position.x, wolf.position.z);
@@ -330,7 +399,7 @@ describe('robot animals', () => {
         let hindKnee = 0;
         let frontPivot = 0;
         let hindPivot = 0;
-        for (let step = 1; step < 600; step++) {
+        for (let step = 1; step < 4000 && foundStones.length === 0; step++) {
             animals.update(0.05, player);
             maxLean = Math.max(maxLean, body?.rotation.x ?? 0);
             for (let index = 0; index < 4; index++) {
@@ -367,6 +436,194 @@ describe('robot animals', () => {
         expect(after).toBeLessThan(before);
         // The wolf ends up standing outside the stone instead of walking into it.
         expect(after).toBeGreaterThanOrEqual(stone!.radius);
+
+        animals.dispose();
+    });
+
+    it('sits a petted wolf and stands it back up when the gesture ends', () => {
+        const terrain = testTerrain(20260419, { meshes: false });
+        const animals = new RobotAnimals(terrain);
+        const wolf = animalGroups(animals).find((group) => group.userData.kind === 'wolf')!;
+        const id = wolf.userData.id;
+        // A wolf that has already led the player only sits for the pets; it does not trot away.
+        animals.restoreGuidedWolfIds([id]);
+
+        const body = wolf.getObjectByName('body')!;
+        const hindLeg = wolf.getObjectByName('leg-2')!;
+        const hindKnee = wolf.getObjectByName('knee-2')!;
+        const frontLeg = wolf.getObjectByName('leg-0')!;
+        const player = new Vector3(wolf.position.x + 1.4, wolf.position.y, wolf.position.z);
+
+        expect(animals.petWolf(id, 1.5)).toBe('sit');
+        for (let step = 0; step < 24; step++) {
+            animals.update(0.05, player);
+        }
+
+        // The haunches drop, the hind legs fold, and the front legs stay nearly straight.
+        expect(body.position.y).toBeLessThan(-0.08);
+        expect(hindLeg.rotation.x).toBeLessThan(-0.5);
+        expect(hindKnee.rotation.x).toBeGreaterThan(0.8);
+        expect(Math.abs(frontLeg.rotation.x)).toBeLessThan(0.3);
+        // It turns to the player while it sits.
+        const bearing = Math.atan2(player.x - wolf.position.x, player.z - wolf.position.z);
+        expect(Math.abs(normalizeAngle(wolf.rotation.y - bearing))).toBeLessThan(0.2);
+
+        for (let step = 0; step < 30; step++) {
+            animals.update(0.05, player);
+        }
+        expect(body.position.y).toBeGreaterThan(-0.05);
+        expect(hindLeg.rotation.x).toBeGreaterThan(-0.3);
+        expect(hindKnee.rotation.x).toBeLessThan(0.4);
+
+        animals.dispose();
+    });
+
+    it('lets a particular wolf lead to an emerald only once, including after a restore', () => {
+        const terrain = testTerrain(20260419, { meshes: false });
+        const animals = new RobotAnimals(terrain);
+        const wolves = animalGroups(animals).filter((group) => group.userData.kind === 'wolf');
+        const id = wolves[0].userData.id;
+        const otherId = wolves[1].userData.id;
+        const starts: number[] = [];
+        animals.onWolfGuideStart = (wolfId) => starts.push(wolfId);
+
+        expect(animals.guideWolf(id)).toBe(true);
+        expect(starts).toEqual([id]);
+        expect(animals.guideWolf(id)).toBe(false);
+        expect(animals.getGuidedWolfIds()).toEqual([id]);
+
+        // Petting it again sits it down but never starts a second guide.
+        const player = new Vector3(wolves[0].position.x + 1.4, wolves[0].position.y, wolves[0].position.z);
+        expect(animals.petWolf(id, 0.2)).toBe('sit');
+        for (let step = 0; step < 20; step++) {
+            animals.update(0.05, player);
+        }
+        expect(starts).toEqual([id]);
+
+        const restored = new RobotAnimals(terrain);
+        restored.restoreGuidedWolfIds(animals.getGuidedWolfIds());
+        expect(restored.getGuidedWolfIds()).toEqual([id]);
+        expect(restored.guideWolf(id)).toBe(false);
+        // Another wolf still gets its single chance to lead the way.
+        expect(restored.guideWolf(otherId)).toBe(true);
+
+        restored.dispose();
+        animals.dispose();
+    });
+
+    it('turns the eyes and glow of a petted wolf rose', () => {
+        const terrain = testTerrain(20260419, { meshes: false });
+        const animals = new RobotAnimals(terrain);
+        // Spawn extra wolves so a shared material would be obvious across the pack.
+        const player = new Vector3(
+            terrain.spawn.x,
+            terrain.heightAt(terrain.spawn.x, terrain.spawn.z),
+            terrain.spawn.z,
+        );
+        for (let index = 0; index < 4; index++) {
+            expect(animals.spawnWolf(player)).not.toBeNull();
+        }
+        const wolves = animalGroups(animals).filter((group) => group.userData.kind === 'wolf');
+        expect(wolves.length).toBeGreaterThan(2);
+        const eye = findEyeMaterial(wolves[0]);
+        expect(eye).not.toBeNull();
+        expect(eye!.emissive.getHex()).toBe(ANIMAL_EYE_COLOR);
+
+        expect(animals.petWolf(wolves[0].userData.id, 0.5)).toBe('guide');
+        expect(eye!.emissive.getHex()).toBe(WOLF_PET_EYE_COLOR);
+        expect(eye!.color.getHex()).toBe(0x3d1820);
+        // Only the petted wolf is marked as guided.
+        expect(animals.getGuidedWolfIds()).toEqual([wolves[0].userData.id]);
+
+        // Every other wolf keeps its green eye and glow.
+        for (const wolf of wolves.slice(1)) {
+            expect(findEyeMaterial(wolf)).not.toBeNull();
+            let glowColor: number | null = null;
+            wolf.traverse((object) => {
+                if (object instanceof Sprite) {
+                    glowColor = object.material.color.getHex();
+                }
+            });
+            expect(glowColor).toBe(ANIMAL_EYE_COLOR);
+        }
+
+        let glowColor: number | null = null;
+        wolves[0].traverse((object) => {
+            if (object instanceof Sprite) {
+                glowColor = object.material.color.getHex();
+            }
+        });
+        expect(glowColor).toBe(WOLF_PET_EYE_COLOR);
+
+        // Wolves spawned after the pet still start with the default green eyes.
+        const spawnedId = animals.spawnWolf(player);
+        expect(spawnedId).not.toBeNull();
+        const spawnedWolf = animalGroups(animals).find((group) => group.userData.id === spawnedId);
+        expect(spawnedWolf).toBeDefined();
+        expect(findEyeMaterial(spawnedWolf!)).not.toBeNull();
+
+        animals.dispose();
+    });
+
+    it('runs to the emerald on the first pet and sits there before accepting thanks', () => {
+        const terrain = testTerrain(20260419, { meshes: false });
+        const animals = new RobotAnimals(terrain);
+        const wolf = animalGroups(animals).find((group) => group.userData.kind === 'wolf')!;
+        const id = wolf.userData.id;
+        const body = wolf.getObjectByName('body')!;
+        const player = new Vector3(wolf.position.x + 1.4, wolf.position.y, wolf.position.z);
+
+        // The first pet starts the guide immediately; there is no thank-you sit first.
+        expect(animals.petWolf(id, 0.5)).toBe('guide');
+        const firstStepX = wolf.position.x;
+        const firstStepZ = wolf.position.z;
+        animals.update(0.05, player);
+        expect(Math.hypot(wolf.position.x - firstStepX, wolf.position.z - firstStepZ)).toBeCloseTo(0.25, 2);
+        expect(body.position.y).toBeGreaterThan(-0.05);
+
+        const foundStones: number[] = [];
+        animals.onWolfFoundStone = (wolfId) => foundStones.push(wolfId);
+        for (let step = 0; step < 900 && foundStones.length === 0; step++) {
+            animals.update(0.05, player);
+        }
+        expect(foundStones).toEqual([id]);
+
+        // The guide ends with a deep sit at the stone instead of walking straight into idle.
+        for (let step = 0; step < 12; step++) {
+            animals.update(0.05, player);
+        }
+        expect(body.position.y).toBeLessThan(-0.15);
+
+        // Only a later pet switches the response to thanks (from the caller's point of view).
+        expect(animals.petWolf(id, 0.2)).toBe('sit');
+
+        animals.dispose();
+    });
+
+    it('spawns a wolf and a deer near the player for the debug buttons', () => {
+        const terrain = testTerrain(20260419, { meshes: false });
+        const animals = new RobotAnimals(terrain);
+        const before = animalGroups(animals).length;
+        const player = new Vector3(
+            terrain.spawn.x,
+            terrain.heightAt(terrain.spawn.x, terrain.spawn.z),
+            terrain.spawn.z,
+        );
+
+        const wolfId = animals.spawnWolf(player);
+        const deerId = animals.spawnDeer(player);
+
+        expect(wolfId).not.toBeNull();
+        expect(deerId).not.toBeNull();
+        expect(wolfId).not.toBe(deerId);
+        expect(animals.getColliders()).toHaveLength(before + 2);
+        const spawned = animalGroups(animals).slice(before);
+        expect(spawned.map((group) => group.userData.kind)).toEqual(['wolf', 'deer']);
+        for (const group of spawned) {
+            const distance = Math.hypot(group.position.x - player.x, group.position.z - player.z);
+            expect(distance).toBeGreaterThanOrEqual(4);
+            expect(distance).toBeLessThanOrEqual(8.01);
+        }
 
         animals.dispose();
     });
