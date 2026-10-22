@@ -15,6 +15,7 @@ import {
 } from 'three';
 
 import { clamp, lerp } from './math-utils';
+import { textureMemory } from './texture-memory';
 
 // The tint snaps on when the camera crosses the surface and fades out over a second after surfacing.
 const MIN_STRENGTH = 0.55;
@@ -198,6 +199,7 @@ export class UnderwaterEffect {
                 stencilBuffer: false,
             });
             this.material.uniforms.tDiffuse.value = this.target.texture;
+            textureMemory.registerRenderTarget(this.target);
         }
 
         renderer.setRenderTarget(this.target);

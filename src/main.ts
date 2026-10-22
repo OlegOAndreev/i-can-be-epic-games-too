@@ -96,6 +96,7 @@ import { SpaceshipParts } from './spaceship-parts';
 import { Terrain, WATER_LEVEL, WORLD_HALF_SIZE, MINERAL_GOAL } from './terrain';
 import type { CylinderCollider } from './terrain';
 import { preloadSurfaceTextures, getSurfaceTextures } from './textures';
+import { textureMemory } from './texture-memory';
 import { PlayerCamera, THIRD_PERSON_DISTANCE } from './player-camera';
 import { UnderwaterEffect } from './underwater';
 import { WaterSplash } from './water-splash';
@@ -919,7 +920,7 @@ async function init(): Promise<void> {
     robotStory = loadRobotStory();
 
     try {
-        await texturesPromise;
+        textureMemory.registerAll(await texturesPromise);
     } catch (error) {
         throw new Error('Failed to load the surface textures.', { cause: error });
     }
@@ -1201,6 +1202,11 @@ async function init(): Promise<void> {
     applyDebugSettings();
     setupMenuSettings();
     refreshStaticShadows();
+    textureMemory.collectScene(view.scene);
+    textureMemory.collectScene(view.viewmodelScene);
+    if (staticSunShadow) {
+        textureMemory.registerShadowTarget(staticSunShadow.target);
+    }
 
     seedValue = getById<HTMLSpanElement>('seed-value');
     seedValue.textContent = String(worldSettings.seed);

@@ -1,8 +1,12 @@
 import type { PerspectiveCamera, WebGLRenderer } from 'three';
 
+import { textureMemory } from './texture-memory';
+
 const SAMPLE_SIZE = 120;
 // Text and graph refresh at 10 Hz; frame samples are still collected every frame.
 const DISPLAY_INTERVAL_MS = 100;
+// The memory API forces a collection, so ask for it rarely instead of every frame.
+const MEMORY_SAMPLE_INTERVAL_MS = 10_000;
 const GRAPH_WIDTH = SAMPLE_SIZE * 3;
 const GRAPH_HEIGHT = 48;
 const GRAPH_PLOT_TOP = 12;
@@ -20,9 +24,19 @@ interface FrameSample {
     gpu: number | null;
 }
 
+// performance.measureUserAgentSpecificMemory is not in TypeScript's DOM library yet.
+interface MemoryMeasurement {
+    bytes: number;
+}
+
+interface PerformanceWithMemory extends Performance {
+    measureUserAgentSpecificMemory?: () => Promise<MemoryMeasurement>;
+}
+
 // Lightweight on-screen performance graph. GPU time comes from EXT_disjoint_timer_query_webgl2
 // when the browser exposes it; on browsers without the extension the panel still reports CPU
-// timings, draw calls, and triangle counts. Measurements are only issued while the panel is visible.
+// timings, draw calls, and triangle counts. Memory comes from measureUserAgentSpecificMemory when
+// the page is cross-origin isolated. Measurements are only issued while the panel is visible.
 export class PerformanceGraph {
     readonly dom: HTMLPreElement;
     visible = false;
@@ -49,6 +63,10 @@ export class PerformanceGraph {
     private samples = new SampleBuffer<FrameSample>();
     private gpuSampleResolvers: Array<(value: number | null) => void> = [];
     private gpuSampleRequested = false;
+    private measureMemory: (() => Promise<MemoryMeasurement>) | null;
+    private memoryBytes: number | null = null;
+    private memoryPending = false;
+    private lastMemorySample = -MEMORY_SAMPLE_INTERVAL_MS;
 
     constructor(renderer: WebGLRenderer, camera: PerspectiveCamera) {
         this.renderer = renderer;
@@ -60,6 +78,8 @@ export class PerformanceGraph {
                 | DisjointTimerQueryExtension
                 | null
                 | undefined) ?? null;
+        const measureMemory = (performance as PerformanceWithMemory).measureUserAgentSpecificMemory;
+        this.measureMemory = measureMemory ? measureMemory.bind(performance) : null;
 
         this.dom = document.createElement('pre');
         this.dom.id = 'performance-graph-panel';
@@ -155,11 +175,17 @@ export class PerformanceGraph {
             this.activeQuery = null;
         }
 
-        if (this.visible && now - this.lastDisplay >= DISPLAY_INTERVAL_MS) {
-            this.lastDisplay = now;
-            this.collectGpuTime();
-            this.refresh();
-            this.drawGraph();
+        if (this.visible) {
+            if (this.measureMemory && now - this.lastMemorySample >= MEMORY_SAMPLE_INTERVAL_MS) {
+                this.lastMemorySample = now;
+                void this.sampleMemory();
+            }
+            if (now - this.lastDisplay >= DISPLAY_INTERVAL_MS) {
+                this.lastDisplay = now;
+                this.collectGpuTime();
+                this.refresh();
+                this.drawGraph();
+            }
         }
     }
 
@@ -230,6 +256,23 @@ export class PerformanceGraph {
         }
     }
 
+    private async sampleMemory(): Promise<void> {
+        const measure = this.measureMemory;
+        if (!measure || this.memoryPending) {
+            return;
+        }
+
+        this.memoryPending = true;
+        try {
+            this.memoryBytes = (await measure()).bytes;
+        } catch {
+            // Rejects when the page is not cross-origin isolated; stop asking instead of retrying.
+            this.measureMemory = null;
+        } finally {
+            this.memoryPending = false;
+        }
+    }
+
     private clearQueries(): void {
         const gl = this.gl;
         const extension = this.timerExtension;
@@ -272,6 +315,17 @@ export class PerformanceGraph {
                 : this.gpuTimingAvailable
                   ? 'gpu   ... ms  (waiting for query)'
                   : 'gpu   n/a     (timer query unavailable)';
+        const memoryLine =
+            this.memoryBytes !== null
+                ? `mem ${formatBytes(this.memoryBytes)}`
+                : this.measureMemory
+                  ? 'mem   ...     (measuring)'
+                  : 'mem   n/a     (measureUserAgentSpecificMemory unavailable)';
+        const textures = textureMemory.stats();
+        const textureLine =
+            `tex ${formatBytes(textures.storedBytes)} stored / ${formatBytes(textures.rawBytes)} uncompressed` +
+            `  (${textures.textureCount} tex)`;
+        const shadowLine = `shadow ${formatBytes(textures.shadowBytes)} (${textures.shadowCount} tex)`;
 
         this.textNode.nodeValue = [
             `${fps.toFixed(0).padStart(3)} fps  ${interval.toFixed(1).padStart(5)} ms avg  ` +
@@ -279,6 +333,9 @@ export class PerformanceGraph {
             `cpu ${frame.toFixed(1).padStart(5)} ms  (update ${update.toFixed(1)}, render ${render.toFixed(1)})`,
             `${gpuLine}  draws ${String(info.render.calls).padStart(3)}  tris ${formatCount(info.render.triangles)}`,
             `yaw ${String(yaw).padStart(3)}°  pitch ${String(pitch).padStart(3)}°  buffer ${width}×${height}`,
+            memoryLine,
+            textureLine,
+            shadowLine,
         ].join('\n');
     }
 
@@ -466,6 +523,10 @@ class SampleBuffer<T> {
 
 function normalizeDegrees(degrees: number): number {
     return Math.round(((degrees % 360) + 360) % 360);
+}
+
+function formatBytes(bytes: number): string {
+    return bytes >= 1_000_000_000 ? `${(bytes / 1_000_000_000).toFixed(2)} GB` : `${(bytes / 1_000_000).toFixed(1)} MB`;
 }
 
 function formatCount(value: number): string {

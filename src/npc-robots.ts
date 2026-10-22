@@ -29,6 +29,7 @@ import {
 import { mulberry32 } from './noise';
 import { PLAYER_HEIGHT } from './player';
 import type { CylinderCollider, Terrain } from './terrain';
+import { textureMemory } from './texture-memory';
 
 export interface DialogueLine {
     speaker: string;
@@ -578,6 +579,7 @@ export function renderSpeechTexture(text: string): CanvasTexture {
     paintSpeechText(context, canvas.width, canvas.height, text);
     const texture = new CanvasTexture(canvas);
     texture.colorSpace = SRGBColorSpace;
+    textureMemory.register(texture);
     return texture;
 }
 
