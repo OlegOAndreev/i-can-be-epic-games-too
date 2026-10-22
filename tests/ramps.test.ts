@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { RAMP_PARAPET_THICKNESS, WALL_THICKNESS } from '../src/megastructures';
+import { RAMP_PARAPET_THICKNESS, RAMP_THICKNESS, WALL_THICKNESS } from '../src/megastructures';
 import type { Ramp } from '../src/megastructures';
 import { PLAYER_RADIUS } from '../src/player';
+import { FIRST_PERSON_EYE_HEIGHT, NEAR_Z } from '../src/player-camera';
+import { rampSurfaceAt } from '../src/ramp-collision';
 import { stepPlayer, testPlayer, testTerrain } from './test-helpers';
 import type { Terrain } from '../src/terrain';
 
@@ -114,6 +116,115 @@ describe('megastructure ramps', () => {
                       ? position.x >= ramp.maxX + 0.3
                       : position.x <= ramp.minX - 0.3;
             expect(outside, `tower ${towerIndex}, ${ramp.axis} ramp`).toBe(true);
+        }
+    });
+
+    it('does not treat the first-person camera clearance as a ramp collision', () => {
+        const terrain = testTerrain(1234);
+        const player = testPlayer(terrain);
+
+        for (let towerIndex = 0; towerIndex < terrain.megastructures.towers.length; towerIndex++) {
+            const ramp = towerRamps(terrain, towerIndex)[1];
+            const rise = Math.abs(ramp.maxY - ramp.minY);
+            const run = ramp.axis === 'x' ? ramp.maxX - ramp.minX : ramp.maxZ - ramp.minZ;
+            const lowY = Math.min(ramp.minY, ramp.maxY);
+            // Put the underside 2.2 m above the floor: the real 2.0 m body clears it, while the
+            // first-person camera clearance (2.35 m) used to count it as a collision and shove the
+            // player sideways out of the ramp footprint.
+            const lowFraction = (2.2 + RAMP_THICKNESS) / rise;
+            const along =
+                (ramp.axis === 'x' ? ramp.minX : ramp.minZ) +
+                (ramp.minY < ramp.maxY ? lowFraction : 1 - lowFraction) * run;
+            const laneCentre = ramp.axis === 'x' ? (ramp.minZ + ramp.maxZ) / 2 : (ramp.minX + ramp.maxX) / 2;
+            const x = ramp.axis === 'x' ? along : laneCentre;
+            const z = ramp.axis === 'z' ? along : laneCentre;
+
+            expect(terrain.walkSurfaceAt(x, z, lowY + 0.1), `tower ${towerIndex}`).toBeCloseTo(lowY, 4);
+
+            player.respawn(terrain);
+            player.group.position.set(x, lowY, z);
+            const transverseBefore = ramp.axis === 'x' ? z : x;
+
+            // This first stationary frame used to move the player 3.2 m sideways.
+            player.update(1 / 60, { forward: 0, right: 0, jump: false }, 0, terrain, [], true);
+            expect(
+                ramp.axis === 'x' ? player.group.position.z : player.group.position.x,
+                `tower ${towerIndex}`,
+            ).toBeCloseTo(transverseBefore, 4);
+
+            // Walking up the slope, where clearance only grows, should track the ramp instead.
+            const highAtMax = ramp.maxY > ramp.minY;
+            const yaw = ramp.axis === 'x' ? (highAtMax ? -Math.PI / 2 : Math.PI / 2) : highAtMax ? Math.PI : 0;
+            const alongBefore = ramp.axis === 'x' ? player.group.position.x : player.group.position.z;
+            for (let frame = 0; frame < 10; frame++) {
+                player.update(1 / 60, { forward: 1, right: 0, jump: false }, yaw, terrain, [], true);
+            }
+            const alongAfter = ramp.axis === 'x' ? player.group.position.x : player.group.position.z;
+            const transverseAfter = ramp.axis === 'x' ? player.group.position.z : player.group.position.x;
+            expect(Math.abs(transverseAfter - transverseBefore)).toBeLessThan(0.2);
+            expect(Math.abs(alongAfter - alongBefore)).toBeGreaterThan(0.2);
+        }
+    });
+
+    it('stops at a low ramp underside instead of teleporting to the side', () => {
+        const terrain = testTerrain(1234);
+
+        for (const firstPerson of [false, true]) {
+            for (let towerIndex = 0; towerIndex < terrain.megastructures.towers.length; towerIndex++) {
+                const ramp = towerRamps(terrain, towerIndex)[1];
+                const rise = Math.abs(ramp.maxY - ramp.minY);
+                const run = ramp.axis === 'x' ? ramp.maxX - ramp.minX : ramp.maxZ - ramp.minZ;
+                const lowY = Math.min(ramp.minY, ramp.maxY);
+                const lowAtMin = ramp.maxY > ramp.minY;
+                const lowFraction = 3 / rise;
+                const startFraction = lowAtMin ? lowFraction : 1 - lowFraction;
+                const startAlong = (ramp.axis === 'x' ? ramp.minX : ramp.minZ) + startFraction * run;
+                const laneCentre = ramp.axis === 'x' ? (ramp.minZ + ramp.maxZ) / 2 : (ramp.minX + ramp.maxX) / 2;
+                const x = ramp.axis === 'x' ? startAlong : laneCentre;
+                const z = ramp.axis === 'z' ? startAlong : laneCentre;
+                // Walk toward the low end, where the underside eventually drops below head height.
+                const yaw = ramp.axis === 'x' ? (lowAtMin ? Math.PI / 2 : -Math.PI / 2) : lowAtMin ? 0 : Math.PI;
+
+                expect(terrain.walkSurfaceAt(x, z, lowY + 0.1), `tower ${towerIndex}`).toBeCloseTo(lowY, 4);
+
+                const player = testPlayer(terrain);
+                player.respawn(terrain);
+                player.group.position.set(x, lowY, z);
+                const start = player.group.position.clone();
+                const transverseStart = ramp.axis === 'x' ? z : x;
+
+                let maxStep = 0;
+                let maxLateral = 0;
+                const previous = player.group.position.clone();
+                for (let frame = 0; frame < 60; frame++) {
+                    player.update(1 / 60, { forward: 1, right: 0, jump: false }, yaw, terrain, [], firstPerson);
+                    maxStep = Math.max(maxStep, player.group.position.distanceTo(previous));
+                    previous.copy(player.group.position);
+                    maxLateral = Math.max(
+                        maxLateral,
+                        Math.abs(
+                            (ramp.axis === 'x' ? player.group.position.z : player.group.position.x) - transverseStart,
+                        ),
+                    );
+                }
+
+                expect(maxStep, `tower ${towerIndex}, ${firstPerson ? 'first' : 'third'} person`).toBeLessThan(0.25);
+                expect(maxLateral, `tower ${towerIndex}, ${firstPerson ? 'first' : 'third'} person`).toBeLessThan(0.05);
+                const alongStart = ramp.axis === 'x' ? start.x : start.z;
+                const alongEnd = ramp.axis === 'x' ? player.group.position.x : player.group.position.z;
+                expect(
+                    Math.abs(alongEnd - alongStart),
+                    `tower ${towerIndex}, ${firstPerson ? 'first' : 'third'} person`,
+                ).toBeGreaterThan(0.3);
+                if (firstPerson) {
+                    // The whole near plane stays below the underside at the stop, not just the eye.
+                    const finalSurface = rampSurfaceAt(ramp, player.group.position.x, player.group.position.z);
+                    const eyeY = player.group.position.y + FIRST_PERSON_EYE_HEIGHT;
+                    expect(finalSurface - RAMP_THICKNESS - eyeY, `tower ${towerIndex}`).toBeGreaterThanOrEqual(
+                        NEAR_Z + 0.1,
+                    );
+                }
+            }
         }
     });
 

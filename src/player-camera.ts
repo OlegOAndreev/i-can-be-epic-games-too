@@ -23,6 +23,9 @@ const FIRST_PERSON_SNAP_DISTANCE = 2.5;
 const FIRST_PERSON_KNOCKDOWN_EYE_HEIGHT = 0.5;
 const FIRST_PERSON_KNOCKDOWN_PITCH = 0.65;
 export const THIRD_PERSON_DISTANCE = 7.2;
+// Shared with main.ts when constructing the walking camera. First person also uses it to keep the
+// eye a full near plane below low ceilings and ramp undersides.
+export const NEAR_Z = 0.3;
 // When the player is in a tight space (for example inside a tower), the camera may need to move
 // right up to the character instead of being pushed through a wall.
 const MIN_OCCLUDED_DISTANCE = 0;
@@ -32,8 +35,13 @@ const MIN_OCCLUDED_DISTANCE = 0;
 const OCCLUSION_STEP = 0.75;
 // 0.75 / 2^5 leaves ~2 cm of distance quantisation, well below the visible threshold.
 const OCCLUSION_REFINE_STEPS = 5;
-// Keeps the near plane and the sides of the view frustum clear of walls.
-const CAMERA_COLLISION_RADIUS = 0.35;
+// Minimum clearance kept from walls. The effective radius grows with the near plane and FOV; see
+// collisionRadius().
+const CAMERA_MIN_COLLISION_RADIUS = 0.35;
+// A little air between the expanded near plane and the wall.
+const CAMERA_NEAR_PLANE_MARGIN = 0.08;
+// Keeps the camera above the ground even when the near plane's bottom edge is pitched down.
+const CAMERA_GROUND_MARGIN = 0.15;
 // While the player and view are nearly static the previous clear distance is still valid; reusing
 // it avoids marching the same unobstructed ray every frame. The direction must match exactly:
 // a fraction of a degree is enough to swing the hit point metres along a wall that is seen at a
@@ -60,6 +68,7 @@ export class PlayerCamera {
     private effectiveDistance = this.distance;
     private cachedOcclusionDistance = this.distance;
     private cachedOcclusionLength = this.distance;
+    private cachedOcclusionRadius = 0;
     private readonly cachedOcclusionTarget = new Vector3();
     private readonly cachedOcclusionDirection = new Vector3();
     private hasOcclusionCache = false;
@@ -171,7 +180,10 @@ export class PlayerCamera {
 
         // Follow the player below the water line; the walk surface already includes the seabed.
         const floor = terrain.walkSurfaceAt(this.camera.position.x, this.camera.position.z, this.camera.position.y);
-        this.camera.position.y = Math.max(this.camera.position.y, floor + 0.35);
+        this.camera.position.y = Math.max(
+            this.camera.position.y,
+            floor + Math.max(0.35, this.camera.near + CAMERA_GROUND_MARGIN),
+        );
         this.effectiveDistance = this.camera.position.distanceTo(this.smoothedTarget);
 
         // Aim along the requested yaw/pitch instead of back at the target. When looking up, the
@@ -189,10 +201,12 @@ export class PlayerCamera {
     private resolveOcclusion(target: Vector3, offset: Vector3, terrain: Terrain): number {
         const fullDistance = offset.length();
         offset.normalize();
+        const collisionRadius = this.collisionRadius();
 
         if (
             this.hasOcclusionCache &&
             Math.abs(fullDistance - this.cachedOcclusionLength) < OCCLUSION_CACHE_LENGTH_EPSILON &&
+            Math.abs(collisionRadius - this.cachedOcclusionRadius) < 1e-4 &&
             this.cachedOcclusionTarget.distanceToSquared(target) < OCCLUSION_CACHE_MOVE_SQUARED &&
             this.cachedOcclusionDirection.dot(offset) > OCCLUSION_CACHE_DIRECTION_DOT
         ) {
@@ -204,7 +218,7 @@ export class PlayerCamera {
             const y = target.y + offset.y * distance;
             const z = target.z + offset.z * distance;
             const ground = terrain.heightAt(x, z) + 0.3;
-            return y < ground || terrain.intersectsStructure(x, y, z, CAMERA_COLLISION_RADIUS);
+            return y < ground || terrain.intersectsStructure(x, y, z, collisionRadius);
         };
 
         const steps = Math.max(1, Math.ceil(fullDistance / OCCLUSION_STEP));
@@ -225,18 +239,41 @@ export class PlayerCamera {
                         free = middle;
                     }
                 }
-                return this.cacheOcclusion(target, offset, fullDistance, Math.max(MIN_OCCLUDED_DISTANCE, free - 0.05));
+                return this.cacheOcclusion(
+                    target,
+                    offset,
+                    fullDistance,
+                    collisionRadius,
+                    Math.max(MIN_OCCLUDED_DISTANCE, free - 0.05),
+                );
             }
             lastFreeDistance = distance;
         }
 
-        return this.cacheOcclusion(target, offset, fullDistance, fullDistance);
+        return this.cacheOcclusion(target, offset, fullDistance, collisionRadius, fullDistance);
     }
 
-    private cacheOcclusion(target: Vector3, direction: Vector3, fullDistance: number, allowedDistance: number): number {
+    // Distance from the camera centre to the farthest near-plane corner. Keeping walls outside this
+    // radius means no part of the near plane can be clipped by them, including at wide FOV.
+    private collisionRadius(): number {
+        const tanHalfFov = Math.tan(MathUtils.degToRad(this.camera.fov) * 0.5);
+        const aspect = this.camera.aspect;
+        const near = this.camera.near;
+        const nearPlaneRadius = near * Math.sqrt(1 + tanHalfFov * tanHalfFov * (1 + aspect * aspect));
+        return Math.max(CAMERA_MIN_COLLISION_RADIUS, nearPlaneRadius + CAMERA_NEAR_PLANE_MARGIN);
+    }
+
+    private cacheOcclusion(
+        target: Vector3,
+        direction: Vector3,
+        fullDistance: number,
+        collisionRadius: number,
+        allowedDistance: number,
+    ): number {
         this.cachedOcclusionTarget.copy(target);
         this.cachedOcclusionDirection.copy(direction);
         this.cachedOcclusionLength = fullDistance;
+        this.cachedOcclusionRadius = collisionRadius;
         this.cachedOcclusionDistance = allowedDistance;
         this.hasOcclusionCache = true;
         return allowedDistance;

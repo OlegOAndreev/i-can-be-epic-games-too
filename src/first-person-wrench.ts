@@ -25,13 +25,15 @@ import { clamp, smoothstep, wrapAngle } from './math-utils';
 // The viewmodel hangs off the camera instead of the robot's hand. The third-person wrench points
 // straight down from the arm, which leaves it out of view in first person, so this one sits low
 // on the left with the head raised toward the centre and part of the gripping arm in frame.
-export const FIRST_PERSON_WRENCH_SCALE = 0.58;
+export const FIRST_PERSON_WRENCH_SCALE = 0.575;
 // 1.4x the third-person length. Only the length is stretched; the head and handle stay as wide as
 // the hand-held tool so it still reads as the same wrench.
 export const FIRST_PERSON_WRENCH_LENGTH_SCALE = 0.9 * 1.4;
 const BASE_X = -0.45;
 const BASE_Y = -0.5;
-const BASE_Z = -0.7;
+// Slightly farther from the lens than the original pose so the near plane keeps a clear margin
+// from the wrench during the closest part of the swing.
+const BASE_Z = -0.75;
 const BASE_PITCH = -0.22;
 const BASE_YAW = -0.38;
 const BASE_ROLL = Math.PI - 0.12;
@@ -126,7 +128,7 @@ const WRENCH_BEVEL_SEGMENTS = 1;
 // The handle and grip get a softer round-over than the head and jaws.
 const HANDLE_BEVEL_RADIUS = 0.016;
 // The open ends of the jaws are slightly narrower than where they meet the head.
-const JAW_TIP_SCALE = 0.7;
+const JAW_TIP_SCALE = 0.9;
 // The steel shares one material, so each part samples its own quarter of a four-pattern wear
 // atlas. Otherwise identical parts such as the two jaws would show the same scratches. Keep in
 // sync with WRENCH_WEAR_SIZE in scripts/generate-textures.ts.
@@ -289,7 +291,7 @@ export class FirstPersonWrench {
         this.fillLight = new DirectionalLight(FILL_LIGHT_COLOR, FILL_LIGHT_INTENSITY);
         this.fillLight.name = 'first-person-wrench-fill';
         this.fillLight.position.set(-0.7, 0.6, 0.4);
-        this.fillLight.target.position.set(-0.45, -0.45, -0.7);
+        this.fillLight.target.position.set(-0.45, -0.45, -0.75);
         this.fillLight.castShadow = false;
         this.attachment.add(this.fillLight, this.fillLight.target);
 
@@ -416,7 +418,7 @@ export class FirstPersonWrench {
         const pitchRate = dt > 1e-5 ? (frame.cameraPitch - this.previousCameraPitch) / dt : 0;
         this.previousCameraYaw = frame.cameraYaw;
         this.previousCameraPitch = frame.cameraPitch;
-        const targetLagYaw = side * clamp(-yawRate * VIEW_LAG_SPEED, -VIEW_LAG_YAW_LIMIT, VIEW_LAG_YAW_LIMIT);
+        const targetLagYaw = clamp(-yawRate * VIEW_LAG_SPEED, -VIEW_LAG_YAW_LIMIT, VIEW_LAG_YAW_LIMIT);
         const targetLagPitch = clamp(-pitchRate * VIEW_LAG_SPEED, -VIEW_LAG_PITCH_LIMIT, VIEW_LAG_PITCH_LIMIT);
         let remaining = dt;
         while (remaining > 0) {

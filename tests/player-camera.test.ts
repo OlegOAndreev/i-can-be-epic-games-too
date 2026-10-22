@@ -165,6 +165,23 @@ describe('PlayerCamera', () => {
         expect(terrain.intersectsStructure(camera.position.x, camera.position.y, camera.position.z)).toBe(false);
     });
 
+    it('keeps the whole near plane clear of a wall at a wide FOV', () => {
+        const wallZ = 5;
+        const terrain = fakeTerrain({
+            walkSurfaceAt: () => -1000,
+            heightAt: () => -1000,
+            intersectsStructure: (_x: number, _y: number, z: number, radius = 0) => z > wallZ - radius,
+        });
+
+        // A 110-degree lens with a 0.3 m near plane makes the near-plane corners reach about 1 m.
+        const camera = new PerspectiveCamera(110, 2, 0.3, 1000);
+        const controller = new PlayerCamera(camera);
+        controller.pitch = 0;
+        controller.update(1 / 60, new Vector3(0, 10, 2), terrain);
+
+        expect(camera.position.z).toBeLessThan(wallZ - 1);
+    });
+
     it('moves the camera distance continuously while approaching a wall', () => {
         const wallZ = 5;
         // The wall is an infinite plane; the camera collision radius is measured against it.

@@ -52,7 +52,7 @@ describe('first-person wrench', () => {
     it('pops the tool into view and then holds it in front of the camera', () => {
         const wrench = new FirstPersonWrench();
         wrench.update(0, RESTING);
-        expect(wrench.group.position).toMatchObject({ x: -0.45, y: -0.5, z: -0.7 });
+        expect(wrench.group.position).toMatchObject({ x: -0.45, y: -0.5, z: -0.75 });
 
         const model = wrench.group.getObjectByName('first-person-wrench-model');
         expect(model?.scale.x).toBeCloseTo(FIRST_PERSON_WRENCH_SCALE * 0.01);
@@ -299,7 +299,7 @@ describe('first-person wrench', () => {
         const wrench = new FirstPersonWrench();
         wrench.setLeftHanded(false);
         wrench.update(0, RESTING);
-        expect(wrench.group.position).toMatchObject({ x: 0.45, y: -0.5, z: -0.7 });
+        expect(wrench.group.position).toMatchObject({ x: 0.45, y: -0.5, z: -0.75 });
         expect(wrench.group.rotation.y).toBeCloseTo(0.38, 5);
         expect(wrench.group.rotation.z).toBeCloseTo(-(Math.PI - 0.12), 5);
     });
@@ -413,6 +413,19 @@ describe('first-person wrench', () => {
             wrench.update(1 / 60, { ...RESTING, cameraYaw: 0.5 });
         }
         expect(wrench.attachment.rotation.y).toBeCloseTo(0, 2);
+    });
+
+    it('trails a yaw change in the same camera-space direction with either hand', () => {
+        for (const leftHanded of [true, false]) {
+            const wrench = new FirstPersonWrench();
+            wrench.setLeftHanded(leftHanded);
+            wrench.update(0, RESTING);
+
+            // A positive camera-yaw rate must always leave the tool rotated the other way. The
+            // hand mirror changes the pose, not the direction the tool trails the head.
+            wrench.update(1 / 60, { ...RESTING, cameraYaw: 0.5 });
+            expect(wrench.attachment.rotation.y, leftHanded ? 'left hand' : 'right hand').toBeLessThan(0);
+        }
     });
 
     it('trails a pitch change as well as a yaw change', () => {

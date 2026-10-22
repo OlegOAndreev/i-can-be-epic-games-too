@@ -19,7 +19,8 @@ import {
     WINDOW_SILL_HEIGHT,
 } from '../src/megastructures';
 import type { CrownSpiral, MegastructureStorey } from '../src/megastructures';
-import { PLAYER_HEIGHT } from '../src/player';
+import { FIRST_PERSON_CEILING_CLEARANCE, PLAYER_HEIGHT } from '../src/player';
+import { FIRST_PERSON_EYE_HEIGHT } from '../src/player-camera';
 import { findStructureBlockingPoint } from '../src/ramp-collision';
 import { stepPlayer, testPlayer, testTerrain } from './test-helpers';
 import { getSurfaceTextures } from '../src/textures';
@@ -918,6 +919,28 @@ describe('megastructures', () => {
         }
 
         expect(highestHead).toBeLessThanOrEqual(slab.baseY + 1e-6);
+
+        // First person also keeps the camera's near plane off the slab, not just the head.
+        const firstPersonPlayer = testPlayer(terrain, { moveSpeed: 5, jumpSpeed: 12, gravity: 26 });
+        firstPersonPlayer.restoreSnapshot({
+            x,
+            y: slab.baseY - 3.2,
+            z,
+            facing: 0,
+            speed: 0,
+            verticalSpeed: 10,
+            grounded: false,
+        });
+
+        let highestEye = -Infinity;
+        for (let frame = 0; frame < 120; frame++) {
+            firstPersonPlayer.update(1 / 60, { forward: 0, right: 0, jump: false }, 0, terrain, [], true);
+            highestEye = Math.max(highestEye, firstPersonPlayer.group.position.y + FIRST_PERSON_EYE_HEIGHT);
+        }
+
+        const minimumEyeClearance = FIRST_PERSON_CEILING_CLEARANCE + (PLAYER_HEIGHT - FIRST_PERSON_EYE_HEIGHT);
+        expect(highestEye).toBeLessThanOrEqual(slab.baseY - minimumEyeClearance + 1e-6);
+        expect(highestEye).toBeGreaterThan(slab.baseY - minimumEyeClearance - 0.05);
     });
 
     it('detects metal decks and tower interiors for footsteps and reverb', () => {

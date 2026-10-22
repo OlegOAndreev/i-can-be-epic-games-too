@@ -31,6 +31,7 @@ import {
 } from './player-model';
 import { RAMP_STEP_HEIGHT, WATER_LEVEL, WORLD_HALF_SIZE } from './terrain';
 import type { CylinderCollider, Terrain } from './terrain';
+import { rampsBlockBody } from './ramp-collision';
 import { ShockBurst } from './shock-burst';
 
 export interface PlayerSettings {
@@ -94,6 +95,10 @@ const JUMP_LANDING_GRACE_SECONDS: Record<Difficulty, number> = {
 };
 export const PLAYER_RADIUS = 0.5;
 export const PLAYER_HEIGHT = 2.0;
+// The first-person eye sits 0.1 m below the top of the collision capsule. Stop the body this much
+// short of ceilings and ramp undersides in first person so the near plane cannot cut into them.
+// This makes the effective first-person ceiling height 2.45 m and leaves the eye 0.55 m clear.
+export const FIRST_PERSON_CEILING_CLEARANCE = 0.45;
 // `position` is the robot's feet. Once the whole body is below the water line, surface splashes and
 // wake foam above it would be out of place.
 export function isFullySubmerged(position: Vector3): boolean {
@@ -888,6 +893,12 @@ export class Player {
             }
         }
 
+        // First person rides at eye height rather than at the crown of the capsule, so stop the head
+        // short of ceilings and ramp undersides. This only affects the upward stop: horizontal
+        // collision keeps the real body height, so a ramp that physically fits can be walked under
+        // without the camera margin pushing the body sideways out of its footprint.
+        const ceilingHeight = PLAYER_HEIGHT + (firstPerson && !knockedDown ? FIRST_PERSON_CEILING_CLEARANCE : 0);
+
         // Petting is a short scripted gesture. A knockdown interrupts it without awarding the
         // follow-up, which is why the completion callback lives here rather than at the input site.
         if (this.petElapsed >= 0) {
@@ -948,8 +959,8 @@ export class Player {
         // Move horizontally, but refuse to walk up slopes that are too steep to be a path. Ramps
         // get a taller allowance because their low edge can sit above the ground it is entered from.
         const limit = WORLD_HALF_SIZE - 16;
-        const nextX = Math.min(limit, Math.max(-limit, position.x + (this.velocity.x + shockKnockbackX) * dt));
-        const nextZ = Math.min(limit, Math.max(-limit, position.z + (this.velocity.z + shockKnockbackZ) * dt));
+        let nextX = Math.min(limit, Math.max(-limit, position.x + (this.velocity.x + shockKnockbackX) * dt));
+        let nextZ = Math.min(limit, Math.max(-limit, position.z + (this.velocity.z + shockKnockbackZ) * dt));
         const stepDistance = Math.hypot(nextX - position.x, nextZ - position.z);
         const currentGround = terrain.walkSurfaceAt(position.x, position.z, position.y);
         const groundStepHeight = this.grounded ? RAMP_STEP_HEIGHT : undefined;
@@ -961,6 +972,34 @@ export class Player {
         const clearsNextGround = !this.grounded && position.y >= nextGround;
 
         if (nextGround - currentGround <= maxRise || clearsNextGround) {
+            // A ramp is the floor when it is walked on, but its low underside is a solid obstacle.
+            // Resolve that before moving, so a blocked step stops or slides along the ramp instead
+            // of letting the post-move push-out shove the body to the nearest edge of the ramp
+            // footprint. First person blocks at the same eye-safe height as the jump ceiling stop,
+            // so the near plane and its corners stay below a sloped underside. If the body is
+            // already overlapping, let resolveCollisions recover it.
+            const rampBlockHeight = firstPerson && !knockedDown ? ceilingHeight : PLAYER_HEIGHT;
+            const rampBlocksAt = (x: number, z: number): boolean =>
+                rampsBlockBody(
+                    terrain.megastructures.ramps,
+                    x,
+                    z,
+                    position.y,
+                    rampBlockHeight,
+                    PLAYER_RADIUS,
+                    RAMP_STEP_HEIGHT,
+                );
+            if (!rampBlocksAt(position.x, position.z) && rampBlocksAt(nextX, nextZ)) {
+                if (!rampBlocksAt(nextX, position.z)) {
+                    nextZ = position.z;
+                } else if (!rampBlocksAt(position.x, nextZ)) {
+                    nextX = position.x;
+                } else {
+                    nextX = position.x;
+                    nextZ = position.z;
+                }
+            }
+
             position.x = nextX;
             position.z = nextZ;
 
@@ -1028,15 +1067,15 @@ export class Player {
         }
 
         if (!this.grounded) {
-            const previousHead = position.y + PLAYER_HEIGHT;
+            const previousHead = position.y + ceilingHeight;
             this.verticalVelocity -= this.settings.gravity * dt;
             position.y += this.verticalVelocity * dt;
 
             // Stop the head at the underside of ledges and floors instead of popping through them.
             if (this.verticalVelocity > 0) {
                 const ceiling = terrain.ceilingAt(position.x, position.z, previousHead, PLAYER_RADIUS);
-                if (position.y + PLAYER_HEIGHT > ceiling) {
-                    position.y = ceiling - PLAYER_HEIGHT;
+                if (position.y + ceilingHeight > ceiling) {
+                    position.y = ceiling - ceilingHeight;
                     this.verticalVelocity = 0;
                 }
             }

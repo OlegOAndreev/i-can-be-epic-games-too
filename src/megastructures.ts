@@ -40,8 +40,11 @@ const SITE_COUNT = 6;
 const SITE_ATTEMPTS = 600;
 const SITE_RADIUS = 48;
 export const WALL_THICKNESS = 1.8;
-const FLOOR_THICKNESS = 0.55;
-export const RAMP_THICKNESS = 0.45;
+// Kept thin so the ceiling under a ramp opening leaves room for the first-person camera.
+const FLOOR_THICKNESS = 0.4;
+// The walk surface stays on top; this only hangs below it, so a thinner deck raises the underside
+// and gives the first-person camera more headroom when walking beneath a flight.
+export const RAMP_THICKNESS = 0.3;
 const RAMP_WIDTH = 5.4;
 // Low side rails along the straight ramps, high enough to read as a barrier without blocking the view.
 export const RAMP_PARAPET_HEIGHT = 0.7;

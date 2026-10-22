@@ -18,8 +18,10 @@ export function rampSurfaceAt(ramp: Ramp, x: number, z: number): number {
     return ramp.minY + ((ramp.maxY - ramp.minY) * along) / Math.max(run, 0.001);
 }
 
-// True when an enemy body at this position would overlap a ramp. The ramp's full vertical envelope is
-// considered, including its side rails, so robots cannot walk over the deck or clip through its edge.
+// True when a body at this position would overlap a ramp. The ramp's full vertical envelope is
+// considered, including its side rails, so robots cannot walk over the deck or clip through its
+// edge. `stepHeight` lets a walker that is standing on or stepping onto a flight treat that flight
+// as the floor instead of an obstacle.
 export function rampsBlockBody(
     ramps: readonly Ramp[],
     x: number,
@@ -27,6 +29,7 @@ export function rampsBlockBody(
     feetY: number,
     height: number,
     radius: number,
+    stepHeight = 0,
 ): boolean {
     const headY = feetY + height;
 
@@ -36,6 +39,9 @@ export function rampsBlockBody(
         }
 
         const surfaceY = rampSurfaceAt(ramp, clamp(x, ramp.minX, ramp.maxX), clamp(z, ramp.minZ, ramp.maxZ));
+        if (stepHeight > 0 && feetY >= surfaceY - stepHeight) {
+            continue;
+        }
         if (surfaceY - RAMP_THICKNESS <= headY && surfaceY + RAMP_PARAPET_HEIGHT >= feetY) {
             return true;
         }
