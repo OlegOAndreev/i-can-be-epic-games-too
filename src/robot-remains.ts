@@ -743,7 +743,7 @@ export class RobotRemains {
         this.sweeperServoTimer -= dt;
         if (this.sweeperServoTimer <= 0) {
             this.sweeperServoTimer = 1.7 + (this.elapsed % 0.7);
-            this.audio.playRobotBeeps(54, [0, 0.07, 0.15], 0.055, 0x51ed270b, this.sweeper.position);
+            this.audio.playRobotBeeps(54, [0, 0.07, 0.15], 0.055, 0x51ed270b, this.sweeper.position, 'sweeper');
         }
     }
 
@@ -771,7 +771,7 @@ export class RobotRemains {
             const distance = Math.hypot(playerPosition.x - speech.position.x, playerPosition.z - speech.position.z);
             if (distance < MAX_TRIGGER_DISTANCE && Math.abs(playerPosition.y - speech.position.y) < 5) {
                 this.claimed.add('tidewalker');
-                this.speak(speech, t('remains.tidewalker', '…thousand and one… still counting…'), 88, true);
+                this.speak(speech, t('remains.tidewalker', '…thousand and one… still counting…'), 88, true, 'tidewalker');
             }
         }
 
@@ -801,6 +801,7 @@ export class RobotRemains {
                     t('remains.drowned', 'We opened the deep core because it sang. It was not a song. It was a count.'),
                     152,
                     true,
+                    'drowned',
                 );
             }
         }
@@ -822,7 +823,7 @@ export class RobotRemains {
             const distance = Math.hypot(playerPosition.x - speech.position.x, playerPosition.z - speech.position.z);
             if (distance < MAX_TRIGGER_DISTANCE && Math.abs(playerPosition.y - speech.position.y) < 4) {
                 this.claimed.add('sleeper');
-                this.speak(speech, t('remains.sleeper', 'MIRA // BATTERY REMOVED BY OWNER'), 0, false);
+                this.speak(speech, t('remains.sleeper', 'MIRA // BATTERY REMOVED BY OWNER'), 0, false, 'sleeper');
             }
         }
     }
@@ -915,7 +916,7 @@ export class RobotRemains {
         return state;
     }
 
-    private speak(speech: SpeechState, text: string, pitch: number, beep: boolean): void {
+    private speak(speech: SpeechState, text: string, pitch: number, beep: boolean, source: string): void {
         speech.beeps?.stop();
         speech.beeps = null;
         speech.label.show(text);
@@ -929,7 +930,7 @@ export class RobotRemains {
             for (let index = 1; index <= count; index++) {
                 times.push((index / count) * speech.remaining * 0.9);
             }
-            speech.beeps = this.audio.playRobotBeeps(pitch, times, 0.22, words * 977 + pitch, speech.position);
+            speech.beeps = this.audio.playRobotBeeps(pitch, times, 0.22, words * 977 + pitch, speech.position, source);
         }
     }
 

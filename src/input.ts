@@ -40,6 +40,7 @@ export interface InputCallbacks {
     onScreenshot?: () => void;
     onToggleView?: () => void;
     onTogglePerformanceGraph?: () => void;
+    onLogAudio?: () => void;
     onToggleMusic?: () => void;
     onToggleMap?: () => void;
     onTeleport?: () => void;
@@ -271,6 +272,13 @@ export class Input {
             event.preventDefault();
             if (!event.repeat && this.pointerLocked) {
                 this.callbacks.onGoToCrazies?.();
+            }
+            return;
+        }
+        if (event.code === 'F4') {
+            event.preventDefault();
+            if (!event.repeat) {
+                this.callbacks.onLogAudio?.();
             }
             return;
         }

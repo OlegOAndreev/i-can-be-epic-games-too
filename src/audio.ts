@@ -110,6 +110,34 @@ export interface MusicPlaybackState {
     offset: number;
 }
 
+// World-space point copied out of a Three.js vector, so the audio layer stays free of a runtime
+// Three.js import.
+export interface SoundPoint {
+    x: number;
+    y: number;
+    z: number;
+}
+
+interface TrackedSound {
+    source: string;
+    detail: string;
+    gain: number;
+    position: SoundPoint | null;
+    start: number;
+    end: number;
+}
+
+// One source that is currently scheduled or sounding. Positional entries carry the world-space
+// origin and its distance from the listener at snapshot time.
+export interface ActiveAudioInfo {
+    source: string;
+    detail: string;
+    gain: number;
+    position: SoundPoint | null;
+    distance: number | null;
+    age: number;
+}
+
 // A cancellable robot voice line. Each handle owns the oscillators and filters it scheduled so a
 // new dialogue line, pause, or dispose can silence the old one immediately.
 export interface RobotBeepHandle {
@@ -480,6 +508,15 @@ export class GameAudio {
     private insideStructure = false;
     private underwater = false;
     private paused = false;
+    // Debug bookkeeping behind the performance panel and the F4 dump. Every scheduled sound is
+    // registered here with its world position so an unexpected voice can be traced to its owner.
+    private readonly listenerPosition: SoundPoint = { x: 0, y: 0, z: 0 };
+    private readonly activeSounds = new Map<number, TrackedSound>();
+    private nextActiveSoundId = 1;
+    private structureBuzzSoundId = 0;
+    private shipEngineSoundId = 0;
+    private fallWindSoundId = 0;
+    private readonly structureHumSoundIds = new Map<number, number>();
 
     get started(): boolean {
         return this.context !== null;
@@ -593,6 +630,10 @@ export class GameAudio {
             return;
         }
 
+        this.listenerPosition.x = position.x;
+        this.listenerPosition.y = position.y;
+        this.listenerPosition.z = position.z;
+
         const listener = this.context.listener;
         // Safari and some older engines only expose the legacy setters, not the AudioParams.
         if (listener.positionX) {
@@ -608,6 +649,98 @@ export class GameAudio {
         } else {
             listener.setPosition(position.x, position.y, position.z);
             listener.setOrientation(forward.x, forward.y, forward.z, 0, 1, 0);
+        }
+    }
+
+    // Snapshot of every source that is still scheduled or sounding, nearest first. The performance
+    // panel and the F4 dump use this to identify which system emitted an unexpected sound.
+    getActiveSounds(): ActiveAudioInfo[] {
+        const now = this.context?.currentTime ?? 0;
+        this.pruneActiveSounds(now);
+        const entries: ActiveAudioInfo[] = [];
+        for (const sound of this.activeSounds.values()) {
+            const distance = sound.position
+                ? Math.hypot(
+                      sound.position.x - this.listenerPosition.x,
+                      sound.position.y - this.listenerPosition.y,
+                      sound.position.z - this.listenerPosition.z,
+                  )
+                : null;
+            entries.push({
+                source: sound.source,
+                detail: sound.detail,
+                gain: sound.gain,
+                position: sound.position ? { ...sound.position } : null,
+                distance,
+                age: Math.max(0, now - sound.start),
+            });
+        }
+        entries.sort((a, b) => {
+            const distanceA = a.distance ?? Number.POSITIVE_INFINITY;
+            const distanceB = b.distance ?? Number.POSITIVE_INFINITY;
+            return distanceA - distanceB || a.source.localeCompare(b.source);
+        });
+        return entries;
+    }
+
+    // Full audio dump for the debug console. Keep the panel short and use this when its list is
+    // truncated or when the exact world coordinates are needed.
+    logActiveSounds(): void {
+        const entries = this.getActiveSounds();
+        if (entries.length === 0) {
+            console.info('[audio] nothing is playing');
+            return;
+        }
+        console.info(`[audio] ${entries.length} source(s) playing`);
+        console.table(
+            entries.map((entry) => ({
+                source: entry.source,
+                detail: entry.detail,
+                gain: Number(entry.gain.toFixed(3)),
+                distance: entry.distance === null ? 'global' : `${entry.distance.toFixed(1)} m`,
+                x: entry.position ? Number(entry.position.x.toFixed(1)) : null,
+                y: entry.position ? Number(entry.position.y.toFixed(1)) : null,
+                z: entry.position ? Number(entry.position.z.toFixed(1)) : null,
+                age: `${entry.age.toFixed(1)} s`,
+            })),
+        );
+    }
+
+    private trackSound(
+        source: string,
+        detail: string,
+        gain: number,
+        position: Vector3 | null,
+        duration: number,
+    ): number {
+        if (!this.context) {
+            return 0;
+        }
+        const now = this.context.currentTime;
+        this.pruneActiveSounds(now);
+        const id = this.nextActiveSoundId++;
+        this.activeSounds.set(id, {
+            source,
+            detail,
+            gain,
+            position: position ? { x: position.x, y: position.y, z: position.z } : null,
+            start: now,
+            end: Number.isFinite(duration) ? now + Math.max(0, duration) : Number.POSITIVE_INFINITY,
+        });
+        return id;
+    }
+
+    private releaseSound(id: number): void {
+        if (id !== 0) {
+            this.activeSounds.delete(id);
+        }
+    }
+
+    private pruneActiveSounds(now: number): void {
+        for (const [id, sound] of this.activeSounds) {
+            if (sound.end <= now) {
+                this.activeSounds.delete(id);
+            }
         }
     }
 
@@ -651,7 +784,7 @@ export class GameAudio {
 
         const buffer = this.footstepBuffers[this.footstepIndex];
         this.footstepIndex = (this.footstepIndex + 1) % this.footstepBuffers.length;
-        this.playFootstepBuffer(buffer, side, gain, muffled);
+        this.playFootstepBuffer(buffer, side, gain, muffled, 'footstep');
     }
 
     playMetalFootstep(side: number, gain = 0.1): void {
@@ -661,15 +794,15 @@ export class GameAudio {
 
         const buffer = this.metalFootstepBuffers[this.metalFootstepIndex];
         this.metalFootstepIndex = (this.metalFootstepIndex + 1) % this.metalFootstepBuffers.length;
-        this.playFootstepBuffer(buffer, side, gain, false);
+        this.playFootstepBuffer(buffer, side, gain, false, 'metal-footstep');
     }
 
     playLaser(position: Vector3): void {
-        this.playBuffer(this.randomBuffer(this.laserBuffers), position, 0.35, 0.94 + Math.random() * 0.12);
+        this.playBuffer(this.randomBuffer(this.laserBuffers), position, 0.35, 0.94 + Math.random() * 0.12, 'laser');
     }
 
     playPlayerHit(): void {
-        this.playBuffer(this.randomBuffer(this.playerHitBuffers), null, 0.3, 0.96 + Math.random() * 0.08);
+        this.playBuffer(this.randomBuffer(this.playerHitBuffers), null, 0.3, 0.96 + Math.random() * 0.08, 'player-hit');
     }
 
     // The player's launch sound. The air jump is pitched up slightly so chaining the two jumps
@@ -680,6 +813,7 @@ export class GameAudio {
             null,
             (doubleJump ? 0.45 : 0.38) * 0.3 * 0.67,
             0.95 + Math.random() * 0.1 + (doubleJump ? 0.12 : 0),
+            doubleJump ? 'jump-double' : 'jump',
         );
     }
 
@@ -687,13 +821,19 @@ export class GameAudio {
     // killing blow reaches about 1.55x. Charged hits pass a gain scale of 2 to land heavier.
     playEnemyHit(position: Vector3, health: number, gainScale = 1): void {
         const rate = 0.9 + (1 - clamp(health, 0, 1)) * 0.65 + Math.random() * 0.04;
-        this.playBuffer(this.randomBuffer(this.enemyHitBuffers), position, 2.5 * gainScale, rate);
+        this.playBuffer(this.randomBuffer(this.enemyHitBuffers), position, 2.5 * gainScale, rate, 'enemy-hit');
     }
 
     // The sharp clack of the wrench meeting a megastructure switch console. Deliberately much
     // louder than the other one-shots so it cuts through the structure's charge-up buzz.
     playSwitchClick(position: Vector3): void {
-        this.playBuffer(this.randomBuffer(this.switchClickBuffers), position, 2.2, 0.94 + Math.random() * 0.12);
+        this.playBuffer(
+            this.randomBuffer(this.switchClickBuffers),
+            position,
+            2.2,
+            0.94 + Math.random() * 0.12,
+            'switch-click',
+        );
     }
 
     // Plays one short beep for each supplied time (seconds from now). The intro calls this for every
@@ -705,6 +845,7 @@ export class GameAudio {
         gain = 0.25,
         seed = 1,
         position: Vector3 | null = null,
+        source = 'robot-beeps',
     ): RobotBeepHandle | null {
         if (!this.context || !this.effectsGain || !this.settings.sounds || this.paused || beepTimes.length === 0) {
             return null;
@@ -713,10 +854,19 @@ export class GameAudio {
         const context = this.context;
         const start = context.currentTime + 0.03;
         const rng = mulberry32(seed);
+        let trackedId = 0;
         const playback = new RobotBeepPlayback((stopped) => {
             this.activeRobotBeeps.delete(stopped);
+            this.releaseSound(trackedId);
         });
         this.activeRobotBeeps.add(playback);
+        trackedId = this.trackSound(
+            source,
+            `${Math.round(baseFrequency)} Hz × ${beepTimes.length}`,
+            gain,
+            position,
+            Math.max(...beepTimes) + 0.25,
+        );
         // One panner carries the whole line. Equal-power panning tracks left/right and distance
         // without HRTF's CPU cost and cross-browser timbre differences.
         const output = position ? this.createPanner(context, position) : this.effectsGain;
@@ -774,7 +924,7 @@ export class GameAudio {
             return;
         }
         this.wolfWoofBuffer ??= createWolfWoofBuffer(this.context);
-        this.playOneShot(this.wolfWoofBuffer, { gain: 1.2, position });
+        this.playOneShot(this.wolfWoofBuffer, { gain: 1.2, position, source: 'wolf-woof' });
     }
 
     // A short, high-pitched locator pulse. The caller passes 0 at the edge of the detector range
@@ -825,18 +975,25 @@ export class GameAudio {
         oscillator.stop(start + duration + 0.01);
         overtone.start(start);
         overtone.stop(start + duration + 0.01);
+        this.trackSound(
+            'detector',
+            `proximity ${amount.toFixed(2)}`,
+            0.04 + amount * 0.055,
+            null,
+            duration + 0.02,
+        );
     }
 
     // A bright four-note lift for recovering a ship part. The variants are pre-rendered by
     // scripts/generate-audio.ts; transposition and timing differences provide the variety.
     playPartRecovered(): void {
-        this.playBuffer(this.randomBuffer(this.partRecoveredBuffers), null, 0.35, 1);
+        this.playBuffer(this.randomBuffer(this.partRecoveredBuffers), null, 0.35, 1, 'part-recovered');
     }
 
     // A very short two-note chirp for passing a ring. The variants are generated and stored by
     // scripts/generate-audio.ts rather than synthesized on every pass.
     playRingPassed(): void {
-        this.playBuffer(this.randomBuffer(this.ringPassedBuffers), null, 0.28, 1);
+        this.playBuffer(this.randomBuffer(this.ringPassedBuffers), null, 0.28, 1, 'ring-passed');
     }
 
     // Hands the walking score over to the one-shot finale fanfare. The ambient track is faded out
@@ -937,6 +1094,7 @@ export class GameAudio {
         this.shipEngineSource = source;
         this.shipEngineGain = gain;
         this.shipEngineFilter = filter;
+        this.shipEngineSoundId = this.trackSound('ship-engine', '', SHIP_ENGINE_GAIN, null, Number.POSITIVE_INFINITY);
     }
 
     // `throttle` is 0 at the minimum flight speed and 1 at the normal maximum. Values above 1 are
@@ -1011,6 +1169,8 @@ export class GameAudio {
         this.shipEngineSource = null;
         this.shipEngineGain = null;
         this.shipEngineFilter = null;
+        this.releaseSound(this.shipEngineSoundId);
+        this.shipEngineSoundId = 0;
         if (!source || !gain) {
             return;
         }
@@ -1042,6 +1202,8 @@ export class GameAudio {
 
         if (intensity <= 0) {
             this.fallWindGain?.gain.setTargetAtTime(0.0001, now, 0.12);
+            this.releaseSound(this.fallWindSoundId);
+            this.fallWindSoundId = 0;
             return;
         }
 
@@ -1081,6 +1243,15 @@ export class GameAudio {
             0.15,
         );
         this.fallWindGain?.gain.setTargetAtTime(FALL_WIND_GAIN * intensity, now, 0.15);
+        if (this.fallWindSoundId === 0) {
+            this.fallWindSoundId = this.trackSound(
+                'fall-wind',
+                `${Math.round(intensity * 100)}%`,
+                FALL_WIND_GAIN * intensity,
+                null,
+                Number.POSITIVE_INFINITY,
+            );
+        }
     }
 
     // The wrench cutting through empty air on a swing. The sample is generated by
@@ -1091,6 +1262,7 @@ export class GameAudio {
             null,
             charged ? 0.28 : 0.07,
             (charged ? 0.82 : 0.95) + Math.random() * 0.06,
+            charged ? 'wrench-swing-charged' : 'wrench-swing',
         );
     }
 
@@ -1104,12 +1276,19 @@ export class GameAudio {
             position,
             charged ? 2.2 : 1.6,
             ((charged ? 0.87 : 0.97) + Math.random() * 0.06) * pitchScale,
+            charged ? 'wrench-clang-charged' : 'wrench-clang',
         );
     }
 
     // The last servo of a maintenance unit winding down, pre-rendered with generated variations.
     playPowerDown(position: Vector3 | null = null): void {
-        this.playBuffer(this.randomBuffer(this.powerDownBuffers), position, 0.2, 0.92 + Math.random() * 0.16);
+        this.playBuffer(
+            this.randomBuffer(this.powerDownBuffers),
+            position,
+            0.2,
+            0.92 + Math.random() * 0.16,
+            'power-down',
+        );
     }
 
     // A rising electrical hum for the moment between flipping a switch and the lightning landing,
@@ -1147,7 +1326,9 @@ export class GameAudio {
 
         source.start(start);
         source.stop(end + 0.05);
+        let soundId = 0;
         source.onended = () => {
+            this.releaseSound(soundId);
             if (this.structureBuzzSource === source) {
                 this.structureBuzzSource = null;
                 this.structureBuzzGain = null;
@@ -1157,6 +1338,8 @@ export class GameAudio {
         this.structureBuzzSource = source;
         this.structureBuzzGain = output;
         this.structureBuzzKind = kind;
+        soundId = this.trackSound('structure-buzz', kind, gain, null, end - context.currentTime + 0.1);
+        this.structureBuzzSoundId = soundId;
     }
 
     // Cuts an in-progress charge short, e.g. when the wrench is released before it is full. Pass a
@@ -1181,11 +1364,19 @@ export class GameAudio {
         this.structureBuzzSource = null;
         this.structureBuzzGain = null;
         this.structureBuzzKind = null;
+        this.releaseSound(this.structureBuzzSoundId);
+        this.structureBuzzSoundId = 0;
     }
 
     // A sharp crack followed by a rolling low rumble, pre-rendered with generated variations.
     playLightningStrike(): void {
-        this.playBuffer(this.randomBuffer(this.lightningStrikeBuffers), null, 0.55, 0.95 + Math.random() * 0.1);
+        this.playBuffer(
+            this.randomBuffer(this.lightningStrikeBuffers),
+            null,
+            0.55,
+            0.95 + Math.random() * 0.1,
+            'lightning-strike',
+        );
     }
 
     // The drained structure's continuous hum. It is positional so each flipped tower keeps its own
@@ -1214,6 +1405,10 @@ export class GameAudio {
         }
         this.structureHums.clear();
         this.pendingStructureHums.clear();
+        for (const id of this.structureHumSoundIds.values()) {
+            this.releaseSound(id);
+        }
+        this.structureHumSoundIds.clear();
     }
 
     // Updates the hum's audibility from the player's horizontal distance to the structure. Inside
@@ -1281,6 +1476,16 @@ export class GameAudio {
             distance: distanceGain,
             panner,
         });
+        this.structureHumSoundIds.set(
+            towerIndex,
+            this.trackSound(
+                `structure-hum #${towerIndex}`,
+                '',
+                STRUCTURE_HUM_GAIN,
+                position,
+                Number.POSITIVE_INFINITY,
+            ),
+        );
     }
 
     private createPanner(
@@ -1322,12 +1527,20 @@ export class GameAudio {
             position?: Vector3 | null;
             pan?: number;
             lowpass?: number;
+            source: string;
         },
     ): void {
         const context = this.context!;
         const source = context.createBufferSource();
         source.buffer = buffer;
         source.playbackRate.value = options.rate ?? 1;
+        this.trackSound(
+            options.source,
+            '',
+            options.gain,
+            options.position ?? null,
+            buffer.duration / Math.max(0.01, options.rate ?? 1),
+        );
 
         const volume = context.createGain();
         volume.gain.value = options.gain;
@@ -1368,7 +1581,13 @@ export class GameAudio {
         source.start();
     }
 
-    private playFootstepBuffer(buffer: AudioBuffer, side: number, gain: number, muffled: boolean): void {
+    private playFootstepBuffer(
+        buffer: AudioBuffer,
+        side: number,
+        gain: number,
+        muffled: boolean,
+        source: string,
+    ): void {
         if (this.paused) {
             return;
         }
@@ -1378,6 +1597,7 @@ export class GameAudio {
             rate: 0.9 + Math.random() * 0.2,
             pan: side * 0.22,
             lowpass: muffled ? 650 : undefined,
+            source,
         });
     }
 
@@ -1385,12 +1605,18 @@ export class GameAudio {
         return buffers.length === 0 ? null : buffers[Math.floor(Math.random() * buffers.length)];
     }
 
-    private playBuffer(buffer: AudioBuffer | null, position: Vector3 | null, gain: number, rate: number): void {
+    private playBuffer(
+        buffer: AudioBuffer | null,
+        position: Vector3 | null,
+        gain: number,
+        rate: number,
+        source: string,
+    ): void {
         if (!buffer || !this.context || !this.effectsGain || !this.settings.sounds || this.paused) {
             return;
         }
 
-        this.playOneShot(buffer, { gain, rate, position });
+        this.playOneShot(buffer, { gain, rate, position, source });
     }
 
     private setupReverb(context: AudioContext): void {

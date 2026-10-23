@@ -55,6 +55,8 @@ class FakePannerNode {
 
     connect(): void {}
 
+    disconnect(): void {}
+
     setPosition(): void {}
 }
 
@@ -68,13 +70,22 @@ class FakeBufferSource {
 
     connect(): void {}
 
+    disconnect(): void {}
+
     start(): void {}
 
     stop(_when?: number): void {}
 }
 
+class FakeListener {
+    setPosition(): void {}
+
+    setOrientation(): void {}
+}
+
 class FakeAudioContext {
     currentTime = 0;
+    readonly listener = new FakeListener();
     readonly sources: FakeBufferSource[] = [];
 
     createBufferSource(): FakeBufferSource {
@@ -223,6 +234,43 @@ describe('structure hum', () => {
 
         audio.setStructureHumDistance(0, 120);
         expect(distanceGain.gain.target).toBe(0);
+    });
+});
+
+describe('active audio dump', () => {
+    it('lists positional and global sources, nearest first', () => {
+        const { audio } = createAudio();
+        Object.assign(audio, { powerDownBuffers: [{ duration: 0.1 }] });
+
+        audio.playPowerDown(new Vector3(10, 0, 0));
+        audio.playPowerDown();
+
+        const sounds = audio.getActiveSounds();
+        expect(sounds.map((sound) => sound.source)).toEqual(['power-down', 'power-down']);
+        expect(sounds[0].distance).toBeCloseTo(10, 5);
+        expect(sounds[1].distance).toBeNull();
+    });
+
+    it('drops a source once its scheduled duration has passed', () => {
+        const { audio, context } = createAudio();
+        Object.assign(audio, { powerDownBuffers: [{ duration: 0.1 }] });
+
+        audio.playPowerDown();
+        expect(audio.getActiveSounds()).toHaveLength(1);
+
+        context.currentTime = 1;
+        expect(audio.getActiveSounds()).toHaveLength(0);
+    });
+
+    it('tracks structure hums and forgets them when the world is rebuilt', () => {
+        const { audio } = createAudio();
+
+        audio.playStructureHum(2, new Vector3(3, 4, 5));
+        const hum = audio.getActiveSounds().find((sound) => sound.source === 'structure-hum #2');
+        expect(hum?.position).toEqual({ x: 3, y: 4, z: 5 });
+
+        audio.resetStructureHums();
+        expect(audio.getActiveSounds()).toHaveLength(0);
     });
 });
 

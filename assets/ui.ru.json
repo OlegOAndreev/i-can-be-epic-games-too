@@ -127,6 +127,7 @@
   "gui.shadows": "Тени",
   "gui.resolutionScale": "Масштаб разрешения",
   "gui.performanceGraph": "График производительности (P)",
+  "gui.logAudio": "Записать активное аудио (F4)",
   "gui.renderReport": "Записать отчёт рендера",
   "gui.renderReportCapturing": "Запись…",
   "gui.renderReportCopied": "Отчёт скопирован",

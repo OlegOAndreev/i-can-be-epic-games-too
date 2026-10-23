@@ -392,6 +392,7 @@ export class NpcRobots {
             0.25,
             textSeed(line.text) ^ actor.voicePitch,
             actor.group.position,
+            `npc-${actor.id}`,
         );
     }
 

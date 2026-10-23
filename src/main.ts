@@ -971,6 +971,7 @@ async function init(): Promise<void> {
         performanceGraphInstance.toggle();
     }
     gameAudio = new GameAudio();
+    performanceGraphInstance.setAudioProvider(() => gameAudio.getActiveSounds());
     gameAudio.setVolume(storedNumber(storedSettings, 'volume', 0, 1, DEFAULT_SETTINGS.volume));
     gameAudio.setEnabled('music', storedBoolean(storedSettings, 'music', DEFAULT_SETTINGS.music));
     // Fall back to the retired "footsteps" key so an existing preference carries over.
@@ -1263,6 +1264,7 @@ async function init(): Promise<void> {
             }
         },
         onTogglePerformanceGraph: () => performanceGraph?.toggle(),
+        onLogAudio: () => gameAudio.logActiveSounds(),
         onToggleMusic: () => toggleMusic(),
         onToggleMap: () => {
             if (input.pointerLocked && !finale?.active) {
@@ -1933,6 +1935,9 @@ function createGui(GuiConstructor: typeof GUI): GUI {
     debugFolder
         .add({ togglePerformanceGraph: () => performanceGraph?.toggle() }, 'togglePerformanceGraph')
         .name(t('gui.performanceGraph', 'Performance graph (P)'));
+    debugFolder
+        .add({ logAudio: () => gameAudio.logActiveSounds() }, 'logAudio')
+        .name(t('gui.logAudio', 'Log active audio (F4)'));
     renderReportController = debugFolder
         .add(
             {

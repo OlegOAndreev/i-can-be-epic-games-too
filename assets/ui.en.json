@@ -127,6 +127,7 @@
   "gui.shadows": "Shadows",
   "gui.resolutionScale": "Resolution scale",
   "gui.performanceGraph": "Performance graph (P)",
+  "gui.logAudio": "Log active audio (F4)",
   "gui.renderReport": "Log render report",
   "gui.renderReportCapturing": "Capturing…",
   "gui.renderReportCopied": "Copied render report",

@@ -1,5 +1,6 @@
 import type { PerspectiveCamera, WebGLRenderer } from 'three';
 
+import type { ActiveAudioInfo } from './audio';
 import { textureMemory } from './texture-memory';
 
 const SAMPLE_SIZE = 120;
@@ -12,6 +13,8 @@ const GRAPH_HEIGHT = 48;
 const GRAPH_PLOT_TOP = 12;
 const CPU_COLOR = '#f5b45a';
 const GPU_COLOR = '#6fd7ff';
+// The panel stays readable while it lists what is sounding; the full list is one keypress away.
+const MAX_AUDIO_LINES = 6;
 
 // The timer-query extension is not in TypeScript's DOM library yet.
 interface DisjointTimerQueryExtension {
@@ -67,6 +70,8 @@ export class PerformanceGraph {
     private memoryBytes: number | null = null;
     private memoryPending = false;
     private lastMemorySample = -MEMORY_SAMPLE_INTERVAL_MS;
+    // Supplied by main once GameAudio exists; the graph is constructed before the audio graph.
+    private audioProvider: (() => readonly ActiveAudioInfo[]) | null = null;
 
     constructor(renderer: WebGLRenderer, camera: PerspectiveCamera) {
         this.renderer = renderer;
@@ -96,6 +101,12 @@ export class PerformanceGraph {
 
     get gpuTimingAvailable(): boolean {
         return this.timerExtension !== null;
+    }
+
+    // The debug audio dump shown under the usual frame stats. `provider` is called at the panel's
+    // 10 Hz refresh rate, not every frame.
+    setAudioProvider(provider: () => readonly ActiveAudioInfo[]): void {
+        this.audioProvider = provider;
     }
 
     // The render audit asks for one measured frame. This works whether the panel is visible
@@ -326,6 +337,7 @@ export class PerformanceGraph {
             `tex ${formatBytes(textures.storedBytes)} stored / ${formatBytes(textures.rawBytes)} uncompressed` +
             `  (${textures.textureCount} tex)`;
         const shadowLine = `shadow ${formatBytes(textures.shadowBytes)} (${textures.shadowCount} tex)`;
+        const audioLines = this.describeAudio();
 
         this.textNode.nodeValue = [
             `${fps.toFixed(0).padStart(3)} fps  ${interval.toFixed(1).padStart(5)} ms avg  ` +
@@ -336,7 +348,26 @@ export class PerformanceGraph {
             memoryLine,
             textureLine,
             shadowLine,
+            ...audioLines,
         ].join('\n');
+    }
+
+    private describeAudio(): string[] {
+        const sounds = this.audioProvider?.() ?? [];
+        if (sounds.length === 0) {
+            return ['audio  nothing playing'];
+        }
+
+        const lines = [`audio  ${sounds.length} playing  (F4 logs all)`];
+        for (const sound of sounds.slice(0, MAX_AUDIO_LINES)) {
+            const where = sound.distance === null ? 'global' : `${Math.round(sound.distance)}m`;
+            const label = (sound.detail ? `${sound.source} ${sound.detail}` : sound.source).slice(0, 32);
+            lines.push(`  ${where.padStart(6)}  ${label.padEnd(32)}  ${sound.gain.toFixed(2)}  ${sound.age.toFixed(1)}s`);
+        }
+        if (sounds.length > MAX_AUDIO_LINES) {
+            lines.push(`  … +${sounds.length - MAX_AUDIO_LINES} more (F4 logs all)`);
+        }
+        return lines;
     }
 
     private drawGraph(): void {

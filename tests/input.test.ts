@@ -226,6 +226,25 @@ describe('Input debug shortcuts', () => {
         press(true);
         expect(onGoToCrazies).toHaveBeenCalledTimes(1);
     });
+
+    it('fires the audio dump on F4 even while the menu is open', () => {
+        const onLogAudio = vi.fn();
+        const { windowListeners } = createInput({ onLogAudio });
+        const press = (repeat = false) =>
+            windowListeners.get('keydown')?.({
+                code: 'F4',
+                repeat,
+                target: null,
+                preventDefault: vi.fn(),
+            } as unknown as Event);
+
+        press();
+        expect(onLogAudio).toHaveBeenCalledTimes(1);
+
+        // Holding the key down must not dump the list again.
+        press(true);
+        expect(onLogAudio).toHaveBeenCalledTimes(1);
+    });
 });
 
 describe('readFlightGamepadInput', () => {

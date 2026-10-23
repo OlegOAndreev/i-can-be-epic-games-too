@@ -874,6 +874,7 @@ export class EnemyRobots {
                 0.24,
                 utterance.text.length * 977 + pitch,
                 speaker.group.position,
+                `enemy-${speaker.kind}`,
             ) ?? null;
     }
 
