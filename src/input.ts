@@ -7,10 +7,8 @@ const GAMEPAD_DEADZONE = 0.2;
 // (radians per pixel) then turns this into a comfortable turn rate of roughly 90 degrees per second.
 const GAMEPAD_LOOK_SPEED = 700;
 const GAMEPAD_JUMP_BUTTON = 0;
-// Face button X / Square is the standard-mapping melee button.
+// Face button X / Square is the standard-mapping melee button. Holding it charges the heavy strike.
 const GAMEPAD_ATTACK_BUTTON = 2;
-// Right trigger is the gamepad equivalent of the charged attack's right mouse button.
-const GAMEPAD_CHARGED_ATTACK_BUTTON = 7;
 // Escape both pauses and resumes. Ignore Escape presses this soon after a pause so the same key
 // press that released pointer lock cannot immediately re-acquire it.
 const ESCAPE_RESUME_GRACE_MS = 300;
@@ -25,7 +23,6 @@ export interface GamepadInput {
     right: number;
     jump: boolean;
     attack: boolean;
-    chargedAttack: boolean;
     lookX: number;
     lookY: number;
 }
@@ -47,6 +44,7 @@ export interface InputCallbacks {
     onToggleMap?: () => void;
     onTeleport?: () => void;
     onFinaleShortcut?: () => void;
+    onGoToCrazies?: () => void;
     onResume?: () => void;
 }
 
@@ -65,13 +63,11 @@ export class Input {
     private lookY = 0;
     private jumpQueued = false;
     private attackPressQueued = false;
-    private chargedAttackPressQueued = false;
-    private chargedAttackMouseHeld = false;
+    private attackMouseHeld = false;
     private gamepadForward = 0;
     private gamepadRight = 0;
     private gamepadJumpHeld = false;
     private gamepadAttackHeld = false;
-    private gamepadChargedAttackHeld = false;
     private readonly gamepadFlight: FlightInput = {
         steerX: 0,
         steerY: 0,
@@ -82,7 +78,6 @@ export class Input {
         right: 0,
         jump: false,
         attack: false,
-        chargedAttack: false,
         lookX: 0,
         lookY: 0,
     };
@@ -102,10 +97,8 @@ export class Input {
         window.addEventListener('blur', () => {
             this.keys.clear();
             this.attackPressQueued = false;
-            this.chargedAttackPressQueued = false;
-            this.chargedAttackMouseHeld = false;
+            this.attackMouseHeld = false;
             this.gamepadAttackHeld = false;
-            this.gamepadChargedAttackHeld = false;
             this.resumeOnEscapeRelease = false;
         });
         window.addEventListener('mousemove', (event) => this.onMouseMove(event));
@@ -193,11 +186,6 @@ export class Input {
         }
         this.gamepadAttackHeld = gamepadInput.attack;
 
-        if (this.pointerLocked && gamepadInput.chargedAttack && !this.gamepadChargedAttackHeld) {
-            this.chargedAttackPressQueued = true;
-        }
-        this.gamepadChargedAttackHeld = gamepadInput.chargedAttack;
-
         if (this.pointerLocked) {
             this.lookX += gamepadInput.lookX * GAMEPAD_LOOK_SPEED * dt;
             this.lookY += gamepadInput.lookY * GAMEPAD_LOOK_SPEED * dt;
@@ -257,16 +245,11 @@ export class Input {
         return queued;
     }
 
-    consumeChargedAttackPress(): boolean {
-        const queued = this.chargedAttackPressQueued;
-        this.chargedAttackPressQueued = false;
-        return queued;
-    }
-
-    // True while the charged attack input stays down. The wrench only charges while this is true
-    // and strikes when it turns false, so losing pointer lock counts as letting go.
-    get chargedAttackHeld(): boolean {
-        return this.pointerLocked && (this.chargedAttackMouseHeld || this.gamepadChargedAttackHeld);
+    // True while the attack button stays down. One button drives both strikes: the wrench hold lasts
+    // as long as this stays true, and the swing fires when it turns false. Losing pointer lock counts
+    // as letting go.
+    get attackHeld(): boolean {
+        return this.pointerLocked && (this.attackMouseHeld || this.keys.has('KeyF') || this.gamepadAttackHeld);
     }
 
     private onKeyDown(event: KeyboardEvent): void {
@@ -281,6 +264,13 @@ export class Input {
             event.preventDefault();
             if (!event.repeat && this.pointerLocked) {
                 this.callbacks.onFinaleShortcut?.();
+            }
+            return;
+        }
+        if (event.code === 'F3') {
+            event.preventDefault();
+            if (!event.repeat && this.pointerLocked) {
+                this.callbacks.onGoToCrazies?.();
             }
             return;
         }
@@ -355,6 +345,8 @@ export class Input {
             if (this.pointerLocked && !event.repeat) {
                 this.attackPressQueued = true;
             }
+            // Tracked like the movement keys, so holding F keeps the wrench hold running.
+            this.keys.add(event.code);
             return;
         }
         this.keys.add(event.code);
@@ -377,17 +369,14 @@ export class Input {
         }
         if (event.button === 0) {
             event.preventDefault();
+            this.attackMouseHeld = true;
             this.attackPressQueued = true;
-        } else if (event.button === 2) {
-            event.preventDefault();
-            this.chargedAttackMouseHeld = true;
-            this.chargedAttackPressQueued = true;
         }
     }
 
     private onMouseUp(event: MouseEvent): void {
-        if (event.button === 2) {
-            this.chargedAttackMouseHeld = false;
+        if (event.button === 0) {
+            this.attackMouseHeld = false;
         }
     }
 
@@ -412,12 +401,10 @@ export class Input {
             this.keys.clear();
             this.jumpQueued = false;
             this.attackPressQueued = false;
-            this.chargedAttackPressQueued = false;
-            this.chargedAttackMouseHeld = false;
+            this.attackMouseHeld = false;
             this.gamepadForward = 0;
             this.gamepadRight = 0;
             this.gamepadAttackHeld = false;
-            this.gamepadChargedAttackHeld = false;
             this.gamepadFlight.steerX = 0;
             this.gamepadFlight.steerY = 0;
             this.lookX = 0;
@@ -475,7 +462,6 @@ export function readGamepadInput(gamepad: Gamepad | null): GamepadInput {
         right: 0,
         jump: false,
         attack: false,
-        chargedAttack: false,
         lookX: 0,
         lookY: 0,
     });
@@ -487,7 +473,6 @@ function readGamepadInputInto(gamepad: Gamepad | null, out: GamepadInput): Gamep
         out.right = 0;
         out.jump = false;
         out.attack = false;
-        out.chargedAttack = false;
         out.lookX = 0;
         out.lookY = 0;
         return out;
@@ -506,7 +491,6 @@ function readGamepadInputInto(gamepad: Gamepad | null, out: GamepadInput): Gamep
     out.right = clamp(moveX + dpadRight, -1, 1);
     out.jump = isPressed(gamepad, GAMEPAD_JUMP_BUTTON);
     out.attack = isPressed(gamepad, GAMEPAD_ATTACK_BUTTON);
-    out.chargedAttack = isPressed(gamepad, GAMEPAD_CHARGED_ATTACK_BUTTON);
     out.lookX = lookX;
     out.lookY = lookY;
     return out;

@@ -91,9 +91,9 @@ describe('rock damage', () => {
         const rock = rocks.reduce((widest, collider) => (collider.radius > widest.radius ? collider : widest));
 
         // The widest boulders are over 3.5 m across. Standing one metre from the wall is beyond
-        // the 4.5 m wrench range measured from the centre, but within it from the wall.
+        // the 3.5 m wrench range measured from the centre, but within it from the wall.
         expect(rock.radius).toBeGreaterThan(3.5);
-        expect(rock.radius + 1).toBeGreaterThan(4.5);
+        expect(rock.radius + 1).toBeGreaterThan(3.5);
         const player = new Vector3(rock.x + rock.radius + 1, rock.base + 0.5, rock.z);
 
         const hits = terrain.wrenchStrike(player);
@@ -102,17 +102,36 @@ describe('rock damage', () => {
         );
     });
 
-    it('scales wrench reach for first-person swings', () => {
+    it('scales wrench reach for third-person swings', () => {
         const terrain = testTerrain(13579, { meshes: false });
         const rocks = terrain.colliders.filter((collider) => collider.kind === 'rock');
         const rock = rocks.reduce((widest, collider) => (collider.radius > widest.radius ? collider : widest));
         const hitRock = (hits: RockWrenchHit[]) =>
             hits.some((hit) => Math.hypot(hit.position.x - rock.x, hit.position.z - rock.z) < rock.radius);
 
-        // 4.7 m from the boulder wall is outside the normal 4.5 m reach but inside 4.5 * 1.2.
-        const player = new Vector3(rock.x + rock.radius + 4.7, rock.base + 0.5, rock.z);
+        // 3.6 m from the boulder wall is outside the normal 3.5 m reach but inside 3.5 * 1.2 =
+        // 4.2 m, the third-person reach.
+        const player = new Vector3(rock.x + rock.radius + 3.6, rock.base + 0.5, rock.z);
         expect(hitRock(terrain.wrenchStrike(player, 1, null, Math.PI * 2, 1))).toBe(false);
         expect(hitRock(terrain.wrenchStrike(player, 1, null, Math.PI * 2, 1.2))).toBe(true);
+    });
+
+    it('skips the boulders a charged spin already hit when it checks again', () => {
+        const terrain = testTerrain(13579, { meshes: false });
+        const rocks = terrain.colliders.filter((collider) => collider.kind === 'rock');
+        const rock = rocks.reduce((widest, collider) => (collider.radius > widest.radius ? collider : widest));
+        const player = new Vector3(rock.x + rock.radius + 1, rock.base + 0.5, rock.z);
+        const hitTargets = new Set<object>();
+
+        const first = terrain.wrenchStrike(player, 1, null, Math.PI * 2, 1, hitTargets);
+        expect(first.length).toBeGreaterThan(0);
+        expect(hitTargets.size).toBe(first.length);
+
+        // The closing check of the same swing leaves every boulder it already hit alone.
+        expect(terrain.wrenchStrike(player, 1, null, Math.PI * 2, 1, hitTargets)).toHaveLength(0);
+
+        // A new swing checks again.
+        expect(terrain.wrenchStrike(player, 1, null, Math.PI * 2, 1, new Set<object>()).length).toBeGreaterThan(0);
     });
 
     it('limits boulders to the configured forward arc for a regular swing', () => {

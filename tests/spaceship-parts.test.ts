@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { GameAudio } from '../src/audio';
 import { SpaceshipParts, bestGridSpot, findRingSpot } from '../src/spaceship-parts';
-import { stubAudio as audioStub, testTerrain } from './test-helpers';
+import { fakeTerrain, stubAudio as audioStub, testTerrain } from './test-helpers';
 import { WATER_LEVEL, WORLD_HALF_SIZE } from '../src/terrain';
 
 function stubAudio(): { audio: GameAudio; calls: { recovered: number; beeps: number } } {
@@ -147,7 +147,8 @@ describe('spaceship parts', () => {
     });
 
     it('submerges a piece for every world seed', () => {
-        for (const seed of [1, 42, 777]) {
+        // Seed 139 keeps its deep water in the shelf beyond the placement square.
+        for (const seed of [1, 42, 777, 139]) {
             const terrain = testTerrain(seed);
             const { audio } = stubAudio();
             const parts = new SpaceshipParts(terrain, audio);
@@ -155,6 +156,26 @@ describe('spaceship parts', () => {
             parts.dispose();
         }
     }, 20_000);
+
+    it('places the piece on land when the world has no water to hide it in', () => {
+        // A dry, stub world: the search runs out of water and has to fall back to the wreck field.
+        const terrain = fakeTerrain({
+            seed: 1,
+            spawn: { x: 0, z: 0 },
+            spaceshipSite: { x: 0, z: 0 },
+            heightAt: () => 30,
+            slopeAt: () => 0,
+            megastructures: { contains: () => false },
+        });
+        const { audio } = stubAudio();
+        const parts = new SpaceshipParts(terrain, audio);
+
+        const sites = parts.getSites();
+        expect(sites).toHaveLength(5);
+        expect(sites.every((site) => site.y > WATER_LEVEL)).toBe(true);
+
+        parts.dispose();
+    });
 
     it('wraps each piece in a tight glowing cylinder instead of a floor ring', () => {
         const terrain = testTerrain(1234);

@@ -17,6 +17,11 @@ import {
     wrenchCircleAngle,
     WRENCH_ATTACK_SECONDS,
     WRENCH_CHARGED_ATTACK_SECONDS,
+    WRENCH_CHARGE_ANIMATION_SECONDS,
+    WRENCH_CHARGE_SECONDS,
+    WRENCH_CHARGE_START_SECONDS,
+    WRENCH_CHARGE_TAIL_SECONDS,
+    WRENCH_PRESS_BUFFER_SECONDS,
     WRENCH_STRIKE_PORTION,
 } from '../src/player';
 import {
@@ -29,6 +34,15 @@ import {
 import { WATER_LEVEL } from '../src/terrain';
 
 import { NO_INPUT, stepPlayer, testPlayer, testTerrain, visibleMeshes } from './test-helpers';
+
+// Presses the attack button and keeps it down until the wrench is fully charged, the way the game's
+// single attack button does: the charge only starts once the press outlasts its start delay.
+function holdUntilCharged(player: ReturnType<typeof testPlayer>): void {
+    expect(player.beginWrenchHold()).toBe(true);
+    player.updateWrenchHold(WRENCH_CHARGE_START_SECONDS);
+    player.updateWrenchHold(WRENCH_CHARGE_SECONDS);
+    expect(player.isWrenchCharged).toBe(true);
+}
 
 describe('thrusterGlowStrength', () => {
     it('stays dark at or below 11 m/s', () => {
@@ -57,74 +71,87 @@ describe('isFullySubmerged', () => {
 });
 
 describe('wrench attack', () => {
-    it('charges for one second and only reports a charged release afterwards', () => {
+    it('charges only after the press is held, and swings the charged spin on a full release', () => {
         const terrain = testTerrain();
 
+        // A tap: no charge ever starts, so the release is the regular strike.
         const quick = testPlayer(terrain);
         quick.setWrenchEquipped(true);
-        expect(quick.beginWrenchCharge()).toBe(true);
-        expect(quick.updateWrenchCharge(0.5)).toBe(false);
-        expect(quick.isWrenchCharged).toBe(false);
-        expect(quick.releaseWrench()).toBe(false);
+        expect(quick.beginWrenchHold()).toBe(true);
+        quick.updateWrenchHold(WRENCH_CHARGE_START_SECONDS / 2);
+        expect(quick.isWrenchCharging).toBe(false);
+        expect(quick.releaseWrenchHold()).toBe(false);
+        expect(quick.isWrenchSwingCharged).toBe(false);
 
+        // A hold that outlasts the charge: the release is the charged spin.
         const full = testPlayer(terrain);
         full.setWrenchEquipped(true);
-        expect(full.beginWrenchCharge()).toBe(true);
-        full.updateWrenchCharge(0.6);
-        full.updateWrenchCharge(0.6);
+        expect(full.beginWrenchHold()).toBe(true);
+        full.updateWrenchHold(WRENCH_CHARGE_START_SECONDS);
+        expect(full.isWrenchCharging).toBe(true);
+        full.updateWrenchHold(WRENCH_CHARGE_SECONDS);
         expect(full.isWrenchCharged).toBe(true);
-        expect(full.releaseWrench()).toBe(true);
+        expect(full.releaseWrenchHold()).toBe(true);
+        expect(full.isWrenchSwingCharged).toBe(true);
 
-        // The swing itself still needs to finish before another charge can start.
-        expect(full.beginWrenchCharge()).toBe(false);
+        // The swing itself still needs to finish before another hold can start.
+        expect(full.beginWrenchHold()).toBe(false);
         full.update(WRENCH_CHARGED_ATTACK_SECONDS + 0.01, NO_INPUT, 0, terrain);
         expect(full.isWrenchSwinging).toBe(false);
-        expect(full.beginWrenchCharge()).toBe(true);
+        expect(full.beginWrenchHold()).toBe(true);
 
         quick.group.removeFromParent();
         full.group.removeFromParent();
     });
 
-    it('keeps filling the charge over successive updates', () => {
+    it('is charged a moment before the build-up animation tops out', () => {
         const terrain = testTerrain();
         const player = testPlayer(terrain);
         player.setWrenchEquipped(true);
 
-        expect(player.beginWrenchCharge()).toBe(true);
-        expect(player.updateWrenchCharge(0.5)).toBe(false);
+        player.beginWrenchHold();
+        player.updateWrenchHold(WRENCH_CHARGE_START_SECONDS);
+        player.updateWrenchHold(WRENCH_CHARGE_SECONDS - 0.01);
+        expect(player.isWrenchCharged).toBe(false);
+        expect(player.wrenchChargeProgress).toBeLessThan(1);
+
+        // The strike becomes available with the tail of the animation still to run.
+        player.updateWrenchHold(0.02);
+        expect(player.isWrenchCharged).toBe(true);
+        expect(player.wrenchChargeProgress).toBeLessThan(1);
+
+        player.updateWrenchHold(WRENCH_CHARGE_TAIL_SECONDS);
+        expect(player.isWrenchCharged).toBe(true);
+        expect(player.wrenchChargeProgress).toBe(1);
+
+        // Releasing during the tail still lands the charged spin, with the cage finishing off.
+        expect(player.releaseWrenchHold()).toBe(true);
+        expect(player.wrenchChargeProgress).toBe(1);
+    });
+
+    it('swings the regular strike when the button comes up mid-charge', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        player.setWrenchEquipped(true);
+
+        expect(player.beginWrenchHold()).toBe(true);
+        player.updateWrenchHold(WRENCH_CHARGE_START_SECONDS);
+        player.updateWrenchHold(WRENCH_CHARGE_SECONDS / 2);
         expect(player.isWrenchCharging).toBe(true);
         expect(player.isWrenchCharged).toBe(false);
+        // Half the charge is a little under half the build-up, which keeps animating past readiness.
+        expect(player.wrenchChargeProgress).toBeCloseTo(
+            WRENCH_CHARGE_SECONDS / 2 / WRENCH_CHARGE_ANIMATION_SECONDS,
+            2,
+        );
 
-        expect(player.updateWrenchCharge(0.5)).toBe(false);
-        expect(player.isWrenchCharged).toBe(true);
-        expect(player.releaseWrench()).toBe(true);
-    });
-
-    it('starts a charged attack pressed during a swing as soon as the swing ends', () => {
-        const terrain = testTerrain();
-        const player = testPlayer(terrain);
-        player.setWrenchEquipped(true);
-        let chargeStarts = 0;
-        player.onWrenchChargeStart = () => {
-            chargeStarts++;
-        };
-
-        player.swingWrench();
-        const remaining = 0.15;
-        player.update(WRENCH_ATTACK_SECONDS - remaining, NO_INPUT, 0, terrain);
+        expect(player.releaseWrenchHold()).toBe(false);
         expect(player.isWrenchSwinging).toBe(true);
-        // 0.15 s of the swing remains, inside the medium difficulty's 0.2 s buffer.
-        expect(player.beginWrenchCharge()).toBe(false);
-        expect(player.isWrenchChargeBuffered).toBe(true);
+        expect(player.isWrenchSwingCharged).toBe(false);
         expect(player.isWrenchCharging).toBe(false);
-
-        player.update(remaining + 0.01, NO_INPUT, 0, terrain);
-        expect(player.isWrenchSwinging).toBe(false);
-        expect(player.isWrenchCharging).toBe(true);
-        expect(chargeStarts).toBe(1);
     });
 
-    it('drops a charged attack press that is too early for the difficulty window', () => {
+    it('starts the charge from the hold, not from the difficulty', () => {
         const terrain = testTerrain();
         const player = testPlayer(terrain);
         player.setWrenchEquipped(true);
@@ -133,57 +160,109 @@ describe('wrench attack', () => {
             chargeStarts++;
         };
 
-        player.swingWrench();
-        player.update(0.1, NO_INPUT, 0, terrain);
-        // 0.35 s of the swing remains, beyond the medium difficulty's 0.2 s buffer.
-        expect(player.beginWrenchCharge()).toBe(false);
-        player.update(WRENCH_ATTACK_SECONDS, NO_INPUT, 0, terrain);
-
-        expect(player.isWrenchSwinging).toBe(false);
-        expect(player.isWrenchCharging).toBe(false);
+        player.beginWrenchHold();
+        player.updateWrenchHold(WRENCH_CHARGE_START_SECONDS / 2);
         expect(chargeStarts).toBe(0);
+        player.updateWrenchHold(WRENCH_CHARGE_START_SECONDS);
+        expect(chargeStarts).toBe(1);
+        // The charge keeps filling instead of restarting on later frames.
+        player.updateWrenchHold(0.1);
+        expect(chargeStarts).toBe(1);
+        player.updateWrenchHold(WRENCH_CHARGE_SECONDS);
+        expect(player.isWrenchCharged).toBe(true);
     });
 
-    it('drops a buffered press without disturbing the swing that is already playing', () => {
+    it('buffers an attack press in the final press window of a swing', () => {
+        const terrain = testTerrain();
+
+        for (const chargedSwing of [false, true]) {
+            const player = testPlayer(terrain);
+            player.setWrenchEquipped(true);
+            let chargeStarts = 0;
+            player.onWrenchChargeStart = () => {
+                chargeStarts++;
+            };
+
+            if (chargedSwing) {
+                holdUntilCharged(player);
+                expect(player.releaseWrenchHold()).toBe(true);
+            } else {
+                expect(player.swingWrench()).toBe(true);
+            }
+            // Ignore the charge that produced a charged swing; only the buffered hold counts here.
+            chargeStarts = 0;
+
+            const duration = chargedSwing ? WRENCH_CHARGED_ATTACK_SECONDS : WRENCH_ATTACK_SECONDS;
+            // Leave half the buffer window, so the press lands with 100 ms of the swing left.
+            player.update(duration - WRENCH_PRESS_BUFFER_SECONDS / 2, NO_INPUT, 0, terrain);
+            expect(player.isWrenchSwinging).toBe(true);
+            expect(player.beginWrenchHold()).toBe(false);
+            expect(player.bufferWrenchPress()).toBe(true);
+
+            // The remembered press opens the next hold as the swing ends, and keeping the button
+            // down carries straight into a charge.
+            player.update(WRENCH_PRESS_BUFFER_SECONDS / 2 + 0.01, NO_INPUT, 0, terrain);
+            expect(player.isWrenchSwinging).toBe(false);
+            expect(player.isWrenchHolding).toBe(true);
+            player.updateWrenchHold(WRENCH_CHARGE_START_SECONDS);
+            expect(player.isWrenchCharging).toBe(true);
+            expect(chargeStarts).toBe(1);
+
+            player.group.removeFromParent();
+        }
+    });
+
+    it('drops an attack press that lands before the buffer window', () => {
         const terrain = testTerrain();
         const player = testPlayer(terrain);
         player.setWrenchEquipped(true);
 
-        player.beginWrenchCharge();
-        player.updateWrenchCharge(1);
-        expect(player.releaseWrench()).toBe(true);
+        player.swingWrench();
         player.update(0.1, NO_INPUT, 0, terrain);
+        expect(player.beginWrenchHold()).toBe(false);
+        expect(player.bufferWrenchPress()).toBe(false);
 
-        expect(player.beginWrenchCharge()).toBe(false);
-        expect(player.isWrenchChargeBuffered).toBe(true);
+        // The early press is dropped rather than remembered, and the swing in play is unaffected.
+        player.update(WRENCH_ATTACK_SECONDS, NO_INPUT, 0, terrain);
+        expect(player.isWrenchSwinging).toBe(false);
+        expect(player.isWrenchHolding).toBe(false);
+        expect(player.isWrenchCharging).toBe(false);
 
-        player.cancelWrenchChargeBuffer();
-
-        expect(player.isWrenchChargeBuffered).toBe(false);
-        expect(player.isWrenchSwingCharged).toBe(true);
-        expect(player.isWrenchSwinging).toBe(true);
+        // The next press, with no swing playing, starts a hold normally.
+        expect(player.beginWrenchHold()).toBe(true);
     });
 
-    it('gives easier difficulties a longer charged attack buffer', () => {
-        const chargesAfterEarlyPress = (difficulty: 'easy' | 'medium'): boolean => {
-            const terrain = testTerrain();
-            const player = testPlayer(terrain);
-            player.setDifficulty(difficulty);
-            player.setWrenchEquipped(true);
+    it('swings a buffered tap when the button is already up at the swing end', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        player.setWrenchEquipped(true);
 
-            player.swingWrench();
-            player.update(0.1, NO_INPUT, 0, terrain);
-            player.beginWrenchCharge();
-            player.update(WRENCH_ATTACK_SECONDS - 0.09, NO_INPUT, 0, terrain);
+        player.swingWrench();
+        player.update(WRENCH_ATTACK_SECONDS - WRENCH_PRESS_BUFFER_SECONDS / 2, NO_INPUT, 0, terrain);
+        expect(player.bufferWrenchPress()).toBe(true);
 
-            const charging = player.isWrenchCharging;
-            player.group.removeFromParent();
-            return charging;
-        };
+        // The button came up during the swing: the buffered press becomes a tap as the swing ends.
+        player.update(WRENCH_PRESS_BUFFER_SECONDS / 2 + 0.01, NO_INPUT, 0, terrain);
+        expect(player.isWrenchHolding).toBe(true);
+        expect(player.releaseWrenchHold()).toBe(false);
+        expect(player.isWrenchSwinging).toBe(true);
+        expect(player.isWrenchSwingCharged).toBe(false);
+    });
 
-        // 0.35 s of the swing remains: within easy's 0.4 s buffer, outside medium's 0.2 s.
-        expect(chargesAfterEarlyPress('easy')).toBe(true);
-        expect(chargesAfterEarlyPress('medium')).toBe(false);
+    it('drops a buffered press when the swing is interrupted', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        player.setWrenchEquipped(true);
+
+        player.swingWrench();
+        player.update(WRENCH_ATTACK_SECONDS - WRENCH_PRESS_BUFFER_SECONDS / 2, NO_INPUT, 0, terrain);
+        expect(player.bufferWrenchPress()).toBe(true);
+
+        // Unequipping mid-swing cancels the swing and the remembered press with it.
+        player.setWrenchEquipped(false);
+        player.update(WRENCH_ATTACK_SECONDS, NO_INPUT, 0, terrain);
+        expect(player.isWrenchSwinging).toBe(false);
+        expect(player.isWrenchHolding).toBe(false);
     });
 
     it('widens the regular strike arc on easier difficulties', () => {
@@ -214,8 +293,9 @@ describe('wrench attack', () => {
         const boltBounds = boltMesh!.geometry.boundingBox!;
         expect(boltBounds.max.y - boltBounds.min.y).toBeGreaterThan(0.8);
 
-        player.beginWrenchCharge();
-        player.updateWrenchCharge(0.1);
+        player.beginWrenchHold();
+        player.updateWrenchHold(WRENCH_CHARGE_START_SECONDS);
+        player.updateWrenchHold(0.1);
         player.update(1 / 60, NO_INPUT, 0, terrain);
         expect(boltMesh?.visible).toBe(true);
         // The effect starts small and grows with the charge.
@@ -223,8 +303,10 @@ describe('wrench attack', () => {
         expect(earlyScale).toBeGreaterThan(0);
         expect(earlyScale).toBeLessThan(0.2);
 
-        // The bolts grow to full size and keep flickering after the charge fills.
-        player.updateWrenchCharge(0.95);
+        // The bolts grow to full size over the whole build-up and keep flickering after it tops out.
+        player.updateWrenchHold(WRENCH_CHARGE_SECONDS);
+        expect(player.isWrenchCharged).toBe(true);
+        player.updateWrenchHold(WRENCH_CHARGE_TAIL_SECONDS);
         stepPlayer(player, terrain, 20);
         expect(player.isWrenchCharged).toBe(true);
         expect(boltMesh?.visible).toBe(true);
@@ -232,7 +314,7 @@ describe('wrench attack', () => {
         expect(boltMesh?.scale.x ?? 0).toBeGreaterThan(0.85);
 
         // They stay through the charged swing and disappear when it finishes.
-        expect(player.releaseWrench()).toBe(true);
+        expect(player.releaseWrenchHold()).toBe(true);
         player.update(0.1, NO_INPUT, 0, terrain);
         expect(boltMesh?.visible).toBe(true);
         player.update(WRENCH_CHARGED_ATTACK_SECONDS, NO_INPUT, 0, terrain);
@@ -352,23 +434,52 @@ describe('wrench attack', () => {
         expect(strikes).toHaveLength(1);
     });
 
-    it('connects as soon as the charged spin begins', () => {
+    it('checks the charged spin twice, on release and halfway through', () => {
         const terrain = testTerrain();
         const player = testPlayer(terrain);
         player.setWrenchEquipped(true);
-        player.beginWrenchCharge();
-        player.updateWrenchCharge(1);
-        const strikes: boolean[] = [];
-        player.onWrenchStrike = (charged) => {
-            strikes.push(charged);
+        holdUntilCharged(player);
+        const strikes: Array<{ charged: boolean; secondCheck: boolean }> = [];
+        player.onWrenchStrike = (charged, secondCheck) => {
+            strikes.push({ charged, secondCheck });
         };
 
-        expect(player.releaseWrench()).toBe(true);
-        expect(strikes).toEqual([true]);
+        expect(player.releaseWrenchHold()).toBe(true);
+        expect(strikes).toEqual([{ charged: true, secondCheck: false }]);
 
-        // The rest of the spin does not check for hits again.
-        player.update(WRENCH_CHARGED_ATTACK_SECONDS, NO_INPUT, 0, terrain);
+        // Nothing else connects during the first half of the turn.
+        player.update(WRENCH_CHARGED_ATTACK_SECONDS / 2 - 0.01, NO_INPUT, 0, terrain);
         expect(strikes).toHaveLength(1);
+
+        player.update(0.02, NO_INPUT, 0, terrain);
+        expect(strikes).toEqual([
+            { charged: true, secondCheck: false },
+            { charged: true, secondCheck: true },
+        ]);
+
+        // The rest of the spin checks no further.
+        player.update(WRENCH_CHARGED_ATTACK_SECONDS, NO_INPUT, 0, terrain);
+        expect(strikes).toHaveLength(2);
+        expect(player.isWrenchSwinging).toBe(false);
+    });
+
+    it('skips the second check when the spin is interrupted before it', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        player.setWrenchEquipped(true);
+        holdUntilCharged(player);
+        let strikes = 0;
+        player.onWrenchStrike = () => {
+            strikes++;
+        };
+
+        expect(player.releaseWrenchHold()).toBe(true);
+        player.update(WRENCH_CHARGED_ATTACK_SECONDS / 4, NO_INPUT, 0, terrain);
+        player.setWrenchEquipped(false);
+        player.update(WRENCH_CHARGED_ATTACK_SECONDS, NO_INPUT, 0, terrain);
+
+        expect(player.isWrenchSwinging).toBe(false);
+        expect(strikes).toBe(1);
     });
 
     it('does not connect when the swing is interrupted before the hit lands', () => {
@@ -397,9 +508,10 @@ describe('wrench attack', () => {
             completions++;
         };
 
-        player.beginWrenchCharge();
-        player.updateWrenchCharge(1);
-        expect(player.releaseWrench()).toBe(true);
+        player.beginWrenchHold();
+        player.updateWrenchHold(WRENCH_CHARGE_START_SECONDS);
+        player.updateWrenchHold(WRENCH_CHARGE_SECONDS);
+        expect(player.releaseWrenchHold()).toBe(true);
 
         // Still spinning where the regular swing would already have finished.
         player.update(WRENCH_ATTACK_SECONDS + 0.01, NO_INPUT, 0, terrain);
@@ -425,7 +537,7 @@ describe('wolf petting', () => {
         expect(player.petReach).toBe(0);
         // A pet outranks the ordinary wrench actions while it plays.
         expect(player.swingWrench()).toBe(false);
-        expect(player.beginWrenchCharge()).toBe(false);
+        expect(player.beginWrenchHold()).toBe(false);
 
         let completed = 0;
         player.onPettingEnd = () => {
@@ -515,10 +627,8 @@ describe('wrench circle', () => {
         const arm = wrench?.parent;
         expect(arm).toBeDefined();
         player.setWrenchEquipped(true);
-
-        player.beginWrenchCharge();
-        player.updateWrenchCharge(1);
-        expect(player.releaseWrench()).toBe(true);
+        holdUntilCharged(player);
+        expect(player.releaseWrenchHold()).toBe(true);
         expect(Math.abs(arm!.rotation.x)).toBeLessThan(0.05);
 
         const startYaw = player.group.rotation.y;
@@ -962,7 +1072,7 @@ describe('Player destruction', () => {
         const glowOpacity = glow.material.opacity;
 
         player.setWrenchEquipped(true);
-        expect(player.beginWrenchCharge()).toBe(true);
+        expect(player.beginWrenchHold()).toBe(true);
         player.destroy();
 
         expect(player.isDestroyed).toBe(true);
@@ -978,7 +1088,7 @@ describe('Player destruction', () => {
         const restingPosition = player.group.position.clone();
         player.update(0.5, { forward: 1, right: 0, jump: true }, 0, terrain);
         expect(player.group.position.distanceTo(restingPosition)).toBeLessThan(0.001);
-        expect(player.beginWrenchCharge()).toBe(false);
+        expect(player.beginWrenchHold()).toBe(false);
 
         player.revive();
         expect(player.isDestroyed).toBe(false);

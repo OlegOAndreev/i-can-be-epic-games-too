@@ -68,6 +68,13 @@ const MIN_PART_DISTANCE = 240;
 const PLACEMENT_ATTEMPTS = 500;
 // One piece always rests on the seabed so the search takes the player underwater at least once.
 const UNDERWATER_DEPTH = 2.5;
+// Some worlds keep their only deep water in the shelf between the placement square and the mountain
+// rim, where neither the ring search nor the coarse scan of the square can reach. The underwater
+// search widens out to here before it settles for a shallower spot.
+const UNDERWATER_SEARCH_LIMIT = WORLD_HALF_SIZE - 130;
+// The shallowest water that still counts as a seabed. Only worlds whose deepest basin is a puddle
+// reach this rule, and there the piece is better off wet than the world refusing to load.
+const MIN_SEABED_DEPTH = 0.5;
 const SEARCH_RADIUS = 52;
 const SEARCH_MIN_OFFSET = 14;
 const SEARCH_MAX_OFFSET = 38;
@@ -147,9 +154,9 @@ const MARKER_HEIGHT = 2.8;
 const PICKUP_DISTANCE = 1.7;
 const PICKUP_VERTICAL_RANGE = 3;
 
-// Five pieces of the crashed ship, scattered deterministically from the world seed. One piece lies
-// underwater and the rest on dry land. Each one is a simple trigger rather than a collider: walking
-// over it collects it.
+// Five pieces of the crashed ship, scattered deterministically from the world seed. The first piece
+// goes into the deepest water the world offers and the rest onto dry land. Each one is a simple
+// trigger rather than a collider: walking over it collects it.
 export class SpaceshipParts {
     readonly group = new Group();
     // Called after a piece is picked up, with the number of pieces still missing.
@@ -317,7 +324,14 @@ export class SpaceshipParts {
 
         return (
             this.findRingPosition((x, z) => this.isValidUnderwaterPosition(x, z, spawn, placed)) ??
-            this.findFallbackUnderwaterPosition(spawn, placed)
+            // The random samples can miss every basin, so widen the coarse scan before loosening a
+            // rule: the deep water often sits in the shelf that the ring search cannot reach.
+            this.findFallbackUnderwaterPosition(spawn, placed, WORLD_HALF_SIZE - 250, UNDERWATER_DEPTH) ??
+            this.findFallbackUnderwaterPosition(spawn, placed, UNDERWATER_SEARCH_LIMIT, UNDERWATER_DEPTH) ??
+            // A world whose deepest basin is a puddle still hides the piece better than dry land.
+            this.findFallbackUnderwaterPosition(spawn, placed, UNDERWATER_SEARCH_LIMIT, MIN_SEABED_DEPTH) ??
+            // A landlocked world has no seabed at all: the piece waits in the open with the wreckage.
+            this.findPosition(placed)
         );
     }
 
@@ -341,12 +355,14 @@ export class SpaceshipParts {
         );
     }
 
-    // Coarse scan used only if the random samples keep landing on the shore or on cliffs.
+    // Coarse scan used only if the random samples keep landing on the shore or on cliffs. Returns
+    // null when the scanned square holds no spot that is at least `minimumDepth` under the surface.
     private findFallbackUnderwaterPosition(
         spawn: { x: number; z: number },
         placed: ReadonlyArray<{ x: number; z: number }>,
-    ): { x: number; z: number } {
-        const limit = WORLD_HALF_SIZE - 250;
+        limit: number,
+        minimumDepth: number,
+    ): { x: number; z: number } | null {
         const step = 32;
         let anySeabed: { x: number; z: number } | null = null;
 
@@ -355,7 +371,7 @@ export class SpaceshipParts {
             step,
             score: (x, z) => {
                 const height = this.terrain.heightAt(x, z);
-                if (height > WATER_LEVEL - UNDERWATER_DEPTH) {
+                if (height > WATER_LEVEL - minimumDepth) {
                     return null;
                 }
                 anySeabed ??= { x, z };
@@ -383,11 +399,7 @@ export class SpaceshipParts {
         });
 
         // The relaxed point ignores spacing but still fulfils the one hard rule: the piece is wet.
-        const fallback = best ?? anySeabed;
-        if (!fallback) {
-            throw new Error('No underwater spot was found for the crashed ship parts.');
-        }
-        return fallback;
+        return best ?? anySeabed;
     }
 
     private findPosition(placed: ReadonlyArray<{ x: number; z: number }>): { x: number; z: number } {

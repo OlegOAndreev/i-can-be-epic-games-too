@@ -31,7 +31,7 @@ import type { Difficulty, EnemyDialogue } from '../src/enemies';
 import type { MegastructureTower, Ramp, StructureBox } from '../src/megastructures';
 import { ENEMY_EYE_COLOR } from '../src/npc-robots';
 import { mulberry32 } from '../src/noise';
-import { PLAYER_RADIUS, WRENCH_CHARGED_DAMAGE, WRENCH_CHARGED_REACH } from '../src/player';
+import { PLAYER_RADIUS, THIRD_PERSON_WRENCH_REACH_SCALE, WRENCH_CHARGED_DAMAGE, WRENCH_CHARGED_REACH } from '../src/player';
 import { PlayerHealth } from '../src/player-health';
 import { fakeTerrain, installCanvasDocument, stubAudio, testTerrain, visibleMeshes } from './test-helpers';
 import type { Terrain } from '../src/terrain';
@@ -1179,6 +1179,56 @@ describe('enemy robots', () => {
         enemies.dispose();
     });
 
+    it('revives a random floor for the debug teleport', () => {
+        const { enemies, enemy, storeyBaseY } = singleEnemyLevel('easy');
+        const kind = enemy.name.replace('enemy-', '') as keyof typeof ENEMY_HITS_TO_DEFEAT;
+        const required = Math.max(1, ENEMY_HITS_TO_DEFEAT[kind] + DIFFICULTY_SETTINGS.easy.hitPointDelta);
+        const away = new Vector3(500, 0, 500);
+        for (let hit = 0; hit < required; hit++) {
+            expect(enemies.wrenchStrike(enemy.position.clone())).toHaveLength(1);
+            if (hit < required - 1) {
+                enemies.update(HIT_IMMUNITY_SECONDS + 0.02, away);
+            }
+        }
+        expect(enemies.getDefeatedEnemyIds()).toHaveLength(1);
+
+        // The button lands the player on the far side of the deck and brings the cleared floor back.
+        const floor = enemies.reviveRandomFloor();
+        expect(floor).not.toBeNull();
+        expect(floor!.position.y).toBeCloseTo(storeyBaseY, 5);
+        expect(enemies.getDefeatedEnemyIds()).toEqual([]);
+        expect(enemy.getObjectByName('enemy-visual')?.visible).toBe(true);
+
+        // Out of the wrench's reach on arrival, looking straight at the robot.
+        const offsetX = enemy.position.x - floor!.position.x;
+        const offsetZ = enemy.position.z - floor!.position.z;
+        expect(Math.hypot(offsetX, offsetZ)).toBeGreaterThan(WRENCH_RANGE);
+        expect(Math.atan2(offsetX, offsetZ)).toBeCloseTo(floor!.facing, 5);
+        expect(enemies.wrenchStrike(floor!.position.clone())).toHaveLength(0);
+        enemies.dispose();
+    });
+
+    it('teleports without reviving a floor during a peaceful run', () => {
+        const { enemies, enemy, storeyBaseY } = singleEnemyLevel('easy');
+        const kind = enemy.name.replace('enemy-', '') as keyof typeof ENEMY_HITS_TO_DEFEAT;
+        const required = Math.max(1, ENEMY_HITS_TO_DEFEAT[kind] + DIFFICULTY_SETTINGS.easy.hitPointDelta);
+        const away = new Vector3(500, 0, 500);
+        for (let hit = 0; hit < required; hit++) {
+            expect(enemies.wrenchStrike(enemy.position.clone())).toHaveLength(1);
+            if (hit < required - 1) {
+                enemies.update(HIT_IMMUNITY_SECONDS + 0.02, away);
+            }
+        }
+        enemies.setDifficulty('peaceful');
+
+        // The arrival spot still comes back on the deck, but a friendly run leaves the floor empty.
+        const floor = enemies.reviveRandomFloor();
+        expect(floor).not.toBeNull();
+        expect(floor!.position.y).toBeCloseTo(storeyBaseY, 5);
+        expect(enemies.getDefeatedEnemyIds()).toHaveLength(1);
+        enemies.dispose();
+    });
+
     it('deals double damage with the charged strike', () => {
         const { enemies, enemy, storeyBaseY } = singleEnemyLevel();
         const kind = enemy.name.replace('enemy-', '') as keyof typeof ENEMY_HITS_TO_DEFEAT;
@@ -1191,32 +1241,54 @@ describe('enemy robots', () => {
         enemies.dispose();
     });
 
-    it('shortens the charged reach to 2.5 m', () => {
-        const scale = WRENCH_CHARGED_REACH / WRENCH_RANGE;
+    it('keeps the charged spin inside its own reach in both view modes', () => {
+        // The game composes the charged spin's reach the same way in both views: its own reach
+        // against the base range, then the third-person compensation on top.
+        const chargedScale = WRENCH_CHARGED_REACH / WRENCH_RANGE;
+        const thirdPersonScale = chargedScale * THIRD_PERSON_WRENCH_REACH_SCALE;
+        const hitsAt = (offset: number, scale: number): number => {
+            const level = singleEnemyLevel('easy');
+            const player = new Vector3(level.enemy.position.x + offset, level.storeyBaseY, level.enemy.position.z);
+            const hits = level.enemies.wrenchStrike(player, WRENCH_CHARGED_DAMAGE, null, Math.PI * 2, scale);
+            level.enemies.dispose();
+            return hits.length;
+        };
 
-        const near = singleEnemyLevel('easy');
-        const nearPlayer = new Vector3(
-            near.enemy.position.x + 2.4,
-            near.storeyBaseY,
-            near.enemy.position.z,
-        );
-        expect(near.enemies.wrenchStrike(nearPlayer, WRENCH_CHARGED_DAMAGE, null, Math.PI * 2, scale)).toHaveLength(1);
-        near.enemies.dispose();
+        // Third person spins past the plain reach: 3.5 * 1.2 = 4.2 m.
+        expect(hitsAt(4.1, thirdPersonScale)).toBe(1);
+        expect(hitsAt(4.3, thirdPersonScale)).toBe(0);
 
-        const far = singleEnemyLevel('easy');
-        const farPlayer = new Vector3(far.enemy.position.x + 2.6, far.storeyBaseY, far.enemy.position.z);
-        expect(far.enemies.wrenchStrike(farPlayer, WRENCH_CHARGED_DAMAGE, null, Math.PI * 2, scale)).toHaveLength(0);
-        far.enemies.dispose();
+        // First person drops the compensation and spins at the plain 3.5 m.
+        expect(hitsAt(3.4, chargedScale)).toBe(1);
+        expect(hitsAt(3.6, chargedScale)).toBe(0);
+    });
+
+    it('skips the targets a charged spin already hit when it checks again', () => {
+        const { enemies, enemy } = singleEnemyLevel();
+        const hitTargets = new Set<object>();
+        const strike = (targets: Set<object>) =>
+            enemies.wrenchStrike(enemy.position.clone(), 1, null, Math.PI * 2, 1, targets);
+
+        expect(strike(hitTargets)).toHaveLength(1);
+        expect(hitTargets.size).toBe(1);
+
+        // Long enough for the hit immunity to lapse, so only the recorded target keeps it safe.
+        enemies.update(HIT_IMMUNITY_SECONDS + 0.02, new Vector3(500, 0, 500));
+        expect(strike(hitTargets)).toHaveLength(0);
+
+        // The next swing starts with a clean record and hits again.
+        expect(strike(new Set<object>())).toHaveLength(1);
+        enemies.dispose();
     });
 
     it('blocks both swings when structure geometry sits between the player and the enemy', () => {
         const blocked = singleEnemyLevel('easy');
         const blockedPlayer = new Vector3(
-            blocked.enemy.position.x + 3,
+            blocked.enemy.position.x + 1.8,
             blocked.storeyBaseY,
             blocked.enemy.position.z,
         );
-        const wallX = blocked.enemy.position.x + 1.5;
+        const wallX = blocked.enemy.position.x + 0.9;
         blocked.terrain.megastructures.boxes.push({
             minX: wallX - 0.1,
             maxX: wallX + 0.1,
@@ -1234,7 +1306,7 @@ describe('enemy robots', () => {
         // The same distance connects when nothing stands between the two robots.
         const clear = singleEnemyLevel('easy');
         const clearPlayer = new Vector3(
-            clear.enemy.position.x + 3,
+            clear.enemy.position.x + 1.8,
             clear.storeyBaseY,
             clear.enemy.position.z,
         );
@@ -1254,7 +1326,7 @@ describe('enemy robots', () => {
         // robot is ahead, behind, or to either side of the player.
         for (const [dx, dz] of directions) {
             const { enemies, enemy, storeyBaseY } = singleEnemyLevel('easy');
-            const player = new Vector3(enemy.position.x + dx * 4, storeyBaseY, enemy.position.z + dz * 4);
+            const player = new Vector3(enemy.position.x + dx * 1.5, storeyBaseY, enemy.position.z + dz * 1.5);
 
             expect(enemies.wrenchStrike(player)).toHaveLength(1);
             enemies.dispose();
@@ -1262,15 +1334,15 @@ describe('enemy robots', () => {
 
         // The reach is a generous radius, not unlimited: a robot further away stays untouched.
         const { enemies, enemy, storeyBaseY } = singleEnemyLevel('easy');
-        const beyondReach = new Vector3(enemy.position.x + 5.5, storeyBaseY, enemy.position.z);
+        const beyondReach = new Vector3(enemy.position.x + 4, storeyBaseY, enemy.position.z);
         expect(enemies.wrenchStrike(beyondReach)).toHaveLength(0);
         enemies.dispose();
     });
 
     it('scales wrench reach by the supplied multiplier', () => {
-        // 5.2 m is outside the normal 4.5 m reach but inside 4.5 * 1.2 = 5.4 m.
+        // 3.6 m is outside the normal 3.5 m reach but inside 3.5 * 1.2 = 4.2 m.
         const { enemies, enemy, storeyBaseY } = singleEnemyLevel();
-        const player = new Vector3(enemy.position.x + 5.2, storeyBaseY, enemy.position.z);
+        const player = new Vector3(enemy.position.x + 3.6, storeyBaseY, enemy.position.z);
         expect(enemies.wrenchStrike(player)).toHaveLength(0);
         expect(enemies.wrenchStrike(player, 1, null, Math.PI * 2, 1.2)).toHaveLength(1);
         enemies.dispose();
@@ -1280,10 +1352,10 @@ describe('enemy robots', () => {
         const hitsAtAngle = (degrees: number, arc: number): number => {
             const { enemies, enemy } = singleEnemyLevel();
             const angle = (degrees * Math.PI) / 180;
-            // Facing 0 (+Z), the robot sits at this angle from the player's facing, four metres out.
+            // Facing 0 (+Z), the robot sits at this angle from the player's facing, 1.5 m out.
             const player = enemy.position.clone();
-            player.x -= Math.sin(angle) * 4;
-            player.z -= Math.cos(angle) * 4;
+            player.x -= Math.sin(angle) * 1.5;
+            player.z -= Math.cos(angle) * 1.5;
             const hits = enemies.wrenchStrike(player, 1, 0, arc).length;
             enemies.dispose();
             return hits;

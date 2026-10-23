@@ -7,6 +7,22 @@ import { Terrain, WATER_LEVEL, WORLD_HALF_SIZE } from '../src/terrain';
 import { FAST_TERRAIN, PLAYER_SETTINGS, stepPlayer, testPlayer, testTerrain, triangleCount } from './test-helpers';
 import type { CylinderCollider } from '../src/terrain';
 
+// A point on the map's boundary for a side of the rim (0 = +x, 1 = -x, 2 = +z, 3 = -z), where `t`
+// runs from -1 to 1 along that side.
+function rimPoint(side: number, t: number): { x: number; z: number } {
+    const edge = WORLD_HALF_SIZE * 0.99;
+    switch (side) {
+        case 0:
+            return { x: edge, z: t * edge };
+        case 1:
+            return { x: -edge, z: t * edge };
+        case 2:
+            return { x: t * edge, z: edge };
+        default:
+            return { x: t * edge, z: -edge };
+    }
+}
+
 describe('Terrain', () => {
     it('is deterministic for a seed and varies between seeds', () => {
         const first = testTerrain(1234);
@@ -37,6 +53,241 @@ describe('Terrain', () => {
         expect(terrain.heightAt(x, z)).toBeGreaterThan(WATER_LEVEL);
         expect(terrain.slopeAt(x, z)).toBeLessThan(0.42);
     });
+
+    it('digs its inland pools into low, dry ground', () => {
+        for (const seed of [1234, 24680, 20261018, 1]) {
+            const terrain = testTerrain(seed);
+            expect(terrain.poolCount, `seed ${seed}`).toBeGreaterThanOrEqual(1);
+            expect(terrain.poolCount, `seed ${seed}`).toBeLessThanOrEqual(5);
+            expect(terrain.pools, `seed ${seed}`).toHaveLength(terrain.poolCount);
+
+            for (const pool of terrain.pools) {
+                // A flat floor below the waterline, with a dry ring just beyond the water that keeps the
+                // pool its own body of water.
+                expect(terrain.heightAt(pool.x, pool.z)).toBeLessThanOrEqual(WATER_LEVEL - 2);
+                expect(terrain.slopeAt(pool.x, pool.z)).toBeLessThan(0.05);
+                for (let index = 0; index < 8; index++) {
+                    const angle = (index / 8) * Math.PI * 2;
+                    const ring = (pool.radius + pool.shapeWobble) * 1.15;
+                    const x = pool.x + Math.cos(angle) * ring;
+                    const z = pool.z + Math.sin(angle) * ring;
+                    expect(terrain.heightAt(x, z)).toBeGreaterThan(WATER_LEVEL);
+                }
+            }
+        }
+    }, 30_000);
+
+    it('gives every pool an irregular shoreline', () => {
+        for (const seed of [1234, 24680, 20261018, 1]) {
+            const terrain = testTerrain(seed);
+
+            for (const pool of terrain.pools) {
+                // The water's radius around the pool: a circle would give the same one everywhere.
+                const radii: number[] = [];
+                for (let index = 0; index < 16; index++) {
+                    const angle = (index / 16) * Math.PI * 2;
+                    let edge = 0;
+                    for (let distance = 2; distance <= pool.reach; distance += 2) {
+                        if (
+                            terrain.heightAt(
+                                pool.x + Math.cos(angle) * distance,
+                                pool.z + Math.sin(angle) * distance,
+                            ) >= WATER_LEVEL
+                        ) {
+                            break;
+                        }
+                        edge = distance;
+                    }
+                    radii.push(edge);
+                }
+
+                const widest = Math.max(...radii);
+                const narrowest = Math.min(...radii);
+                expect(narrowest, `seed ${seed}`).toBeGreaterThan(10);
+                expect(widest / narrowest, `seed ${seed} pool is too round`).toBeGreaterThan(1.15);
+            }
+        }
+    }, 30_000);
+
+    it('builds the rim as a ridge with a few peaks per side', () => {
+        for (const seed of [1234, 24680, 20261018, 1]) {
+            const terrain = testTerrain(seed);
+            expect(terrain.rimPeaks).toHaveLength(4);
+
+            for (let side = 0; side < terrain.rimPeaks.length; side++) {
+                const peaks = terrain.rimPeaks[side];
+                expect(peaks.length, `seed ${seed} side ${side}`).toBeGreaterThanOrEqual(1);
+                expect(peaks.length, `seed ${seed} side ${side}`).toBeLessThanOrEqual(4);
+                for (const peak of peaks) {
+                    expect(Math.abs(peak.t)).toBeLessThanOrEqual(1);
+                    expect(peak.height).toBeGreaterThan(100);
+                }
+
+                // The skyline along that side rises and falls rather than running flat.
+                const heights: number[] = [];
+                for (let step = 0; step <= 8; step++) {
+                    const t = -0.9 + (step / 8) * 1.8;
+                    const point = rimPoint(side, t);
+                    heights.push(terrain.heightAt(point.x, point.z));
+                }
+                expect(Math.max(...heights) - Math.min(...heights), `seed ${seed} side ${side}`).toBeGreaterThan(20);
+            }
+        }
+    }, 30_000);
+
+    it('gives one of its two seas the larger share of the water', () => {
+        // Each bay owns the wet cells nearest its own corner. One world swings widely with the
+        // shoreline wobble, so judge the 1.5x target by the median across a handful of worlds.
+        const step = 24;
+        const ratios: number[] = [];
+
+        for (const seed of [1234, 24680, 20261018, 1, 42, 777, 139, 198, 6]) {
+            const terrain = testTerrain(seed);
+            const [first, second] = terrain.seaCorners;
+            const areas = [0, 0];
+
+            for (let z = -WORLD_HALF_SIZE; z <= WORLD_HALF_SIZE; z += step) {
+                for (let x = -WORLD_HALF_SIZE; x <= WORLD_HALF_SIZE; x += step) {
+                    if (terrain.heightAt(x, z) >= WATER_LEVEL) {
+                        continue;
+                    }
+                    // The inland pools are water too, but they are not part of either sea.
+                    if (terrain.pools.some((pool) => Math.hypot(x - pool.x, z - pool.z) <= pool.reach)) {
+                        continue;
+                    }
+                    const firstDistance = Math.hypot(x - first.x, z - first.z);
+                    const secondDistance = Math.hypot(x - second.x, z - second.z);
+                    areas[firstDistance <= secondDistance ? 0 : 1]++;
+                }
+            }
+
+            expect(areas[0], `seed ${seed} bay`).toBeGreaterThan(0);
+            expect(areas[1], `seed ${seed} bay`).toBeGreaterThan(0);
+            ratios.push(Math.max(...areas) / Math.min(...areas));
+        }
+
+        ratios.sort((left, right) => left - right);
+        const median = ratios[Math.floor(ratios.length / 2)];
+        expect(median).toBeGreaterThan(1.3);
+        expect(median).toBeLessThan(1.7);
+    }, 30_000);
+
+    it('keeps every pool in the size the level asks for', () => {
+        for (const seed of [1234, 24680, 20261018, 1]) {
+            const terrain = testTerrain(seed);
+
+            for (const pool of terrain.pools) {
+                // Walk out of the pool until the ground rises out of the water, and take the
+                // narrowest and widest directions: the water has to measure between 50 and 150 m
+                // across whichever way it is measured.
+                const radii: number[] = [];
+                for (let index = 0; index < 16; index++) {
+                    const angle = (index / 16) * Math.PI * 2;
+                    let edge = 0;
+                    for (let distance = 2; distance <= pool.reach; distance += 2) {
+                        if (
+                            terrain.heightAt(
+                                pool.x + Math.cos(angle) * distance,
+                                pool.z + Math.sin(angle) * distance,
+                            ) >= WATER_LEVEL
+                        ) {
+                            break;
+                        }
+                        edge = distance;
+                    }
+                    radii.push(edge);
+                }
+
+                expect(Math.min(...radii) * 2, `seed ${seed}`).toBeGreaterThanOrEqual(50);
+                expect(Math.max(...radii) * 2, `seed ${seed}`).toBeLessThanOrEqual(150);
+            }
+        }
+    }, 30_000);
+
+    it('keeps every pool out of the sea', () => {
+        // Flood fill the water on a grid: a body that reaches the map boundary is the sea, so no
+        // pool may belong to one.
+        const step = 12;
+        const side = Math.floor((WORLD_HALF_SIZE * 2) / step) + 1;
+
+        for (const seed of [1234, 24680, 20261018, 1]) {
+            const terrain = testTerrain(seed);
+            const wet = new Uint8Array(side * side);
+            for (let row = 0; row < side; row++) {
+                for (let column = 0; column < side; column++) {
+                    const x = -WORLD_HALF_SIZE + column * step;
+                    const z = -WORLD_HALF_SIZE + row * step;
+                    wet[row * side + column] = terrain.heightAt(x, z) < WATER_LEVEL ? 1 : 0;
+                }
+            }
+
+            const labels = new Int32Array(side * side).fill(-1);
+            const reachesBoundary: boolean[] = [];
+            const stack: number[] = [];
+            for (let start = 0; start < wet.length; start++) {
+                if (wet[start] !== 1 || labels[start] !== -1) {
+                    continue;
+                }
+                const label = reachesBoundary.length;
+                let boundary = false;
+                labels[start] = label;
+                stack.push(start);
+                while (stack.length > 0) {
+                    const index = stack.pop()!;
+                    const row = Math.floor(index / side);
+                    const column = index % side;
+                    if (row === 0 || column === 0 || row === side - 1 || column === side - 1) {
+                        boundary = true;
+                    }
+                    for (const [dRow, dColumn] of [
+                        [1, 0],
+                        [-1, 0],
+                        [0, 1],
+                        [0, -1],
+                    ]) {
+                        const nextRow = row + dRow;
+                        const nextColumn = column + dColumn;
+                        if (nextRow < 0 || nextColumn < 0 || nextRow >= side || nextColumn >= side) {
+                            continue;
+                        }
+                        const next = nextRow * side + nextColumn;
+                        if (wet[next] === 1 && labels[next] === -1) {
+                            labels[next] = label;
+                            stack.push(next);
+                        }
+                    }
+                }
+                reachesBoundary.push(boundary);
+            }
+
+            const labelAt = (x: number, z: number): number => {
+                const column = Math.round((x + WORLD_HALF_SIZE) / step);
+                const row = Math.round((z + WORLD_HALF_SIZE) / step);
+                return labels[row * side + column];
+            };
+
+            const labelsOfPools = terrain.pools.map((pool) => labelAt(pool.x, pool.z));
+            for (const label of labelsOfPools) {
+                expect(label, `seed ${seed}`).toBeGreaterThanOrEqual(0);
+                expect(reachesBoundary[label], `seed ${seed} pool joined the sea`).toBe(false);
+            }
+            expect(new Set(labelsOfPools).size, `seed ${seed} pools merged`).toBe(terrain.pools.length);
+        }
+    }, 30_000);
+
+    it('draws a different number of pools for each world', () => {
+        const counts = new Map<number, number>();
+        for (let seed = 1; seed <= 12; seed++) {
+            const terrain = testTerrain(seed);
+            counts.set(seed, terrain.poolCount);
+            expect(terrain.pools, `seed ${seed}`).toHaveLength(terrain.poolCount);
+        }
+
+        // The count is drawn from the seed, so the worlds differ and the whole range shows up.
+        expect(new Set(counts.values()).size).toBeGreaterThan(1);
+        expect(Math.min(...counts.values())).toBe(1);
+        expect(Math.max(...counts.values())).toBe(5);
+    }, 60_000);
 
     it('lands the spaceship on dry, gentle ground near the spawn', () => {
         const terrain = testTerrain(24680);

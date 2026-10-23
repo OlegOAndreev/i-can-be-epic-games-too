@@ -65,13 +65,13 @@ import { NpcRobots, parseRobotDialogue } from './npc-robots';
 import type { DialogueLine, DialoguePresenter, RobotDialogue } from './npc-robots';
 import {
     FIRST_PERSON_DEFAULT_FOV,
-    FIRST_PERSON_WRENCH_REACH_SCALE,
     FIRST_PERSON_WRENCH_STRIKE_ARC,
     HARD_LANDING_SPEED,
     isFullySubmerged,
     PLAYER_HEIGHT,
     Player,
-    WRENCH_CHARGE_SECONDS,
+    THIRD_PERSON_WRENCH_REACH_SCALE,
+    WRENCH_CHARGE_ANIMATION_SECONDS,
     WRENCH_CHARGED_DAMAGE,
     WRENCH_CHARGED_REACH,
 } from './player';
@@ -171,7 +171,7 @@ const MAX_HARD_LANDING_IMPACT_GAIN = 0.2;
 const METAL_FOOTSTEP_GAIN = 0.18;
 const INSIDE_FOOTSTEP_BOOST = 2;
 // Soft ambient fill added to tower interiors, which see no direct sun.
-const INTERIOR_FILL_INTENSITY = 0.35;
+const INTERIOR_FILL_INTENSITY = 0.05;
 const INTERIOR_FILL_FADE_SPEED = 4;
 // Any four of the six towers empty the meter; the remaining towers are optional.
 const ENERGY_PER_SWITCH = 25;
@@ -183,8 +183,9 @@ const SWITCH_CINEMATIC_DELAY = 0.5;
 // The switch buzz is stopped by the lightning strike. The extra length only keeps the scheduled
 // fade from arriving first when slow frames stretch the charge past its nominal duration.
 const SWITCH_BUZZ_SLACK_SECONDS = 5;
-// The charge camera shakes at a fixed amplitude, twice as fast as the original tremor.
-const CINEMATIC_SHAKE_AMPLITUDE = 0.25;
+// The charge camera shakes at a fixed amplitude, twice as fast as the original tremor. Both
+// camera modes get the same tremor, applied along their own view axes.
+const CINEMATIC_SHAKE_AMPLITUDE = 0.125;
 const CINEMATIC_SHAKE_FREQUENCY = 2;
 const CINEMATIC_INPUT = { forward: 0, right: 0, jump: false };
 // Screen-space HUD elements that are drawn into screenshots on top of the WebGL frame.
@@ -1017,14 +1018,16 @@ async function init(): Promise<void> {
     player.setLeftHanded(wrenchSettings.leftHanded);
     firstPersonWrench.setLeftHanded(wrenchSettings.leftHanded);
     playerHealth = new PlayerHealth(gameSettings.difficulty);
-    // The wrench connects once per swing: a regular swing lands a third of the way through its
-    // animation, while the charged spin lands as soon as its animation begins. Interrupting a
-    // regular swing before that point skips the hit.
-    player.onWrenchStrike = (charged) => {
-        strikeWithWrench(charged);
+    // The wrench connects per check: a regular swing lands one hit, a third of the way through its
+    // animation, while the charged spin lands one on release and another halfway through the turn.
+    // Interrupting a regular swing before that point skips the hit, and a spin interrupted before its
+    // halfway point skips the second check.
+    player.onWrenchStrike = (charged, secondCheck) => {
+        strikeWithWrench(charged, secondCheck);
     };
-    // Fires for an immediate charge and for one buffered from a press during the previous swing.
-    player.onWrenchChargeStart = () => gameAudio.playStructureBuzz(WRENCH_CHARGE_SECONDS, 'wrench');
+    // Fires once when the hold turns into a charge, for the electrical build-up sound. It runs for
+    // the whole build-up, whose last WRENCH_CHARGE_TAIL_SECONDS come after the strike is ready.
+    player.onWrenchChargeStart = () => gameAudio.playStructureBuzz(WRENCH_CHARGE_ANIMATION_SECONDS, 'wrench');
     // A first pet sends the wolf running to an emerald; later pets make it sit and thank the
     // player. The wolf itself enforces the once-only guide.
     player.onPettingEnd = () => {
@@ -1265,12 +1268,9 @@ async function init(): Promise<void> {
                 wreckMap.toggle();
             }
         },
-        onTeleport: () => {
-            if (!finale?.active) {
-                teleportToRandomMegastructure();
-            }
-        },
+        onTeleport: () => teleportToRandomMegastructure(),
         onFinaleShortcut: () => startFinaleShortcut(),
+        onGoToCrazies: () => goToCrazies(),
         onResume: () => resumeWalking(),
     });
     input.unacceleratedMouse = mouseSettings.unacceleratedMouse;
@@ -1530,11 +1530,8 @@ function createLights(): void {
     // already covers static geometry across the island, so extra live cascades mostly duplicate work.
     const cascadeCount = staticAtlas ? 1 : preset.cascades;
     const cascadeFractions = staticAtlas ? [] : preset.fractions;
-    const liveMapCap =
-        renderSettings.shadowQuality === 'ultra' ? ULTRA_LIVE_SHADOW_MAP_SIZE : MAX_LIVE_SHADOW_MAP_SIZE;
-    const liveMapSize = staticAtlas
-        ? Math.min(liveMapCap, preset.mapSize * 2)
-        : preset.mapSize;
+    const liveMapCap = renderSettings.shadowQuality === 'ultra' ? ULTRA_LIVE_SHADOW_MAP_SIZE : MAX_LIVE_SHADOW_MAP_SIZE;
+    const liveMapSize = staticAtlas ? Math.min(liveMapCap, preset.mapSize * 2) : preset.mapSize;
     const robotMapSize = Math.min(liveMapSize, MAX_ROBOT_SHADOW_MAP_SIZE);
     const liveDistance = staticAtlas
         ? Math.min(renderSettings.shadowDistance, STATIC_ATLAS_LIVE_DISTANCE)
@@ -1915,6 +1912,14 @@ function createGui(GuiConstructor: typeof GUI): GUI {
     };
     debugFolder.add(spawnActions, 'spawnWolf').name(t('gui.spawnWolf', 'Spawn wolf'));
     debugFolder.add(spawnActions, 'spawnDeer').name(t('gui.spawnDeer', 'Spawn deer'));
+    const shortcutActions = {
+        teleport: () => teleportToRandomMegastructure(),
+        startFinale: () => startFinaleShortcut(),
+        goToCrazies: () => goToCrazies(),
+    };
+    debugFolder.add(shortcutActions, 'teleport').name(t('gui.teleport', 'Teleport to megastructure (F1)'));
+    debugFolder.add(shortcutActions, 'startFinale').name(t('gui.finaleShortcut', 'Start finale (F2)'));
+    debugFolder.add(shortcutActions, 'goToCrazies').name(t('gui.goToCrazies', 'Teleport to Crazies (F3)'));
     debugFolder.add(debugSettings, 'showWater').name(t('gui.water', 'Water')).onChange(applyDebugSettings);
     debugFolder.add(debugSettings, 'showShoreFoam').name(t('gui.shoreFoam', 'Shore foam')).onChange(applyDebugSettings);
     debugFolder.add(debugSettings, 'showGrass').name(t('gui.grass', 'Grass')).onChange(applyDebugSettings);
@@ -2267,8 +2272,8 @@ function updateFinaleFrame(dt: number): void {
     const look = input.consumeLook();
     const flight = input.getFlightInput();
     const playerInput = input.getPlayerInput();
-    // During the caretaker scene, either an attack press or Space skips straight to the ship.
-    const skipRequested = input.consumeAttackPress() || input.consumeChargedAttackPress() || playerInput.jump;
+    // During the caretaker scene, an attack press or Space skips straight to the ship.
+    const skipRequested = input.consumeAttackPress() || playerInput.jump;
 
     if (input.pointerLocked) {
         if (skipRequested) {
@@ -2331,7 +2336,8 @@ function updateSwitchLook(dt: number): void {
 
 // Keeps the cinematic shot well outside the robot. Looking almost straight up through the normal
 // third-person orbit pulls the camera into the robot's head, so the cinematic camera is instead
-// placed above and away from the player, aimed at the crown.
+// placed above and away from the player, aimed at the crown. First person keeps its normal eye
+// view and takes only the charge tremor.
 function updateCinematicCamera(dt: number): void {
     if (!cinematicActive) {
         // Keep the pending look target while the cinematic waits to start.
@@ -2348,39 +2354,44 @@ function updateCinematicCamera(dt: number): void {
         return;
     }
 
-    if (cameraController.firstPerson || !switchLookTarget) {
+    if (!switchLookTarget) {
         return;
     }
 
-    const position = player.group.position;
-    const dx = switchLookTarget.x - position.x;
-    const dz = switchLookTarget.z - position.z;
-    const horizontal = Math.hypot(dx, dz);
-    // Stand the camera opposite the crown, so the robot is in the foreground below it.
-    const awayX = horizontal > 0.001 ? dx / horizontal : Math.sin(cameraController.yaw);
-    const awayZ = horizontal > 0.001 ? dz / horizontal : Math.cos(cameraController.yaw);
-    // Camera distance for the charge shot.
-    const distance = 20;
+    // In first person the player stays at the eye and only the tremor is added below; the orbit
+    // shot would fight the viewmodel and the eye height.
+    if (!cameraController.firstPerson) {
+        const position = player.group.position;
+        const dx = switchLookTarget.x - position.x;
+        const dz = switchLookTarget.z - position.z;
+        const horizontal = Math.hypot(dx, dz);
+        // Stand the camera opposite the crown, so the robot is in the foreground below it.
+        const awayX = horizontal > 0.001 ? dx / horizontal : Math.sin(cameraController.yaw);
+        const awayZ = horizontal > 0.001 ? dz / horizontal : Math.cos(cameraController.yaw);
+        // Camera distance for the charge shot.
+        const distance = 20;
 
-    cinematicCameraPosition.set(position.x - awayX * distance, position.y - 5, position.z - awayZ * distance);
+        cinematicCameraPosition.set(position.x - awayX * distance, position.y - 5, position.z - awayZ * distance);
 
-    // Frame the robot at the bottom and the spire at the top by aiming at the angular midpoint
-    // between the robot's chest and the crown. The low camera keeps margin above the spire and
-    // below the robot's feet.
-    const crownAngle = Math.atan2(switchLookTarget.y - cinematicCameraPosition.y, distance + horizontal);
-    const robotAngle = Math.atan2(position.y + 1 - cinematicCameraPosition.y, distance);
-    const aimAngle = (crownAngle + robotAngle) / 2;
+        // Frame the robot at the bottom and the spire at the top by aiming at the angular midpoint
+        // between the robot's chest and the crown. The low camera keeps margin above the spire and
+        // below the robot's feet.
+        const crownAngle = Math.atan2(switchLookTarget.y - cinematicCameraPosition.y, distance + horizontal);
+        const robotAngle = Math.atan2(position.y + 1 - cinematicCameraPosition.y, distance);
+        const aimAngle = (crownAngle + robotAngle) / 2;
 
-    cinematicCameraEngaged = true;
-    view.camera.position.copy(cinematicCameraPosition);
-    view.camera.lookAt(
-        cinematicCameraPosition.x + awayX * Math.cos(aimAngle),
-        cinematicCameraPosition.y + Math.sin(aimAngle),
-        cinematicCameraPosition.z + awayZ * Math.cos(aimAngle),
-    );
+        cinematicCameraEngaged = true;
+        view.camera.position.copy(cinematicCameraPosition);
+        view.camera.lookAt(
+            cinematicCameraPosition.x + awayX * Math.cos(aimAngle),
+            cinematicCameraPosition.y + Math.sin(aimAngle),
+            cinematicCameraPosition.z + awayZ * Math.cos(aimAngle),
+        );
+    }
 
     // A pair of detuned sine waves makes the tremor feel electrical rather than mechanical. Adding
-    // the offset after lookAt keeps the framing fixed while the camera body vibrates.
+    // the offset after the camera has been placed leaves both the framing and the first-person
+    // view direction untouched while the camera body vibrates.
     cinematicShakePhase += dt * CINEMATIC_SHAKE_FREQUENCY;
     const shakeX = (Math.sin(cinematicShakePhase * 31.7) + 0.5 * Math.sin(cinematicShakePhase * 53.3 + 1.3)) / 1.5;
     const shakeY =
@@ -2611,8 +2622,7 @@ function renderFrame(): void {
     // The robot-only map is only read by the player model. First person hides that model, so skip
     // the extra shadow pass once the map exists; the first frame still renders it so the sun shadow
     // sampler array never contains an uninitialized map.
-    robotShadowSun.shadow.needsUpdate =
-        player.group.visible || robotShadowSun.shadow.map === null;
+    robotShadowSun.shadow.needsUpdate = player.group.visible || robotShadowSun.shadow.map === null;
     // Skip the foreground pass entirely when the wrench is not on screen (third person, no wrench,
     // cinematics), so those frames pay nothing for it.
     const wrenchOverlay = firstPersonWrench.group.visible ? renderFirstPersonWrenchOverlay : null;
@@ -3127,11 +3137,25 @@ function beginWrenchSwing(charged: boolean): void {
     }
 }
 
-// Both attack types hit everything in front of the robot exactly once per swing: enemies, rocks,
-// the megastructure switch, and robot remains. A regular swing only covers the forward arc for the
-// current difficulty, while the charged spin sweeps all the way around, deals double damage, and
-// reaches less far.
-function strikeWithWrench(charged: boolean): void {
+// Targets the current swing has already struck. The charged spin checks its reach twice, so its
+// second check passes this set on and only catches whatever came into reach during the first half.
+const wrenchSpinTargets = new Set<object>();
+
+// Reach multiplier for a swing. The third person reaches 20% further than the first person, which
+// swings the plain reach inside its narrower default-FOV cone; the charged spin applies its own
+// reach on top of that same view scale.
+function wrenchReachScale(charged: boolean): number {
+    const viewScale = cameraController.firstPerson ? 1 : THIRD_PERSON_WRENCH_REACH_SCALE;
+    return charged ? viewScale * (WRENCH_CHARGED_REACH / WRENCH_RANGE) : viewScale;
+}
+
+// Both attack types hit everything in front of the robot: enemies, rocks, the megastructure switch,
+// and robot remains. A regular swing covers the forward arc for the current difficulty and checks
+// once, a third of the way into its animation. The charged spin sweeps all the way around at its own
+// reach for double damage and checks twice, on release and again halfway through the turn, so
+// anything that only came into reach during the first half is still caught. The second check skips
+// whatever the opening one hit, so nothing takes the heavy strike twice.
+function strikeWithWrench(charged: boolean, secondCheck = false): void {
     const damage = charged ? WRENCH_CHARGED_DAMAGE : 1;
     const firstPerson = cameraController.firstPerson;
     // Use the live camera yaw rather than the body, which is updated later in the frame. In first
@@ -3140,17 +3164,13 @@ function strikeWithWrench(charged: boolean): void {
     // The charged spin keeps its full-circle sweep. A regular first-person swing uses the fixed
     // default-FOV arc instead of the wider difficulty arcs, so off-screen targets stay safe.
     const arc = firstPerson ? FIRST_PERSON_WRENCH_STRIKE_ARC : player.wrenchStrikeArc;
-    // First person uses a narrower arc, so its regular swing reaches 20% further to keep the
-    // effective threat area comparable. The charged spin is fixed at 2.5 m in both view modes: its
-    // full circle needs no arc compensation, and the shorter reach is the trade-off for its
-    // heavier hit.
-    const reachScale = charged
-        ? WRENCH_CHARGED_REACH / WRENCH_RANGE
-        : firstPerson
-          ? FIRST_PERSON_WRENCH_REACH_SCALE
-          : 1;
-    strikeEnemiesWithWrench(charged, facing, arc, reachScale);
-    const rockHits = terrain.wrenchStrike(player.group.position, damage, facing, arc, reachScale);
+    const reachScale = wrenchReachScale(charged);
+    // A fresh swing starts with a clean record; only a spin's second check keeps it.
+    if (!charged || !secondCheck) {
+        wrenchSpinTargets.clear();
+    }
+    strikeEnemiesWithWrench(charged, facing, arc, reachScale, wrenchSpinTargets);
+    const rockHits = terrain.wrenchStrike(player.group.position, damage, facing, arc, reachScale, wrenchSpinTargets);
     if (rockHits.length > 0) {
         const impact = rockHits.reduce((nearest, hit) =>
             hit.position.distanceToSquared(player.group.position) <
@@ -3174,16 +3194,17 @@ function strikeWithWrench(charged: boolean): void {
     }
 }
 
-// Damages every vulnerable enemy in the wrench's reach. One hit sound plays per swing, anchored to
+// Damages every vulnerable enemy in the wrench's reach. One hit sound plays per check, anchored to
 // the first result, so a wide sweep does not stack overlapping impacts.
 function strikeEnemiesWithWrench(
     charged = false,
     facing: number | null = null,
     arc = player.wrenchStrikeArc,
-    reachScale = cameraController.firstPerson ? FIRST_PERSON_WRENCH_REACH_SCALE : 1,
+    reachScale = wrenchReachScale(charged),
+    hitTargets?: Set<object>,
 ): void {
     const damage = charged ? WRENCH_CHARGED_DAMAGE : 1;
-    const enemyHits = enemyRobots.wrenchStrike(player.group.position, damage, facing, arc, reachScale);
+    const enemyHits = enemyRobots.wrenchStrike(player.group.position, damage, facing, arc, reachScale, hitTargets);
     if (enemyHits.length > 0) {
         gameAudio.playEnemyHit(enemyHits[0].position, enemyHits[0].health, charged ? 2 : 1);
     }
@@ -3279,9 +3300,10 @@ function megastructureEntrance(tower: MegastructureTower): { x: number; z: numbe
     }
 }
 
-// Debug shortcut: jump to a random megastructure entrance whose crown switch is still idle.
+// Debug shortcut: jump to a random megastructure entrance whose crown switch is still idle. The
+// finale owns the robot and the camera, so the shortcut stays out of it.
 function teleportToRandomMegastructure(): void {
-    if (playerDestroyedRemaining > 0 || playerRecovering) {
+    if (finale?.active || playerDestroyedRemaining > 0 || playerRecovering) {
         return;
     }
 
@@ -3298,6 +3320,24 @@ function teleportToRandomMegastructure(): void {
     cameraController.snap();
 }
 
+// Debug shortcut: drop the robot onto a random storey of a random megastructure and bring that
+// floor's robots back, so wherever it lands is hostile again. A peaceful run still teleports, it
+// just arrives on an empty deck.
+function goToCrazies(): void {
+    if (playerDestroyedRemaining > 0) {
+        return;
+    }
+
+    const floor = enemyRobots.reviveRandomFloor();
+    if (!floor) {
+        return;
+    }
+
+    player.respawnAt(floor.position, floor.facing);
+    cameraController.setYaw(floor.facing - Math.PI);
+    cameraController.snap();
+}
+
 function animate(): void {
     if (webglContextLost) {
         return;
@@ -3311,6 +3351,9 @@ function animate(): void {
     // Pointer lock is the pause state. Freeze simulation and keep the current frame visible;
     // IdleManager still handles hidden tabs and long-idle render-loop suspension separately.
     if (!input.pointerLocked) {
+        // Pausing drops an unfinished wrench hold and any press buffered for the next strike, so
+        // nothing fires when the game resumes.
+        player.cancelWrenchHold();
         performanceGraph?.beginRender();
         renderFrame();
         performanceGraph?.endFrame();
@@ -3361,25 +3404,16 @@ function animate(): void {
         input.consumeLook();
     }
 
-    // The regular attack swings as soon as its input goes down, unless a nearby wolf turns the
-    // press into a petting gesture instead.
-    if (input.consumeAttackPress() && !player.isWrenchCharging) {
-        if (!tryPetWolf() && player.swingWrench()) {
-            beginWrenchSwing(false);
+    // The attack button starts a wrench hold, unless a nearby wolf turns the press into a petting
+    // gesture instead. The swing itself waits for the release, so a tap and a held press both end
+    // in an attack. A press in the last moments of a swing is remembered and starts the next hold
+    // when that swing ends.
+    if (input.consumeAttackPress()) {
+        if (!tryPetWolf() && !player.beginWrenchHold()) {
+            player.bufferWrenchPress();
         }
     }
-    // The charged attack starts filling from a right-button or trigger press and keeps filling
-    // only while it stays held. A press during the previous swing is remembered by the player
-    // and starts the charge when it ends.
-    if (input.consumeChargedAttackPress()) {
-        player.beginWrenchCharge();
-    }
-    const chargedAttackHeld = input.chargedAttackHeld;
-    // An early press is only remembered while the button stays down. Losing pointer lock (Esc)
-    // also counts as letting go, so both the press and the charge are dropped.
-    if (!chargedAttackHeld && player.isWrenchChargeBuffered) {
-        player.cancelWrenchChargeBuffer();
-    }
+    const attackHeld = input.attackHeld;
     player.update(
         dt,
         cinematic ? CINEMATIC_INPUT : input.getPlayerInput(),
@@ -3392,19 +3426,18 @@ function animate(): void {
     if (pettingWolfId !== null && !player.isPetting) {
         pettingWolfId = null;
     }
-    // A knockdown, destruction, or lost wrench cancels the charge without striking.
-    if (player.updateWrenchCharge(dt)) {
+    // A knockdown, destruction, or lost wrench drops the hold, and with it any charge, without
+    // striking.
+    if (player.updateWrenchHold(dt)) {
         gameAudio.stopStructureBuzz('wrench');
     }
-    // The strike waits for the button release: a full charge swings, while an incomplete one is
-    // dropped where it stands.
-    if (player.isWrenchCharging && !chargedAttackHeld) {
-        const released = player.isWrenchCharged ? player.releaseWrench() : null;
+    // The release swings: a filled charge becomes the charged spin, everything shorter becomes the
+    // regular strike.
+    if (!attackHeld && player.isWrenchHolding) {
+        const released = player.releaseWrenchHold();
         gameAudio.stopStructureBuzz('wrench');
-        if (released) {
-            beginWrenchSwing(true);
-        } else {
-            player.cancelWrenchCharge();
+        if (released !== null) {
+            beginWrenchSwing(released);
         }
     }
     const chargedSwing = player.isWrenchSwingCharged;

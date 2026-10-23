@@ -71,6 +71,9 @@ const DUNE_PROMINENCE = 0.25;
 // The ridged-detail signal is one-sided; subtract its measured mean so the detail is zero-mean.
 // Keep the former mean as an explicit base elevation instead of hiding it in the ridge term.
 const RIDGE_DETAIL_MEAN = 0.833;
+// Base elevation of the lowlands before noise. The sea ring in heightAt supplies the bulk of the
+// water; this base decides how much of the island's interior floods along with it, so a dip in the
+// broad term becomes a lake instead of a damp hollow.
 const LOWLAND_BASE = 2 + RIDGE_DETAIL_MEAN * 20;
 // One corner of the world is a desert. The corner is chosen from the seed, and the mask fades
 // radially into the surrounding grassland.
@@ -80,6 +83,89 @@ const SAND_CORNER_OUTER_RADIUS = 330;
 const SAND_CORNER_WOBBLE = 55;
 // How close the spawn should be to the nearest water, in world units.
 const SPAWN_WATER_DISTANCE = 34;
+// The sea sweeps in from two opposite corners of the map, on the diagonal the desert does not use. Its
+// shore meanders by the wobble, the seabed reaches full depth one shelf closer to the corner, and the
+// mountain rim gives way to open water there, so the water runs to the map edge instead of being
+// walled in by a cliff.
+const SEA_COAST_DISTANCE = 760;
+const SEA_COAST_WOBBLE = 90;
+const SEA_SHELF_WIDTH = 330;
+const SEA_DEPTH = 42;
+// The two bays are not twins: one of them grows by this factor on average. Both its shore distance and
+// its shelf width scale, so it reaches further inland and owns about 1.5x the water of its twin.
+const SEA_LARGE_SCALE = 1.13;
+// The mountain rim hides the edge of the world, so the bays end against it. Each of the four sides
+// carries one to four peaks, and the ridge between two peaks dips into a col and wanders rather than
+// running straight between them.
+const RIM_FOOT = 0.8;
+const RIM_SIDES = 4;
+const RIM_PEAK_MIN = 1;
+const RIM_PEAK_MAX = 4;
+const RIM_PEAK_HEIGHT_MIN = 120;
+const RIM_PEAK_HEIGHT_MAX = 260;
+// Height the ridge falls to at the map corners, where two sides meet.
+const RIM_END_HEIGHT = 95;
+const RIM_COL_DEPTH = 26;
+const RIM_ROUGHNESS = 18;
+const RIM_ROUGHNESS_SCALE = 6.5;
+// Besides the two bays, every world carries a handful of pools dug into the island, cut off from the
+// sea by land. The count is drawn from the seed, so some worlds are lakelands and others barely have
+// one. A pool is a flat floor below the world's waterline with banks that climb back into the ground
+// around it, so its water always forms a closed basin of the pool's own size and depth.
+const POOL_COUNT_MIN = 1;
+const POOL_COUNT_MAX = 5;
+const POOL_ATTEMPTS = 1500;
+// The water surface ends up between these two diameters in its narrowest direction, whatever shape the
+// shoreline takes.
+const POOL_DIAMETER_MIN = 50;
+const POOL_DIAMETER_MAX = 150;
+// The shoreline is not a circle: each pool's bowl is measured against a radius wobbled by a few
+// harmonics with its own phases, so every pool gets a complex outline. The wobble is a fraction of the
+// pool's radius, and the design radius range below is narrowed by it, so a pool's water still ends up
+// between the two diameters above.
+const POOL_SHAPE_WOBBLE = 0.3;
+// Harmonics (lobes, weight) that build the shoreline: a long swell, a few bays, and some fine nicks.
+const POOL_SHAPE_HARMONICS = [
+    { lobes: 2, weight: 0.55 },
+    { lobes: 3, weight: 0.3 },
+    { lobes: 5, weight: 0.15 },
+];
+const POOL_RADIUS_MIN = POOL_DIAMETER_MIN / 2 / (1 - POOL_SHAPE_WOBBLE);
+const POOL_RADIUS_MAX = POOL_DIAMETER_MAX / 2 / (1 + POOL_SHAPE_WOBBLE);
+const POOL_WATER_DEPTH_MIN = 3;
+const POOL_WATER_DEPTH_MAX = 5.5;
+// Bank gradient, in rise over run. It decides how precisely the water's outline follows the pool's
+// size rather than the lumpiness of the ground around it. Rough worlds use steeper banks in the later
+// passes so their pools still fit.
+const POOL_BANK_SLOPE = 0.3;
+// Land kept between a pool and the sea, so the two bodies of water never meet.
+const POOL_SEA_CLEARANCE = 80;
+// Dry land kept between neighbouring pools.
+const POOL_SEPARATION = 70;
+// Pools sit in the lowlands, where the banks blend into the ground instead of cutting a crater, and on
+// gentle ground, so the water does not lean against a slope. Rough worlds stretch these limits in the
+// fallback passes, and the reach check keeps even those banks shallow.
+const POOL_MAX_GROUND_HEIGHT = 22;
+const POOL_MAX_SLOPE = 0.3;
+const POOL_FALLBACK_GROUND_HEIGHT = 30;
+const POOL_FALLBACK_SLOPE = 0.45;
+const POOL_FALLBACK_BANK_SLOPE = 0.35;
+const POOL_LOOSE_GROUND_HEIGHT = 40;
+const POOL_LOOSE_SLOPE = 0.6;
+const POOL_LOOSE_BANK_SLOPE = 0.45;
+const POOL_MIN_DRY_HEIGHT = 0.5;
+// Ground the bank has to climb above before the pool stops mattering.
+const POOL_RIM_MARGIN = 1;
+// A pool whose bank reaches this far past its water (in multiples of it) is rejected: its ground
+// falls away too steeply for the bank to blend. Rough worlds stretch this in the fallback passes.
+const POOL_MAX_REACH_SCALE = 2.8;
+const POOL_FALLBACK_REACH_SCALE = 3.8;
+const POOL_LOOSE_REACH_SCALE = 5;
+// A pool's bank has to stay dry all the way around the water for the outline to hold. The ground may
+// still roll, so this only guards against a bank that climbs out of a hole.
+const POOL_SHORE_SPREAD = 40;
+// Step of the walk that measures where a pool's water actually ends.
+const POOL_EDGE_STEP = 2;
 // The player wakes up on one corner of a small square, with the three caretakers on the other
 // corners. The square is centred on the scenic spawn spot and aligned with the direction the
 // player faces, so the opening tableau reads as a deliberate gathering around the crash site.
@@ -111,7 +197,7 @@ const DECORATION_CELL_SIZE = 384;
 // Boulders within this radius of the player take a wrench hit once per swing. The height check is
 // deliberately loose so rocks on a slope are reachable from their uphill or downhill side. A
 // regular swing only covers the forward arc; the charged spin sweeps all the way around.
-const ROCK_WRENCH_RANGE = 4.5;
+const ROCK_WRENCH_RANGE = 3.5;
 const ROCK_WRENCH_REACH = 2.5;
 // Fallback arc for callers that supply a facing; the game passes the difficulty's arc explicitly.
 const DEFAULT_ROCK_WRENCH_STRIKE_ARC = (Math.PI * 4) / 3;
@@ -285,6 +371,34 @@ export interface TerrainOptions {
     decorations?: boolean;
 }
 
+// A summit of the mountain rim, placed along one side of the map: `t` runs from -1 to 1 along the
+// side, and the ridge between two peaks is filled in by the terrain generator.
+export interface RimPeak {
+    t: number;
+    height: number;
+}
+
+// An inland pool: a basin dug into the island, cut off from the sea by land. The flat floor sits below
+// the world's waterline, so the water fills it to the pool's own outline.
+export interface TerrainPool {
+    x: number;
+    z: number;
+    // Radius of the water surface, before the shoreline wobble is applied.
+    radius: number;
+    // Height of the flat floor, below the waterline by the pool's water depth.
+    floorY: number;
+    // How far the flat floor reaches, and how fast the bank climbs from there to the ground.
+    flatRadius: number;
+    bankSlope: number;
+    // Distance from the middle where the bank has risen above the surrounding ground, so the pool
+    // stops lowering the terrain.
+    reach: number;
+    // How far the shoreline wanders from the pool's radius, and the phases that give this pool its own
+    // outline.
+    shapeWobble: number;
+    shapePhases: number[];
+}
+
 export class Terrain {
     readonly group = new Group();
     readonly seed: number;
@@ -305,6 +419,24 @@ export class Terrain {
     onBoulderDestroyed: ((x: number, y: number, z: number, radius: number) => void) | null = null;
 
     private noise: Noise2D;
+    // Mean of the broad elevation term over this world. Subtracting it keeps the sea at a similar
+    // share of every world instead of letting the seed lift one island clear of the water.
+    private readonly broadMean: number;
+    // The sea sweeps in from two opposite corners of the map, on the diagonal the desert does not use.
+    // One of the two bays is grown, so the two seas differ in size from world to world.
+    private readonly seaCornerX: number;
+    private readonly seaCornerZ: number;
+    // Which of the two sea corners gets the larger bay: 0 for (seaCornerX, seaCornerZ), 1 for its
+    // opposite.
+    private readonly largeSeaCorner: number;
+    // The two sea corners, for anything that needs to know which bay a point belongs to.
+    readonly seaCorners: Array<{ x: number; z: number }>;
+    // The inland pools, filled in once by placePools before anything samples the terrain.
+    readonly pools: TerrainPool[] = [];
+    // How many pools this world asks for, drawn from the seed between POOL_COUNT_MIN and POOL_COUNT_MAX.
+    poolCount = 0;
+    // The rim's summits per side, in the order +x, -x, +z, -z, sorted along each side.
+    readonly rimPeaks: RimPeak[][];
     private readonly sandCornerX: number;
     private readonly sandCornerZ: number;
     private scratchColor = new Color();
@@ -348,11 +480,23 @@ export class Terrain {
         this.group.name = 'terrain';
         this.seed = seed;
         this.noise = new Noise2D(seed);
+        this.broadMean = this.measureBroadMean();
         // Pick one of the four corners for the desert. The two bits of the mixed seed keep the
         // next world from always putting its sand in the same place.
         const cornerRng = mulberry32(hash32(0x5a4e, 0x4401, seed));
         this.sandCornerX = (cornerRng() < 0.5 ? -1 : 1) * SAND_CORNER_OFFSET;
         this.sandCornerZ = (cornerRng() < 0.5 ? -1 : 1) * SAND_CORNER_OFFSET;
+        // The sea opens in the two corners on the other diagonal, so the dunes keep their dry corner
+        // and the island runs as a band from one land corner across the map.
+        this.seaCornerX = -Math.sign(this.sandCornerX) * WORLD_HALF_SIZE;
+        this.seaCornerZ = Math.sign(this.sandCornerZ) * WORLD_HALF_SIZE;
+        this.largeSeaCorner = hash32(0x7365, 0x6121, seed) & 1;
+        this.seaCorners = [
+            { x: this.seaCornerX, z: this.seaCornerZ },
+            { x: -this.seaCornerX, z: -this.seaCornerZ },
+        ];
+        this.rimPeaks = this.placeRimPeaks();
+        this.placePools();
         this.group.name = 'terrain';
         this.rockEffects = new RockEffects(this);
         this.group.add(this.rockEffects.group);
@@ -420,16 +564,24 @@ export class Terrain {
     // TODO: Collision samples this analytic height while the rendered terrain interpolates the 3 m
     // triangle grid. Decide whether smooth analytic collision is intentional, or whether both
     // paths should share the baked height field (current p99 mismatch is ~0.24 m, max ~1 m).
-    // World-space terrain height. Pure function of the seed and the coordinates, so chunk seams line up.
+    // World-space terrain height, including the basins of the inland pools. Pure function of the seed
+    // and the coordinates, so chunk seams line up.
     heightAt(x: number, z: number): number {
+        const ground = this.baseHeightAt(x, z);
+        const floor = this.poolFloorAt(x, z);
+        return floor < ground ? floor : ground;
+    }
+
+    // The world without its pools: the landscape the seed alone describes.
+    private baseHeightAt(x: number, z: number): number {
         const noise = this.noise;
 
         // Warp the large-scale coordinates so coastlines and mountain ranges meander instead of
         // looking like stretched noise.
-        const warpedX = x + noise.fbm(x * 0.00075 + 51.2, z * 0.00075 - 17.4, 2) * 120;
-        const warpedZ = z + noise.fbm(x * 0.00075 - 73.1, z * 0.00075 + 29.6, 2) * 120;
+        const warpedX = this.warpedX(x, z);
+        const warpedZ = this.warpedZ(x, z);
 
-        const broad = noise.fbm(warpedX * 0.001 + 12.3, warpedZ * 0.001 - 7.1, 5);
+        const broad = this.broadTerm(warpedX, warpedZ) - this.broadMean;
         const rolling = noise.fbm(x * 0.0052 + 37.5, z * 0.0052 - 82.1, 4);
         const ridgeDetail =
             Math.pow(1 - Math.abs(noise.fbm(x * 0.009 - 53.6, z * 0.009 + 27.3, 4)), 1.3) - RIDGE_DETAIL_MEAN;
@@ -449,14 +601,343 @@ export class Terrain {
         const duneShaping = sandFlats * (dunes * 9 - 2) * DUNE_PROMINENCE;
         const relief = rolling * 40 * (1 - sand * 0.45) + ridgeDetail * 20 * (1 - sand * 0.55);
 
-        // Raise the perimeter into a mountain rim, which hides the edge of the world.
-        const edge = Math.pow(
-            Math.pow(Math.abs(x) / WORLD_HALF_SIZE, 4) + Math.pow(Math.abs(z) / WORLD_HALF_SIZE, 4),
-            0.25,
-        );
-        const rim = smoothstep(0.8, 0.98, edge) * 210;
+        // Raise the perimeter into a mountain ridge, which hides the edge of the world and gives the sea
+        // its far shore. The ridge height comes from the peaks each side carries, so the skyline rises
+        // and falls instead of running as one wall around the map.
+        const xTerm = Math.pow(Math.abs(x) / WORLD_HALF_SIZE, 4);
+        const zTerm = Math.pow(Math.abs(z) / WORLD_HALF_SIZE, 4);
+        const edge = Math.pow(xTerm + zTerm, 0.25);
+        let rim = 0;
+        if (edge > RIM_FOOT) {
+            // The two sides meeting near a corner are blended by the same weights that shape the rim
+            // footprint, so the ridge runs smoothly from one side into the next.
+            const weightX = xTerm / (xTerm + zTerm);
+            const sideX = x >= 0 ? 0 : 1;
+            const sideZ = z >= 0 ? 2 : 3;
+            const height =
+                this.ridgeHeight(sideX, z / WORLD_HALF_SIZE) * weightX +
+                this.ridgeHeight(sideZ, x / WORLD_HALF_SIZE) * (1 - weightX);
+            rim = smoothstep(RIM_FOOT, 0.98, edge) * height;
+        }
 
-        return lowland + hills * 4.5 * (1 - sand * 0.45) + relief + mountains + duneShaping + rim;
+        return (
+            lowland +
+            hills * 4.5 * (1 - sand * 0.45) +
+            relief +
+            mountains +
+            duneShaping +
+            rim -
+            this.seaDepthAt(x, z)
+        );
+    }
+
+    // How far below the waterline the sea pulls the land at a point: nothing until its shore, then a
+    // shelf down to full depth towards the open corners of the map. Points are measured from the nearer
+    // of the two sea corners, and one of those bays is grown, so its shore and shelf both sit further
+    // out and it covers more of the map.
+    private seaDepthAt(x: number, z: number): number {
+        const distanceA = Math.hypot(x - this.seaCornerX, z - this.seaCornerZ);
+        const distanceB = Math.hypot(x + this.seaCornerX, z + this.seaCornerZ);
+        const nearCorner = distanceA <= distanceB ? 0 : 1;
+        const scale = nearCorner === this.largeSeaCorner ? SEA_LARGE_SCALE : 1;
+        const shore = this.seaShoreBaseAt(x, z) * scale;
+        const shelf = SEA_SHELF_WIDTH * scale;
+        return (1 - smoothstep(shore - shelf, shore, Math.min(distanceA, distanceB))) * SEA_DEPTH;
+    }
+
+    // Distance from the nearer sea corner at which the sea's fall-off begins, including the growth of
+    // the larger bay. The pools use it to stay clear of the water.
+    private seaShoreAt(x: number, z: number): number {
+        const distanceA = Math.hypot(x - this.seaCornerX, z - this.seaCornerZ);
+        const distanceB = Math.hypot(x + this.seaCornerX, z + this.seaCornerZ);
+        const largeHere = (distanceA <= distanceB ? 0 : 1) === this.largeSeaCorner;
+        return this.seaShoreBaseAt(x, z) * (largeHere ? SEA_LARGE_SCALE : 1);
+    }
+
+    private seaShoreBaseAt(x: number, z: number): number {
+        return SEA_COAST_DISTANCE + this.noise.fbm(x * 0.0016 - 88.3, z * 0.0016 + 61.9, 3) * SEA_COAST_WOBBLE;
+    }
+
+    // One to four summits per side of the map, spread out and jittered so they never look laid out.
+    private placeRimPeaks(): RimPeak[][] {
+        const rng = mulberry32(hash32(0x7269, 0x6d70, this.seed));
+        const ridges: RimPeak[][] = [];
+
+        for (let side = 0; side < RIM_SIDES; side++) {
+            const count = RIM_PEAK_MIN + Math.floor(rng() * (RIM_PEAK_MAX - RIM_PEAK_MIN + 1));
+            const spacing = 2 / count;
+            const peaks: RimPeak[] = [];
+            for (let index = 0; index < count; index++) {
+                const along = -1 + (index + 0.5) * spacing + (rng() - 0.5) * spacing;
+                peaks.push({
+                    t: clamp(along, -0.85, 0.85),
+                    height: RIM_PEAK_HEIGHT_MIN + rng() * (RIM_PEAK_HEIGHT_MAX - RIM_PEAK_HEIGHT_MIN),
+                });
+            }
+            peaks.sort((left, right) => left.t - right.t);
+            ridges.push(peaks);
+        }
+
+        return ridges;
+    }
+
+    // Ridge height at a coordinate along one side of the map. Between two summits the ridge sags into
+    // a col and wanders with noise, and past the outermost summits it falls away to the map corner.
+    private ridgeHeight(side: number, t: number): number {
+        let leftT = -1;
+        let leftHeight = RIM_END_HEIGHT;
+        let rightT = 1;
+        let rightHeight = RIM_END_HEIGHT;
+
+        for (const peak of this.rimPeaks[side]) {
+            if (peak.t <= t && peak.t > leftT) {
+                leftT = peak.t;
+                leftHeight = peak.height;
+            }
+            if (peak.t > t && peak.t < rightT) {
+                rightT = peak.t;
+                rightHeight = peak.height;
+            }
+        }
+
+        const along = clamp((t - leftT) / Math.max(1e-4, rightT - leftT), 0, 1);
+        const ridge = leftHeight + (rightHeight - leftHeight) * along - RIM_COL_DEPTH * Math.sin(Math.PI * along);
+        const roughness = this.noise.fbm(t * RIM_ROUGHNESS_SCALE + side * 41.7, side * 13.1 - 7.4, 2) * RIM_ROUGHNESS;
+
+        return Math.max(RIM_END_HEIGHT * 0.6, ridge + roughness);
+    }
+
+    // Where the sea's fall-off begins, i.e. the distance from the nearer sea corner at which the land
+    // still sits at its natural height. The pools use it to stay clear of the water.
+    private seaCornerDistanceAt(x: number, z: number): number {
+        return Math.min(
+            Math.hypot(x - this.seaCornerX, z - this.seaCornerZ),
+            Math.hypot(x + this.seaCornerX, z + this.seaCornerZ),
+        );
+    }
+
+    // The lowest pool floor over a point, or Infinity when no pool reaches it. A pool only ever lowers
+    // the ground, and its bowl is measured against a noisy radius, so the water it holds ends up with
+    // an irregular outline of the pool's own size however rough the terrain is.
+    private poolFloorAt(x: number, z: number): number {
+        let lowest = Infinity;
+
+        for (const pool of this.pools) {
+            const dx = x - pool.x;
+            if (dx > pool.reach || dx < -pool.reach) {
+                continue;
+            }
+            const dz = z - pool.z;
+            if (dz > pool.reach || dz < -pool.reach) {
+                continue;
+            }
+            const distance = Math.hypot(dx, dz);
+            if (distance > pool.reach) {
+                continue;
+            }
+
+            // The shore's harmonics make the water line wander around the pool's radius instead of
+            // following a circle.
+            const angle = Math.atan2(dz, dx);
+            let wobble = 0;
+            for (let index = 0; index < POOL_SHAPE_HARMONICS.length; index++) {
+                const harmonic = POOL_SHAPE_HARMONICS[index];
+                wobble += Math.sin(harmonic.lobes * angle + pool.shapePhases[index]) * harmonic.weight;
+            }
+            const shaped = distance + wobble * pool.shapeWobble;
+
+            const floor = pool.floorY + Math.max(0, shaped - pool.flatRadius) * pool.bankSlope;
+            lowest = Math.min(lowest, floor);
+        }
+
+        return lowest;
+    }
+
+    // Digs the world's pools on low, gentle ground, where their banks can blend into the landscape.
+    // The seed decides how many there are and where they end up.
+    private placePools(): void {
+        const rng = mulberry32(hash32(0x706f, 0x6f6c, this.seed));
+        const limit = WORLD_HALF_SIZE - 200;
+        this.poolCount = POOL_COUNT_MIN + Math.floor(rng() * (POOL_COUNT_MAX - POOL_COUNT_MIN + 1));
+
+        this.digPools(rng, limit, {
+            maxGround: POOL_MAX_GROUND_HEIGHT,
+            maxSlope: POOL_MAX_SLOPE,
+            maxReachScale: POOL_MAX_REACH_SCALE,
+            bankSlope: POOL_BANK_SLOPE,
+        });
+        // Worlds whose ground is mostly high or steep still get their pools: the later passes accept
+        // rougher ground and steeper, narrower banks, while the water keeps its size and shape.
+        this.digPools(rng, limit, {
+            maxGround: POOL_FALLBACK_GROUND_HEIGHT,
+            maxSlope: POOL_FALLBACK_SLOPE,
+            maxReachScale: POOL_FALLBACK_REACH_SCALE,
+            bankSlope: POOL_FALLBACK_BANK_SLOPE,
+        });
+        this.digPools(rng, limit, {
+            maxGround: POOL_LOOSE_GROUND_HEIGHT,
+            maxSlope: POOL_LOOSE_SLOPE,
+            maxReachScale: POOL_LOOSE_REACH_SCALE,
+            bankSlope: POOL_LOOSE_BANK_SLOPE,
+        });
+    }
+
+    private digPools(
+        rng: () => number,
+        limit: number,
+        limits: { maxGround: number; maxSlope: number; maxReachScale: number; bankSlope: number },
+    ): void {
+        for (let attempt = 0; attempt < POOL_ATTEMPTS && this.pools.length < this.poolCount; attempt++) {
+            const x = (rng() * 2 - 1) * limit;
+            const z = (rng() * 2 - 1) * limit;
+            const radius = POOL_RADIUS_MIN + rng() * (POOL_RADIUS_MAX - POOL_RADIUS_MIN);
+            const waterDepth = POOL_WATER_DEPTH_MIN + rng() * (POOL_WATER_DEPTH_MAX - POOL_WATER_DEPTH_MIN);
+
+            const ground = this.baseHeightAt(x, z);
+            if (ground < WATER_LEVEL + POOL_MIN_DRY_HEIGHT || ground > limits.maxGround) {
+                continue;
+            }
+            if (this.slopeAt(x, z) > limits.maxSlope) {
+                continue;
+            }
+
+            // The floor sits a water depth below the waterline, and the bank climbs from the edge of
+            // the floor to the ground around the pool: the water's edge then lands on the pool's own
+            // radius, wherever the wobble has carried it, as long as the bank is dry all the way round.
+            const shapeWobble = radius * POOL_SHAPE_WOBBLE;
+            const shapePhases = POOL_SHAPE_HARMONICS.map(() => rng() * Math.PI * 2);
+            const floorY = WATER_LEVEL - waterDepth;
+            const flatRadius = radius - waterDepth / limits.bankSlope;
+            if (flatRadius < shapeWobble + radius * 0.2) {
+                continue;
+            }
+
+            // The water can reach out to `radius + shapeWobble`. A dry ring just beyond that is what
+            // keeps the pool its own body of water: no wet path can leave it without crossing the
+            // ring, and the pool stops lowering the ground further out at its reach.
+            const shore = this.poolShoreAt(x, z, (radius + shapeWobble) * 1.15);
+            if (!shore) {
+                continue;
+            }
+
+            const reach =
+                flatRadius + shapeWobble + (shore.height + POOL_RIM_MARGIN - floorY) / limits.bankSlope;
+            if (reach > radius * limits.maxReachScale) {
+                continue;
+            }
+            if (this.seaCornerDistanceAt(x, z) < this.seaShoreAt(x, z) + reach + POOL_SEA_CLEARANCE) {
+                continue;
+            }
+            if (
+                this.pools.some(
+                    (pool) => Math.hypot(x - pool.x, z - pool.z) < reach + pool.reach + POOL_SEPARATION,
+                )
+            ) {
+                continue;
+            }
+
+            // The wobble decides the outline, so the pool is only kept once its water measures the size
+            // the level asks for. A pool whose water leaks into a lake never finds its edge and is
+            // dropped here.
+            const pool = {
+                x,
+                z,
+                radius,
+                floorY,
+                flatRadius,
+                bankSlope: limits.bankSlope,
+                reach,
+                shapeWobble,
+                shapePhases,
+            };
+            this.pools.push(pool);
+            if (!this.isPoolSizeRight(pool)) {
+                this.pools.pop();
+            }
+        }
+    }
+
+    // Walks out of a pool in sixteen directions and returns the water's narrowest and widest diameter.
+    // Both bounds matter: a pool can spread further than designed if the ground around it dips.
+    private poolWaterExtent(pool: TerrainPool): { narrowest: number; widest: number } {
+        let narrowest = Infinity;
+        let widest = 0;
+
+        for (let index = 0; index < 16; index++) {
+            const angle = (index / 16) * Math.PI * 2;
+            const stepX = Math.cos(angle);
+            const stepZ = Math.sin(angle);
+            let edge = 0;
+            for (let distance = POOL_EDGE_STEP; distance <= pool.reach; distance += POOL_EDGE_STEP) {
+                if (this.heightAt(pool.x + stepX * distance, pool.z + stepZ * distance) >= WATER_LEVEL) {
+                    break;
+                }
+                edge = distance;
+            }
+            narrowest = Math.min(narrowest, edge);
+            widest = Math.max(widest, edge);
+        }
+
+        return { narrowest: narrowest * 2, widest: widest * 2 };
+    }
+
+    private isPoolSizeRight(pool: TerrainPool): boolean {
+        const { narrowest, widest } = this.poolWaterExtent(pool);
+        return narrowest >= POOL_DIAMETER_MIN && widest <= POOL_DIAMETER_MAX;
+    }
+
+    // Ground on a ring around a pool. Returns null when that ground is uneven, wet, or below the pool's
+    // floor, in which case the water would spill past the pool or merge with water that was already
+    // there.
+    private poolShoreAt(x: number, z: number, ring: number): { height: number; spread: number } | null {
+        let lowest = Infinity;
+        let highest = -Infinity;
+        let sum = 0;
+
+        for (let index = 0; index < 8; index++) {
+            const angle = (index / 8) * Math.PI * 2;
+            const height = this.baseHeightAt(x + Math.cos(angle) * ring, z + Math.sin(angle) * ring);
+            lowest = Math.min(lowest, height);
+            highest = Math.max(highest, height);
+            sum += height;
+        }
+
+        if (lowest < WATER_LEVEL + POOL_MIN_DRY_HEIGHT) {
+            return null;
+        }
+        if (highest - lowest > POOL_SHORE_SPREAD) {
+            return null;
+        }
+        return { height: sum / 8, spread: highest - lowest };
+    }
+
+    // Single half of the large-scale coordinate warp that heightAt applies before sampling the
+    // broad term; sampling the noise without it would centre the wrong field.
+    private warpedX(x: number, z: number): number {
+        return x + this.noise.fbm(x * 0.00075 + 51.2, z * 0.00075 - 17.4, 2) * 120;
+    }
+
+    private warpedZ(x: number, z: number): number {
+        return z + this.noise.fbm(x * 0.00075 - 73.1, z * 0.00075 + 29.6, 2) * 120;
+    }
+
+    private broadTerm(warpedX: number, warpedZ: number): number {
+        return this.noise.fbm(warpedX * 0.001 + 12.3, warpedZ * 0.001 - 7.1, 5);
+    }
+
+    // Sampled on a coarse grid: the broad term has no detail below a few hundred world units, so a
+    // sparse grid stands in for its true mean over the world.
+    private measureBroadMean(): number {
+        const step = 96;
+        let sum = 0;
+        let samples = 0;
+        for (let z = -WORLD_HALF_SIZE; z <= WORLD_HALF_SIZE; z += step) {
+            for (let x = -WORLD_HALF_SIZE; x <= WORLD_HALF_SIZE; x += step) {
+                sum += this.broadTerm(this.warpedX(x, z), this.warpedZ(x, z));
+                samples++;
+            }
+        }
+        return sum / samples;
     }
 
     // Magnitude of the height gradient, roughly equal to the tangent of the slope angle.
@@ -1393,20 +1874,23 @@ export class Terrain {
     // sprays sparks; the third and sixth carve a progressively larger dent, and the ninth breaks
     // the boulder into loose stones. Emerald-bearing boulders break on the sixth hit instead.
     // A charged strike deals several hits at once. Pass a facing and arc to limit the strike to
-    // that forward arc; omit the facing (the charged spin) to hit all around.
+    // that forward arc; omit the facing (the charged spin) to hit all around. Pass the same
+    // hitTargets set to a later check of the same swing and every boulder in it is skipped, which is
+    // how the charged spin's second check avoids striking anything twice.
     wrenchStrike(
         playerPosition: Vector3,
         damage = 1,
         facing: number | null = null,
         arc = DEFAULT_ROCK_WRENCH_STRIKE_ARC,
         reachScale = 1,
+        hitTargets?: Set<object>,
     ): RockWrenchHit[] {
         const hits: RockWrenchHit[] = [];
         const minForwardDot = Math.cos(arc / 2);
         const reach = ROCK_WRENCH_RANGE * reachScale;
 
         for (const boulder of this.boulders) {
-            if (boulder.destroyed) {
+            if (boulder.destroyed || hitTargets?.has(boulder)) {
                 continue;
             }
 
@@ -1432,6 +1916,7 @@ export class Terrain {
             }
 
             boulder.hits += damage;
+            hitTargets?.add(boulder);
             const awayX = centreDistance > 1e-4 ? dx / centreDistance : 0;
             const awayZ = centreDistance > 1e-4 ? dz / centreDistance : 1;
             const impact = new Vector3(

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Input, readFlightGamepadInput, readGamepadInput } from '../src/input';
+import type { InputCallbacks } from '../src/input';
 
 function createGamepad(axes: number[] = [], pressedButtons: number[] = []): Gamepad {
     const buttons = Array.from({ length: 16 }, (_, index) => ({
@@ -127,7 +128,7 @@ describe('Input pointer lock', () => {
     });
 });
 
-describe('Input charged attack', () => {
+describe('Input attack button', () => {
     afterEach(() => {
         vi.unstubAllGlobals();
     });
@@ -155,29 +156,75 @@ describe('Input charged attack', () => {
         listener?.(event as Event);
     }
 
-    it('tracks the right mouse button while it is held and stops on release', () => {
+    it('holds the attack button while the left mouse button is down', () => {
         const { input, windowListeners } = createInput();
 
-        dispatch(windowListeners.get('mousedown'), { button: 2, preventDefault: vi.fn() });
-        expect(input.chargedAttackHeld).toBe(true);
-        expect(input.consumeChargedAttackPress()).toBe(true);
+        dispatch(windowListeners.get('mousedown'), { button: 0, preventDefault: vi.fn() });
+        expect(input.attackHeld).toBe(true);
+        expect(input.consumeAttackPress()).toBe(true);
+        expect(input.consumeAttackPress()).toBe(false);
 
-        dispatch(windowListeners.get('mouseup'), { button: 2 });
-        expect(input.chargedAttackHeld).toBe(false);
+        dispatch(windowListeners.get('mouseup'), { button: 0 });
+        expect(input.attackHeld).toBe(false);
     });
 
-    it('does not treat Shift as a charged attack', () => {
+    it('holds the attack button while the F key is down', () => {
         const { input, windowListeners } = createInput();
 
         dispatch(windowListeners.get('keydown'), {
-            code: 'ShiftLeft',
+            code: 'KeyF',
             repeat: false,
             target: null,
             preventDefault: vi.fn(),
         });
+        expect(input.attackHeld).toBe(true);
+        expect(input.consumeAttackPress()).toBe(true);
 
-        expect(input.consumeChargedAttackPress()).toBe(false);
-        expect(input.chargedAttackHeld).toBe(false);
+        dispatch(windowListeners.get('keyup'), { code: 'KeyF' });
+        expect(input.attackHeld).toBe(false);
+    });
+});
+
+describe('Input debug shortcuts', () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    function createInput(callbacks: InputCallbacks) {
+        const windowListeners = new Map<string, EventListener>();
+        vi.stubGlobal('window', {
+            addEventListener: vi.fn((type: string, listener: EventListener) => windowListeners.set(type, listener)),
+        });
+        vi.stubGlobal('document', {
+            pointerLockElement: null,
+            addEventListener: vi.fn(),
+        });
+        const input = new Input({} as HTMLCanvasElement, callbacks);
+        return { input, windowListeners };
+    }
+
+    it('fires the crazies shortcut on F3 only while playing', () => {
+        const onGoToCrazies = vi.fn();
+        const { input, windowListeners } = createInput({ onGoToCrazies });
+        const press = (repeat = false) =>
+            windowListeners.get('keydown')?.({
+                code: 'F3',
+                repeat,
+                target: null,
+                preventDefault: vi.fn(),
+            } as unknown as Event);
+
+        // The menu is open, so pointer lock is not held and the shortcut stays quiet.
+        press();
+        expect(onGoToCrazies).not.toHaveBeenCalled();
+
+        input.pointerLocked = true;
+        press();
+        expect(onGoToCrazies).toHaveBeenCalledTimes(1);
+
+        // Holding the key down must not teleport again.
+        press(true);
+        expect(onGoToCrazies).toHaveBeenCalledTimes(1);
     });
 });
 
@@ -205,7 +252,6 @@ describe('readGamepadInput', () => {
             right: 0,
             jump: false,
             attack: false,
-            chargedAttack: false,
             lookX: 0,
             lookY: 0,
         });
@@ -251,10 +297,5 @@ describe('readGamepadInput', () => {
     it('reads X / Square as attack', () => {
         expect(readGamepadInput(createGamepad([], [2])).attack).toBe(true);
         expect(readGamepadInput(createGamepad([], [1])).attack).toBe(false);
-    });
-
-    it('reads the right trigger as the charged attack', () => {
-        expect(readGamepadInput(createGamepad([], [7])).chargedAttack).toBe(true);
-        expect(readGamepadInput(createGamepad([], [2])).chargedAttack).toBe(false);
     });
 });

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { RAMP_PARAPET_THICKNESS, RAMP_THICKNESS, WALL_THICKNESS } from '../src/megastructures';
 import type { Ramp } from '../src/megastructures';
-import { PLAYER_RADIUS } from '../src/player';
+import { FIRST_PERSON_CEILING_CLEARANCE, PLAYER_HEIGHT, PLAYER_RADIUS } from '../src/player';
 import { FIRST_PERSON_EYE_HEIGHT, NEAR_Z } from '../src/player-camera';
 import { rampSurfaceAt } from '../src/ramp-collision';
 import { stepPlayer, testPlayer, testTerrain } from './test-helpers';
@@ -32,6 +32,31 @@ function towerRamps(terrain: Terrain, towerIndex: number): Ramp[] {
             ramp.minZ >= tower.minZ - 0.01 &&
             ramp.maxZ <= tower.maxZ + 0.01,
     );
+}
+
+// A flight can start over the opening the previous flight cuts in the slab, so not every ramp has
+// floor under the point a clearance probe needs. Picks the first flight above the ground ramp whose
+// low end still stands over solid floor at the requested surface height above the lower floor.
+function standableRampProbe(
+    terrain: Terrain,
+    towerIndex: number,
+    surfaceAboveLow: number,
+): { ramp: Ramp; x: number; z: number; lowY: number } | null {
+    for (const ramp of towerRamps(terrain, towerIndex).slice(1)) {
+        const rise = Math.abs(ramp.maxY - ramp.minY);
+        const run = ramp.axis === 'x' ? ramp.maxX - ramp.minX : ramp.maxZ - ramp.minZ;
+        const lowY = Math.min(ramp.minY, ramp.maxY);
+        const fraction = surfaceAboveLow / rise;
+        const along =
+            (ramp.axis === 'x' ? ramp.minX : ramp.minZ) + (ramp.minY < ramp.maxY ? fraction : 1 - fraction) * run;
+        const laneCentre = ramp.axis === 'x' ? (ramp.minZ + ramp.maxZ) / 2 : (ramp.minX + ramp.maxX) / 2;
+        const x = ramp.axis === 'x' ? along : laneCentre;
+        const z = ramp.axis === 'z' ? along : laneCentre;
+        if (Math.abs(terrain.walkSurfaceAt(x, z, lowY + 0.1) - lowY) < 1e-3) {
+            return { ramp, x, z, lowY };
+        }
+    }
+    return null;
 }
 
 describe('megastructure ramps', () => {
@@ -124,20 +149,15 @@ describe('megastructure ramps', () => {
         const player = testPlayer(terrain);
 
         for (let towerIndex = 0; towerIndex < terrain.megastructures.towers.length; towerIndex++) {
-            const ramp = towerRamps(terrain, towerIndex)[1];
-            const rise = Math.abs(ramp.maxY - ramp.minY);
-            const run = ramp.axis === 'x' ? ramp.maxX - ramp.minX : ramp.maxZ - ramp.minZ;
-            const lowY = Math.min(ramp.minY, ramp.maxY);
             // Put the underside 2.2 m above the floor: the real 2.0 m body clears it, while the
             // first-person camera clearance (2.35 m) used to count it as a collision and shove the
             // player sideways out of the ramp footprint.
-            const lowFraction = (2.2 + RAMP_THICKNESS) / rise;
-            const along =
-                (ramp.axis === 'x' ? ramp.minX : ramp.minZ) +
-                (ramp.minY < ramp.maxY ? lowFraction : 1 - lowFraction) * run;
-            const laneCentre = ramp.axis === 'x' ? (ramp.minZ + ramp.maxZ) / 2 : (ramp.minX + ramp.maxX) / 2;
-            const x = ramp.axis === 'x' ? along : laneCentre;
-            const z = ramp.axis === 'z' ? along : laneCentre;
+            const probe = standableRampProbe(terrain, towerIndex, 2.2 + RAMP_THICKNESS);
+            expect(probe, `tower ${towerIndex}`).not.toBeNull();
+            if (!probe) {
+                continue;
+            }
+            const { ramp, x, z, lowY } = probe;
 
             expect(terrain.walkSurfaceAt(x, z, lowY + 0.1), `tower ${towerIndex}`).toBeCloseTo(lowY, 4);
 
@@ -171,17 +191,13 @@ describe('megastructure ramps', () => {
 
         for (const firstPerson of [false, true]) {
             for (let towerIndex = 0; towerIndex < terrain.megastructures.towers.length; towerIndex++) {
-                const ramp = towerRamps(terrain, towerIndex)[1];
-                const rise = Math.abs(ramp.maxY - ramp.minY);
-                const run = ramp.axis === 'x' ? ramp.maxX - ramp.minX : ramp.maxZ - ramp.minZ;
-                const lowY = Math.min(ramp.minY, ramp.maxY);
+                const probe = standableRampProbe(terrain, towerIndex, 3);
+                expect(probe, `tower ${towerIndex}`).not.toBeNull();
+                if (!probe) {
+                    continue;
+                }
+                const { ramp, x, z, lowY } = probe;
                 const lowAtMin = ramp.maxY > ramp.minY;
-                const lowFraction = 3 / rise;
-                const startFraction = lowAtMin ? lowFraction : 1 - lowFraction;
-                const startAlong = (ramp.axis === 'x' ? ramp.minX : ramp.minZ) + startFraction * run;
-                const laneCentre = ramp.axis === 'x' ? (ramp.minZ + ramp.maxZ) / 2 : (ramp.minX + ramp.maxX) / 2;
-                const x = ramp.axis === 'x' ? startAlong : laneCentre;
-                const z = ramp.axis === 'z' ? startAlong : laneCentre;
                 // Walk toward the low end, where the underside eventually drops below head height.
                 const yaw = ramp.axis === 'x' ? (lowAtMin ? Math.PI / 2 : -Math.PI / 2) : lowAtMin ? 0 : Math.PI;
 
@@ -212,10 +228,18 @@ describe('megastructure ramps', () => {
                 expect(maxLateral, `tower ${towerIndex}, ${firstPerson ? 'first' : 'third'} person`).toBeLessThan(0.05);
                 const alongStart = ramp.axis === 'x' ? start.x : start.z;
                 const alongEnd = ramp.axis === 'x' ? player.group.position.x : player.group.position.z;
+                // The player can walk toward the low end only until the underside drops to the
+                // body height (plus the camera margin in first person). Steeper flights leave
+                // less of that run, so scale the expected movement to the slope.
+                const slope =
+                    Math.abs(ramp.maxY - ramp.minY) /
+                    (ramp.axis === 'x' ? ramp.maxX - ramp.minX : ramp.maxZ - ramp.minZ);
+                const ceilingHeight = PLAYER_HEIGHT + (firstPerson ? FIRST_PERSON_CEILING_CLEARANCE : 0);
+                const travelLimit = (3 - RAMP_THICKNESS - ceilingHeight) / slope;
                 expect(
                     Math.abs(alongEnd - alongStart),
                     `tower ${towerIndex}, ${firstPerson ? 'first' : 'third'} person`,
-                ).toBeGreaterThan(0.3);
+                ).toBeGreaterThan(travelLimit * 0.5);
                 if (firstPerson) {
                     // The whole near plane stays below the underside at the stop, not just the eye.
                     const finalSurface = rampSurfaceAt(ramp, player.group.position.x, player.group.position.z);

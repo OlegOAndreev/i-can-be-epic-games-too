@@ -72,6 +72,9 @@ const DISTANT_PACK_DISTANCE = 150;
 // interval, whichever comes first. Both are well inside one terrain cell.
 const WALK_CHECK_DISTANCE = 0.4;
 const WALK_CHECK_INTERVAL = 0.12;
+// Headings tried to either side of a blocked step, in radians. Trees, boulders, and tower walls are
+// narrow, so a short detour keeps an animal moving instead of pinning it against whatever it faces.
+const WALK_DETOUR_ANGLES = [0.7, -0.7, 1.4, -1.4];
 // A petted wolf leads the player to the nearest emerald stone. It starts at a trot and
 // accelerates to a run over the first 1.5 seconds, then stops just outside the stone's collider
 // and waits long enough for the player to catch up.
@@ -1180,33 +1183,58 @@ export class RobotAnimals {
         const desired = Math.atan2(dx, dz);
         group.rotation.y = dampAngle(group.rotation.y, desired, ROAM_TURN_RATE * animal.turnScale, dt);
         const step = Math.min(distance, speed * dt);
-        const nextX = group.position.x + Math.sin(group.rotation.y) * step;
-        const nextZ = group.position.z + Math.cos(group.rotation.y) * step;
+        let stepX = group.position.x + Math.sin(group.rotation.y) * step;
+        let stepZ = group.position.z + Math.cos(group.rotation.y) * step;
 
         animal.walkCheckTimer -= dt;
-        const checkDistance = Math.hypot(nextX - animal.walkCheckX, nextZ - animal.walkCheckZ);
+        const checkDistance = Math.hypot(stepX - animal.walkCheckX, stepZ - animal.walkCheckZ);
         const mustCheck = checkDistance >= WALK_CHECK_DISTANCE || animal.walkCheckTimer <= 0;
         if (animal.walkBlocked && !mustCheck) {
             return false;
         }
         if (mustCheck) {
             animal.walkCheckTimer = WALK_CHECK_INTERVAL;
-            animal.walkCheckX = nextX;
-            animal.walkCheckZ = nextZ;
-            if (!this.canWalk(animal, nextX, nextZ)) {
-                animal.walkBlocked = true;
-                return false;
+            if (!this.canWalk(animal, stepX, stepZ)) {
+                const detour = this.detourStep(animal, group.position.x, group.position.z, group.rotation.y, step);
+                if (!detour) {
+                    animal.walkBlocked = true;
+                    animal.walkCheckX = stepX;
+                    animal.walkCheckZ = stepZ;
+                    return false;
+                }
+                stepX = detour.x;
+                stepZ = detour.z;
             }
             animal.walkBlocked = false;
+            animal.walkCheckX = stepX;
+            animal.walkCheckZ = stepZ;
         }
 
-        group.position.x = nextX;
-        group.position.z = nextZ;
-        animal.groundX = nextX;
-        animal.groundZ = nextZ;
-        animal.groundY = this.terrain.heightAt(nextX, nextZ);
+        group.position.x = stepX;
+        group.position.z = stepZ;
+        animal.groundX = stepX;
+        animal.groundZ = stepZ;
+        animal.groundY = this.terrain.heightAt(stepX, stepZ);
         group.position.y = animal.groundY;
         return true;
+    }
+
+    // First clear point to one side of the blocked heading, or null when the animal is boxed in.
+    private detourStep(
+        animal: Animal,
+        x: number,
+        z: number,
+        heading: number,
+        step: number,
+    ): { x: number; z: number } | null {
+        for (const offset of WALK_DETOUR_ANGLES) {
+            const detourX = x + Math.sin(heading + offset) * step;
+            const detourZ = z + Math.cos(heading + offset) * step;
+            if (this.canWalk(animal, detourX, detourZ)) {
+                return { x: detourX, z: detourZ };
+            }
+        }
+        return null;
     }
 
     private pickPackTarget(pack: Pack): void {

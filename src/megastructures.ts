@@ -35,10 +35,24 @@ import { smoothstep } from './math-utils';
 import { mergeParts } from './mesh-optimize';
 import { mulberry32 } from './noise';
 import { applyMetalSurfaceShader, getSurfaceTextures } from './textures';
+import {
+    applyWindowGlassShader,
+    attachWindowGlassSeed,
+    WINDOW_GLASS_RENDER_ORDER,
+    windowGlassSeed,
+} from './window-glass';
+import type { WindowGlassAnimation } from './window-glass';
 
 const SITE_COUNT = 6;
 const SITE_ATTEMPTS = 600;
 const SITE_RADIUS = 48;
+// Towers stand in a ring around the middle of the island, away from the spawn and from each other.
+const SITE_RING_INNER_RADIUS = 150;
+const SITE_RING_MARGIN = 320;
+const SITE_SPAWN_CLEARANCE = 110;
+const SITE_SEPARATION = 210;
+// Grid step of the backup sweep, used when the random samples cannot place every tower.
+const SITE_SWEEP_STEP = 48;
 export const WALL_THICKNESS = 1.8;
 // Kept thin so the ceiling under a ramp opening leaves room for the first-person camera.
 const FLOOR_THICKNESS = 0.4;
@@ -53,7 +67,7 @@ export const RAMP_PARAPET_THICKNESS = 0.14;
 const RAMP_HOLE_MARGIN = 0.5;
 // Horizontal distance kept as floor beyond a ramp's low and high edges, giving the player room to
 // step on and a landing to walk along before taking the next flight.
-const RAMP_LANDING_DEPTH = 2.5;
+export const RAMP_LANDING_DEPTH = 2.5;
 // Gap kept between a ramp lane and its wall, leaving a ledge wide enough for the player to walk
 // along beside the ramp to the next corner.
 const RAMP_LANE_CLEARANCE = 1.5;
@@ -66,25 +80,34 @@ const ENTRANCE_FRAME_THICKNESS = 0.24;
 const ENTRANCE_FRAME_DEPTH = 0.16;
 const ENTRANCE_GLOW_SPREAD = 1.4;
 const SIGN_OFFSET = 0.07;
-// A long, low window in one wall of every storey above the ground floor. The sill sits low
-// enough that the player can double jump onto it but cannot reach it with a single jump.
-export const WINDOW_BAND_HEIGHT = 3.9;
-export const WINDOW_SILL_HEIGHT = 4.6;
-const WINDOW_END_MARGIN = 1.2;
-// The glass is one plane in the middle of the wall. Its collider matches that plane, leaving the
-// interior half of the sill wide enough to stand on.
+// A high, narrow window band in one wall of every storey above the ground floor, set well above
+// the reach of a jump.
+export const WINDOW_BAND_HEIGHT = 3.0;
+export const WINDOW_SILL_HEIGHT = 9.0;
+export const WINDOW_END_MARGIN = 1.2;
+// Walls in the order they meet around a tower, so neighbouring entries share a corner.
+const WINDOW_WALL_ORDER = [0, 2, 1, 3];
+
+// The two walls a storey is glazed on. They meet at one corner, and the pair turns one corner per
+// level, so consecutive floors open onto a different side of the tower.
+export function windowWallPair(entranceSide: number, level: number): [number, number] {
+    const count = WINDOW_WALL_ORDER.length;
+    const start = WINDOW_WALL_ORDER.indexOf(entranceSide ^ 1);
+    const index = (start + level - 1) % count;
+    return [WINDOW_WALL_ORDER[index], WINDOW_WALL_ORDER[(index + 1) % count]];
+}
+// The glazing is one plane per wall, set in the middle of the wall. Its collider matches that plane,
+// leaving the sill on either side of it deep enough to stand on.
 const WINDOW_GLASS_THICKNESS = 0.12;
 const CROWN_RAMP_WIDTH = 2.4;
 const CROWN_RAMP_THICKNESS = 0.22;
 const CROWN_RAMP_SEGMENTS_PER_TURN = 24;
-// Every storey above the ground is inset independently on each side. The setbacks are not
-// progressive, so the stack is deliberately uneven: a storey can be wider than the one below,
-// leaving its floor cantilevered over the smaller storey. A generous limit keeps consecutive
-// floors visibly different in area instead of reading as a regular stepped tower.
-// Consecutive storeys can inset from opposite sides, so the worst-case overlap is
-// `1 - 4 * inset`. Keep that overlap long enough for the ramp run after wall and landing depth
-// are subtracted; otherwise a floor can produce an unwalkable (>1.5 slope) ramp.
-const TOWER_MAX_SIDE_INSET = 0.1;
+// Every storey above the ground gets a size of its own: a random linear fraction of the footprint, so
+// the largest floor of a tower can be 2.5 times the area of the smallest. Each one is also placed at a
+// random spot inside the footprint, so the stack stays uneven and floors cantilever over the smaller
+// storeys below them. Two storeys joined by a flight have to share enough interior for its run and a
+// landing at each end, and the run has to stay under the slope the robot can climb (1.5).
+const RAMP_MAX_SLOPE = 1.35;
 // Gap kept between the crown spiral's outer edge and the inside of the top storey's walls.
 const CROWN_WALL_CLEARANCE = 0.4;
 // The crown must not overhang the top ramp's hole at head height, or the player's head would
@@ -112,9 +135,10 @@ const FLOOR_PROP_WALL_MARGIN = 1.2;
 const FLOOR_PROP_NUDGE_STEPS = 6;
 // Clearance kept around ramp lanes and holes when placing a totem.
 const FLOOR_PROP_RAMP_CLEARANCE = 0.9;
-// The switch sits just short of the spiral's top end. Its hit detection is deliberately extra
-// generous: a wrench swing anywhere inside this radius flips it, from any direction.
-const SWITCH_WRENCH_RADIUS = 4.5;
+// The switch sits just short of the spiral's top end. Its hit detection matches the wrench's own
+// reach but drops the forward arc: a wrench swing anywhere inside this radius flips it, from any
+// direction.
+const SWITCH_WRENCH_RADIUS = 3.5;
 const SWITCH_WRENCH_HEIGHT = 3.5;
 // How long the structure buzzes and charges before the bolt comes down.
 export const SWITCH_CHARGE_SECONDS = 3;
@@ -432,16 +456,18 @@ export class Megastructures {
         metalness: 0.2,
     });
     private windowMaterial = new MeshStandardMaterial({
-        color: 0xbfe8ee,
+        // The glazing itself comes from the shader below: it draws the panes, the frame bars and the
+        // moving sheen, and owns the colour, the alpha and the faint glow of the bars.
+        color: 0xffffff,
         emissive: 0x0d3a44,
         emissiveIntensity: 0.5,
         roughness: 0.08,
         metalness: 0.15,
         transparent: true,
-        opacity: 0.18,
         side: DoubleSide,
         depthWrite: false,
     });
+    private windowGlassAnimation: WindowGlassAnimation = applyWindowGlassShader(this.windowMaterial);
     private lampMaterial = new MeshStandardMaterial({
         color: 0x2a0503,
         emissive: 0xff2010,
@@ -633,22 +659,34 @@ export class Megastructures {
 
         for (let attempt = 0; attempt < SITE_ATTEMPTS && this.sites.length < SITE_COUNT; attempt++) {
             const angle = rng() * Math.PI * 2;
-            const radius = 150 + rng() * (worldHalfSize - 320 - 150);
+            const radius = SITE_RING_INNER_RADIUS + rng() * (worldHalfSize - SITE_RING_MARGIN - SITE_RING_INNER_RADIUS);
             const x = Math.cos(angle) * radius;
             const z = Math.sin(angle) * radius;
 
-            if (Math.hypot(x - spawn.x, z - spawn.z) < 110) {
-                continue;
-            }
-            if (this.sites.some((site) => Math.hypot(x - site.x, z - site.z) < 210)) {
-                continue;
-            }
-            if (!this.isSiteClear(x, z, heightAt)) {
+            if (!this.isSiteSpotFree(x, z, spawn, heightAt)) {
                 continue;
             }
 
             this.sites.push({ x, z, radius: SITE_RADIUS });
             this.buildSite(x, z, heightAt, rng);
+        }
+
+        // The random samples can keep missing the last flat, dry patch a watery world has left, and
+        // the towers are the level's landmarks, so sweep the ring on a grid before doing without them.
+        const outerRadius = worldHalfSize - SITE_RING_MARGIN;
+        for (let z = -outerRadius; z <= outerRadius && this.sites.length < SITE_COUNT; z += SITE_SWEEP_STEP) {
+            for (let x = -outerRadius; x <= outerRadius && this.sites.length < SITE_COUNT; x += SITE_SWEEP_STEP) {
+                const radius = Math.hypot(x, z);
+                if (radius < SITE_RING_INNER_RADIUS || radius > outerRadius) {
+                    continue;
+                }
+                if (!this.isSiteSpotFree(x, z, spawn, heightAt)) {
+                    continue;
+                }
+
+                this.sites.push({ x, z, radius: SITE_RADIUS });
+                this.buildSite(x, z, heightAt, rng);
+            }
         }
 
         this.finishStone();
@@ -693,6 +731,7 @@ export class Megastructures {
     update(dt: number, playerPosition: Vector3 | null = null): void {
         this.glowTime += dt;
         this.floorPropGlowMaterial.uniforms.uTime.value = this.glowTime;
+        this.windowGlassAnimation.time.value = this.glowTime;
         // Breathe the entrance halos so the doorways stay noticeable against the walls.
         this.entranceGlowMaterial.opacity = 0.28 + 0.08 * (0.5 + 0.5 * Math.sin(this.glowTime * 1.6));
         this.updatePoweredTrim();
@@ -1252,6 +1291,23 @@ export class Megastructures {
         return field.spireTopRadius + CROWN_SHOCK_CLEARANCE;
     }
 
+    // True when a candidate can host a tower: clear of the spawn and of the other towers, and on
+    // ground that is dry, gently varied, and not too high.
+    private isSiteSpotFree(
+        x: number,
+        z: number,
+        spawn: { x: number; z: number },
+        heightAt: (x: number, z: number) => number,
+    ): boolean {
+        if (Math.hypot(x - spawn.x, z - spawn.z) < SITE_SPAWN_CLEARANCE) {
+            return false;
+        }
+        if (this.sites.some((site) => Math.hypot(x - site.x, z - site.z) < SITE_SEPARATION)) {
+            return false;
+        }
+        return this.isSiteClear(x, z, heightAt);
+    }
+
     private isSiteClear(x: number, z: number, heightAt: (x: number, z: number) => number): boolean {
         let lowest = Infinity;
         let highest = -Infinity;
@@ -1325,50 +1381,66 @@ export class Megastructures {
         const rimHeight = 2 + rng();
         const topY = floors[levelCount - 1] + rimHeight;
 
-        // The ground storey keeps the full footprint. Every storey above it gets an independent
-        // setback on each side, so the walls do not form a regular stepped pyramid. Some storeys
-        // end up wider than the one below, leaving their floors cantilevered over it.
+        // The ground storey keeps the full footprint. Every storey above it gets a random size and a
+        // random place inside the footprint, so the walls never form a regular stepped pyramid. The
+        // placement is clamped so the storey above and the one below still share enough length for the
+        // flight that joins them.
+        const minSharedLength = levelHeight / RAMP_MAX_SLOPE + 2 * RAMP_LANDING_DEPTH;
+        const placeStorey = (
+            axis: 'x' | 'z',
+            previous: MegastructureStorey | null,
+            scale: number,
+        ): { min: number; max: number } => {
+            const footprintMin = axis === 'x' ? minX : minZ;
+            const footprintMax = axis === 'x' ? maxX : maxZ;
+            const size = (footprintMax - footprintMin) * scale;
+            const latestStart = footprintMax - size;
+            if (!previous) {
+                return { min: footprintMin, max: footprintMin + size };
+            }
+            const previousMin = axis === 'x' ? previous.minX : previous.minZ;
+            const previousMax = axis === 'x' ? previous.maxX : previous.maxZ;
+            // Any start in this window keeps `minSharedLength` of overlap with the storey below.
+            const lowestStart = Math.max(footprintMin, previousMin + minSharedLength - size);
+            const highestStart = Math.min(latestStart, previousMax - minSharedLength);
+            if (lowestStart > highestStart) {
+                return { min: footprintMin, max: footprintMin + size };
+            }
+            const start = lowestStart + rng() * (highestStart - lowestStart);
+            return { min: start, max: start + size };
+        };
+        // Each tower gets a range of its own: its smallest floor is a linear fraction of the footprint
+        // chosen from a per-tower target, so the largest floor is between 1.6 and 2.5 times its area.
+        // One storey sits at each end of that range: the smallest and the full footprint.
+        const targetAreaRatio = 1.6 + rng() * (2.5 - 1.6);
+        const smallestScale = 1 / Math.sqrt(targetAreaRatio);
+        // The full-footprint storey is never the first above the ground, so it always has a smaller
+        // storey under it to overhang.
+        const widestStorey = 2 + Math.floor(rng() * (levelCount - 1));
+        let smallestStorey = 1 + Math.floor(rng() * levelCount);
+        if (smallestStorey === widestStorey) {
+            // The widest storey is at least the second above the ground, so this cannot reach 0.
+            smallestStorey -= 1;
+        }
         const storeys: MegastructureStorey[] = [];
         for (let storey = 0; storey <= levelCount; storey++) {
-            const insetMinX = storey === 0 ? 0 : rng() * width * TOWER_MAX_SIDE_INSET;
-            const insetMaxX = storey === 0 ? 0 : rng() * width * TOWER_MAX_SIDE_INSET;
-            const insetMinZ = storey === 0 ? 0 : rng() * depth * TOWER_MAX_SIDE_INSET;
-            const insetMaxZ = storey === 0 ? 0 : rng() * depth * TOWER_MAX_SIDE_INSET;
+            const previous = storey === 0 ? null : storeys[storey - 1];
+            const scale =
+                storey === 0 || storey === widestStorey
+                    ? 1
+                    : storey === smallestStorey
+                      ? smallestScale
+                      : smallestScale + rng() * (1 - smallestScale);
+            const bodyX = placeStorey('x', previous, scale);
+            const bodyZ = placeStorey('z', previous, scale);
             storeys.push({
-                minX: minX + insetMinX,
-                maxX: maxX - insetMaxX,
-                minZ: minZ + insetMinZ,
-                maxZ: maxZ - insetMaxZ,
+                minX: bodyX.min,
+                maxX: bodyX.max,
+                minZ: bodyZ.min,
+                maxZ: bodyZ.max,
                 baseY: storey === 0 ? baseY : floors[storey - 1],
                 topY: storey === levelCount ? topY : floors[storey],
             });
-        }
-
-        // If the random setbacks all happened to stack inward, open the top storey back out to the
-        // base footprint so every tower still has at least one overhanging floor.
-        const nests = storeys.every((storey, index) => {
-            if (index === 0) {
-                return true;
-            }
-            const below = storeys[index - 1];
-            return (
-                storey.minX >= below.minX &&
-                storey.maxX <= below.maxX &&
-                storey.minZ >= below.minZ &&
-                storey.maxZ <= below.maxZ
-            );
-        });
-        if (nests) {
-            const below = storeys[levelCount - 1];
-            below.minX = Math.max(below.minX, minX + width * 0.05);
-            below.maxX = Math.min(below.maxX, maxX - width * 0.05);
-            below.minZ = Math.max(below.minZ, minZ + depth * 0.05);
-            below.maxZ = Math.min(below.maxZ, maxZ - depth * 0.05);
-            const top = storeys[levelCount];
-            top.minX = minX;
-            top.maxX = maxX;
-            top.minZ = minZ;
-            top.maxZ = maxZ;
         }
 
         // The floor at level i is the ceiling of storey i and the base of storey i + 1. It reaches
@@ -1423,13 +1495,12 @@ export class Megastructures {
             entranceSide,
             heightAt,
         );
-        // The ground storey stays solid. Above it, each storey gets a band of real window
-        // openings on one wall, rotating one wall per level so consecutive floors open onto
-        // different sides. The low rim above the top floor is just a parapet, so it stays solid.
-        const firstWindowSide = entranceSide ^ 1;
+        // The ground storey stays solid. Above it, each storey is glazed on two walls that meet at a
+        // corner, and the pair turns one corner per level so consecutive floors open onto a different
+        // side of the tower. The low rim above the top floor is just a parapet, so it stays solid.
         for (let storey = 1; storey < storeys.length; storey++) {
-            const windowSide = storey < levelCount ? (firstWindowSide + storey - 1) % 4 : null;
-            this.addStoreyWalls(storeys[storey], windowSide);
+            const walls = storey < levelCount ? windowWallPair(entranceSide, storey) : null;
+            this.addStoreyWalls(storeys[storey], walls, storey);
         }
 
         // Ramps climb in a loop around the storey: each flight hugs one wall, and the next flight
@@ -1550,10 +1621,10 @@ export class Megastructures {
         this.addTowerSigns(storeys, entrance, entranceSide, rng);
     }
 
-    private addStoreyWalls(storey: MegastructureStorey, windowSide: number | null): void {
+    private addStoreyWalls(storey: MegastructureStorey, windowWalls: [number, number] | null, level: number): void {
         for (let side = 0; side < 4; side++) {
-            if (side === windowSide) {
-                this.addWindowWall(storey, side);
+            if (windowWalls && (side === windowWalls[0] || side === windowWalls[1])) {
+                this.addWindowWall(storey, side, side === windowWalls[0] ? windowWalls[1] : windowWalls[0], level);
                 continue;
             }
 
@@ -1591,33 +1662,55 @@ export class Megastructures {
         }
     }
 
-    // Cuts a long, low window opening in one storey wall. Solid end walls, a sill, and a lintel
-    // frame a single glass pane that stays see-through from both sides.
-    private addWindowWall(storey: MegastructureStorey, side: number): void {
+    // Cuts a high, narrow window band in one storey wall. The opening runs to the corner's
+    // mid-point, where its pane meets the neighbouring pane edge to edge, and keeps a pier of wall
+    // at the far end. A sill and a lintel frame the opening, and the single pane stays see-through
+    // from both sides.
+    private addWindowWall(storey: MegastructureStorey, side: number, neighbourSide: number, level: number): void {
         const t = WALL_THICKNESS;
         const range = this.storeyWallRange(storey, side);
-        const span = range.max - range.min - 2 * WINDOW_END_MARGIN;
+        // A wall meets its neighbour at the end of its tangent axis that lies towards the neighbour:
+        // the corner is on the +X or +Z side of the tower when the neighbour is one of those walls.
+        const cornerAtMax = neighbourSide === 0 || neighbourSide === 2;
+        // Both panes stop on the corner's mid-point: the line where the two walls' centre planes cross.
+        // They meet there instead of crossing behind one another, and the corner beyond that line is
+        // left open, so the two openings join around the corner.
+        const outerMin = side < 2 ? storey.minX : storey.minZ;
+        const outerMax = side < 2 ? storey.maxX : storey.maxZ;
+        const miter = (cornerAtMax ? outerMax : outerMin) + (cornerAtMax ? -1 : 1) * (t / 2);
+        const spanMin = cornerAtMax ? range.min + WINDOW_END_MARGIN : miter;
+        const spanMax = cornerAtMax ? miter : range.max - WINDOW_END_MARGIN;
+        const span = spanMax - spanMin;
         const height = Math.min(WINDOW_BAND_HEIGHT, storey.topY - storey.baseY - 1.2);
         if (span < 1 || height < 0.5) {
             this.addStoreyWallPart(storey, side, range.min, range.max, storey.baseY, storey.topY);
             return;
         }
 
-        const spanMin = (range.min + range.max) / 2 - span / 2;
-        const spanMax = spanMin + span;
-        // Keep the band low in the storey instead of centring it, so the sill lands inside the
-        // double jump's reach. The clamp leaves a lintel even if a storey is unusually short.
+        // Lift the band above jump height, leaving a deep stone base below it. The clamp keeps a
+        // lintel even if a storey is unusually short.
         const bottom = Math.min(storey.baseY + WINDOW_SILL_HEIGHT, storey.topY - height - 0.6);
         const top = bottom + height;
         const y = (bottom + top) / 2;
 
-        // Solid ends, then the sill and lintel above and below the opening.
-        this.addStoreyWallPart(storey, side, range.min, spanMin, storey.baseY, storey.topY);
-        this.addStoreyWallPart(storey, side, spanMax, range.max, storey.baseY, storey.topY);
-        this.addStoreyWallPart(storey, side, spanMin, spanMax, storey.baseY, bottom);
-        this.addStoreyWallPart(storey, side, spanMin, spanMax, top, storey.topY);
+        // The pier at the far end of the opening, then the sill and lintel above and below it. Outside
+        // the band the stone runs to the end of the wall's own range, closing the corner above and
+        // below the glazing; inside the band the wall stops at the corner's mid-point, so the two
+        // openings join around the corner with the panes meeting at their back.
+        if (cornerAtMax && spanMin > range.min) {
+            this.addStoreyWallPart(storey, side, range.min, Math.min(spanMin, range.max), storey.baseY, storey.topY);
+        }
+        if (!cornerAtMax && spanMax < range.max) {
+            this.addStoreyWallPart(storey, side, Math.max(spanMax, range.min), range.max, storey.baseY, storey.topY);
+        }
+        const sillMin = cornerAtMax ? Math.min(spanMin, range.max) : range.min;
+        const sillMax = cornerAtMax ? range.max : Math.max(spanMax, range.min);
+        this.addStoreyWallPart(storey, side, sillMin, sillMax, storey.baseY, bottom);
+        this.addStoreyWallPart(storey, side, sillMin, sillMax, top, storey.topY);
 
         const { tangentX, tangentZ, normalX, normalZ } = sideBasis(side);
+        // The pane sits in the middle of the wall. The stone in front of it is the reveal the opening
+        // leaves, and the panes of a pair meet on the corner's mid-point line.
         const wallCentre =
             side === 0
                 ? storey.maxZ - t / 2
@@ -1630,12 +1723,16 @@ export class Megastructures {
         const along = (spanMin + spanMax) / 2;
 
         const geometry = new PlaneGeometry(span, height);
+        // Every window glazes itself from a seed of its own, so no two sheens run in step. The seed is
+        // hashed from the window's address instead of drawn from the tower's stream, which leaves the
+        // rest of the tower exactly as it was built.
+        attachWindowGlassSeed(geometry, windowGlassSeed(this.currentTowerIndex, level, side));
         geometry.rotateY(rotationY);
         geometry.translate(tangentX !== 0 ? along : wallCentre, y, tangentZ !== 0 ? along : wallCentre);
         this.windowParts.push(geometry);
 
-        // A thin collider on the glass plane keeps the pane solid without filling the whole
-        // opening, so the sill on either side stays deep enough for the player to stand on.
+        // A thin collider on the glass plane keeps the pane solid without filling the whole opening,
+        // so the sill on either side of it stays deep enough for the player to stand on.
         const glassMin = wallCentre - WINDOW_GLASS_THICKNESS / 2;
         const glassMax = wallCentre + WINDOW_GLASS_THICKNESS / 2;
         if (side === 0 || side === 1) {
@@ -1809,7 +1906,7 @@ export class Megastructures {
         this.addCrownSwitch(catwalk, towerIndex);
     }
 
-    // Fills every walled storey with four to six rectangular totems on a 2x3 lattice. The lattice
+    // Fills every walled storey with three to five rectangular totems on a 2x3 lattice. The lattice
     // spans almost the whole floor, so the totems are spread across it instead of clustering in one
     // corner. A totem whose cell touches a ramp or a ramp hole is nudged within its cell to the
     // nearest clear spot. Each totem carries two to five glyphs.
@@ -1905,43 +2002,37 @@ export class Megastructures {
             const cellWidth = (floorMaxX - floorMinX) / columns;
             const cellDepth = (floorMaxZ - floorMinZ) / rows;
 
-            // Four to six of the six cells hold a totem. One cell is picked from every row first
-            // and the rest are added randomly, so the totems stay spread across the whole floor
-            // instead of clustering at one end. Cells that cannot fit a clear totem are skipped in
-            // favour of the remaining cells.
-            const totemCount = 4 + Math.floor(propRng() * 3);
-            const chosenCells: number[] = [];
-            const spareCells: number[] = [];
-            for (let row = 0; row < rows; row++) {
-                const column = propRng() < 0.5 ? 0 : 1;
-                chosenCells.push(row * columns + column);
-                spareCells.push(row * columns + (1 - column));
-            }
-            for (let index = spareCells.length - 1; index > 0; index--) {
-                const swap = Math.floor(propRng() * (index + 1));
-                [spareCells[index], spareCells[swap]] = [spareCells[swap], spareCells[index]];
-            }
-            const cells = [...chosenCells, ...spareCells.slice(0, totemCount - chosenCells.length)];
-            for (let index = cells.length - 1; index > 0; index--) {
-                const swap = Math.floor(propRng() * (index + 1));
-                [cells[index], cells[swap]] = [cells[swap], cells[index]];
-            }
-            // Try the remaining cells too when a chosen one is crossed by a ramp.
-            for (const cell of [...chosenCells, ...spareCells]) {
-                if (!cells.includes(cell)) {
-                    cells.push(cell);
-                }
-            }
+            // Two to four of the six cells hold a totem.
+            const totemCount = 2 + Math.floor(propRng() * 3);
 
             // Alternate the two colors so every floor shows both kinds of glyph.
             const firstColor = propRng() < 0.5 ? 0 : 1;
             let propIndex = 0;
             let placedCount = 0;
 
-            for (const cellIndex of cells) {
-                if (placedCount >= totemCount) {
-                    break;
+            // The cells are picked at random, but a cell in a row or column that has no totem yet is
+            // taken before one that would double up, so the totems stay spread across the floor
+            // instead of clustering at one end. A cell whose clear space is too small is skipped.
+            const pending = Array.from({ length: rows * columns }, (_, cell) => cell);
+            const coveredRows = new Set<number>();
+            const coveredColumns = new Set<number>();
+            while (pending.length > 0 && placedCount < totemCount) {
+                let bestScore = -1;
+                const best: number[] = [];
+                for (let index = 0; index < pending.length; index++) {
+                    const cell = pending[index];
+                    const score =
+                        (coveredRows.has(Math.floor(cell / columns)) ? 0 : 2) +
+                        (coveredColumns.has(cell % columns) ? 0 : 1);
+                    if (score > bestScore) {
+                        bestScore = score;
+                        best.length = 0;
+                    }
+                    if (score === bestScore) {
+                        best.push(index);
+                    }
                 }
+                const cellIndex = pending.splice(best[Math.floor(propRng() * best.length)], 1)[0];
                 const row = Math.floor(cellIndex / columns);
                 const column = cellIndex % columns;
                 const cellMinX = floorMinX + column * cellWidth;
@@ -2131,6 +2222,8 @@ export class Megastructures {
                 });
                 propIndex++;
                 placedCount++;
+                coveredRows.add(row);
+                coveredColumns.add(column);
             }
         }
     }
@@ -2456,16 +2549,15 @@ export class Megastructures {
         entranceSide: number,
         rng: () => number,
     ): void {
-        const firstWindowSide = entranceSide ^ 1;
         for (let side = 0; side < 4; side++) {
             const { tangentX, tangentZ, normalX, normalZ } = sideBasis(side);
             const maxLevel = Math.max(1, storeys.length - 2);
             let level = 1 + Math.floor(rng() * maxLevel);
-            // The window band rotates one wall per level. Pick a level whose window is on another
-            // wall so a very large sign always has solid metal behind it.
+            // The window band glazes two neighbouring walls per level. Pick a level whose glazing is on
+            // other walls, so a very large sign always has solid metal behind it.
             for (let attempt = 0; attempt < maxLevel; attempt++) {
-                const windowSide = (firstWindowSide + level - 1) % 4;
-                if (side !== windowSide) {
+                const [first, second] = windowWallPair(entranceSide, level);
+                if (side !== first && side !== second) {
                     break;
                 }
                 level = 1 + (level % maxLevel);
@@ -3027,7 +3119,13 @@ export class Megastructures {
     }
 
     private finishWindows(): void {
-        this.finishParts(this.windowParts, this.windowMaterial, false, false, 'tower-windows');
+        // The glass draws after the world's other transparent layers, so smoke behind a window is seen
+        // through the pane rather than painted over it.
+        const mesh = this.createPartsMesh(this.windowParts, this.windowMaterial, false, false, 'tower-windows');
+        if (mesh) {
+            mesh.renderOrder = WINDOW_GLASS_RENDER_ORDER;
+            this.group.add(mesh);
+        }
         this.windowParts = [];
     }
 

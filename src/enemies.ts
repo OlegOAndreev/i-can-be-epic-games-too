@@ -131,9 +131,10 @@ const DRAW_DISTANCE = 65;
 const RAMP_ATTACK_QUARTER = 0.25;
 const FLOOR_ENGAGE_HEIGHT = 3;
 // A wrench swing is deliberately forgiving: reach is a radius around the player. A regular swing
-// only covers the forward arc, while the charged spin sweeps all the way around at a shorter reach.
-// Exported so the game can scale the charged reach against this base distance.
-export const WRENCH_RANGE = 4.5;
+// only covers the forward arc, while the charged spin sweeps all the way around at its own reach
+// (WRENCH_CHARGED_REACH). Exported so the game can scale the charged reach against this base
+// distance.
+export const WRENCH_RANGE = 3.5;
 const WRENCH_REACH_HEIGHT = 2.5;
 // Fallback arc for callers that supply a facing; the game passes the difficulty's arc explicitly.
 const DEFAULT_WRENCH_STRIKE_ARC = (Math.PI * 4) / 3;
@@ -918,33 +919,113 @@ export class EnemyRobots {
             if (level.enemies.every((enemy) => enemy.defeated)) {
                 continue;
             }
-            if (level.speech) {
-                this.stopSpeech(level.speech);
-                level.speech.announcedMadness = false;
-                level.speech.announcedAnger = false;
+            this.reviveLevel(level);
+        }
+    }
+
+    // Debug helper behind the "Teleport to Crazies" menu button: picks one random populated storey,
+    // revives every robot on it — including robots the player has already put down — and reports
+    // where to stand on that deck. The arrival spot is the clear point farthest from the group, so
+    // the player lands opposite the robots with them in view. The current difficulty sets the hit
+    // counts, so a peaceful run leaves the floor empty while still returning the arrival spot.
+    reviveRandomFloor(): { position: Vector3; facing: number } | null {
+        if (this.levels.length === 0) {
+            return null;
+        }
+
+        const level = this.levels[Math.floor(Math.random() * this.levels.length)];
+        if (this.enemiesEnabled) {
+            this.reviveLevel(level);
+        }
+
+        let groupX = 0;
+        let groupZ = 0;
+        for (const enemy of level.enemies) {
+            groupX += enemy.spawnX;
+            groupZ += enemy.spawnZ;
+        }
+        groupX /= level.enemies.length;
+        groupZ /= level.enemies.length;
+
+        const arrival = this.findOppositeArrival(level, groupX, groupZ);
+        return {
+            position: new Vector3(arrival.x, level.floorY, arrival.z),
+            // Face the group, so the robots are straight ahead on arrival.
+            facing: Math.atan2(groupX - arrival.x, groupZ - arrival.z),
+        };
+    }
+
+    // The walkable point on the deck farthest from the robots, measured from their centre. Sampling a
+    // grid keeps the spot clear of walls, ramps, and ramp holes the way the robots' own spawns are
+    // chosen. The first robot's spawn is the fallback when no sampled point is clear.
+    private findOppositeArrival(level: EnemyLevel, groupX: number, groupZ: number): { x: number; z: number } {
+        const storey = level.storey;
+        const insetX = Math.min(SPAWN_INSET, (storey.maxX - storey.minX) * 0.35);
+        const insetZ = Math.min(SPAWN_INSET, (storey.maxZ - storey.minZ) * 0.35);
+        const minX = storey.minX + insetX;
+        const maxX = storey.maxX - insetX;
+        const minZ = storey.minZ + insetZ;
+        const maxZ = storey.maxZ - insetZ;
+        const boxes = this.terrain.megastructures.boxes ?? [];
+        const ramps = this.terrain.megastructures.ramps ?? [];
+        const floorY = level.floorY;
+
+        let best = { x: level.enemies[0].spawnX, z: level.enemies[0].spawnZ };
+        let bestDistance = -1;
+        for (let stepX = 0; stepX < SPAWN_GRID; stepX++) {
+            for (let stepZ = 0; stepZ < SPAWN_GRID; stepZ++) {
+                const x = minX + ((maxX - minX) * (stepX + 0.5)) / SPAWN_GRID;
+                const z = minZ + ((maxZ - minZ) * (stepZ + 0.5)) / SPAWN_GRID;
+                const distance = Math.hypot(x - groupX, z - groupZ);
+                if (distance <= bestDistance) {
+                    continue;
+                }
+                if (boxesBlockBody(boxes, x, z, floorY, PLAYER_HEIGHT, PLAYER_RADIUS)) {
+                    continue;
+                }
+                if (rampsBlockBody(ramps, x, z, floorY, PLAYER_HEIGHT, PLAYER_RADIUS)) {
+                    continue;
+                }
+                if (Math.abs(this.terrain.walkSurfaceAt(x, z, floorY + 0.4) - floorY) > 0.25) {
+                    continue;
+                }
+                bestDistance = distance;
+                best = { x, z };
             }
-            level.active = false;
-            level.timer = this.fireInterval;
-            for (const enemy of level.enemies) {
-                this.hideBeam(enemy);
-                enemy.group.position.set(enemy.spawnX, enemy.floorY + ENEMY_HOVER[enemy.kind], enemy.spawnZ);
-                enemy.group.rotation.y = enemy.spawnFacing;
-                enemy.group.visible = true;
-                enemy.model.visual.visible = true;
-                enemy.maxHitPoints = Math.max(1, ENEMY_HITS_TO_DEFEAT[enemy.kind] + this.hitPointDelta);
-                enemy.hitPoints = enemy.maxHitPoints;
-                enemy.invulnerableRemaining = 0;
-                enemy.knockbackX = 0;
-                enemy.knockbackZ = 0;
-                enemy.knockbackRemaining = 0;
-                enemy.skipNextVolley = false;
-                enemy.hasSeenPlayer = false;
-                enemy.defeated = false;
-                enemy.wanderTarget = null;
-                enemy.wanderTimer = 0;
-                enemy.detourX = 0;
-                enemy.detourZ = 0;
-            }
+        }
+
+        return best;
+    }
+
+    // Puts one floor's robots back at their spawn spots with full health and a clean combat state,
+    // whether or not they were defeated.
+    private reviveLevel(level: EnemyLevel): void {
+        if (level.speech) {
+            this.stopSpeech(level.speech);
+            level.speech.announcedMadness = false;
+            level.speech.announcedAnger = false;
+        }
+        level.active = false;
+        level.timer = this.fireInterval;
+        for (const enemy of level.enemies) {
+            this.hideBeam(enemy);
+            enemy.group.position.set(enemy.spawnX, enemy.floorY + ENEMY_HOVER[enemy.kind], enemy.spawnZ);
+            enemy.group.rotation.y = enemy.spawnFacing;
+            enemy.group.visible = true;
+            enemy.model.visual.visible = true;
+            enemy.maxHitPoints = Math.max(1, ENEMY_HITS_TO_DEFEAT[enemy.kind] + this.hitPointDelta);
+            enemy.hitPoints = enemy.maxHitPoints;
+            enemy.invulnerableRemaining = 0;
+            enemy.knockbackX = 0;
+            enemy.knockbackZ = 0;
+            enemy.knockbackRemaining = 0;
+            enemy.skipNextVolley = false;
+            enemy.hasSeenPlayer = false;
+            enemy.defeated = false;
+            enemy.wanderTarget = null;
+            enemy.wanderTimer = 0;
+            enemy.detourX = 0;
+            enemy.detourZ = 0;
         }
     }
 
@@ -1087,13 +1168,16 @@ export class EnemyRobots {
     // remaining health fractions. A charged strike deals more damage. Pass a facing and arc to
     // limit the strike to that forward arc; omit the facing (the charged spin) to hit all around.
     // Structure geometry always blocks the strike, so neither swing reaches through walls, floors,
-    // or ramp decks. The sight check uses body points only and ignores the player's facing.
+    // or ramp decks. The sight check uses body points only and ignores the player's facing. Pass the
+    // same hitTargets set to a later check of the same swing and every robot in it is skipped, which
+    // is how the charged spin's second check avoids striking anything twice.
     wrenchStrike(
         playerPosition: Vector3,
         damage = 1,
         facing: number | null = null,
         arc = DEFAULT_WRENCH_STRIKE_ARC,
         reachScale = 1,
+        hitTargets?: Set<object>,
     ): EnemyWrenchHit[] {
         const hits: EnemyWrenchHit[] = [];
         const minForwardDot = Math.cos(arc / 2);
@@ -1115,7 +1199,7 @@ export class EnemyRobots {
         const target = new Vector3();
 
         for (const enemy of this.enemies) {
-            if (enemy.defeated || enemy.invulnerableRemaining > 0) {
+            if (enemy.defeated || enemy.invulnerableRemaining > 0 || hitTargets?.has(enemy)) {
                 continue;
             }
             if (Math.abs(enemy.floorY - playerPosition.y) > WRENCH_REACH_HEIGHT) {
@@ -1148,6 +1232,7 @@ export class EnemyRobots {
             enemy.hitPoints -= damage;
             enemy.invulnerableRemaining = HIT_IMMUNITY_SECONDS;
             enemy.skipNextVolley = true;
+            hitTargets?.add(enemy);
             if (distance > 1e-4) {
                 enemy.knockbackX = dx / distance;
                 enemy.knockbackZ = dz / distance;

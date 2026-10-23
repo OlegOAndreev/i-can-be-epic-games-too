@@ -114,7 +114,7 @@ describe('robot remains', () => {
         behindRemains.dispose();
     });
 
-    it('applies the first-person reach to charged swings too', () => {
+    it('scales the reach of a charged swing too', () => {
         const terrain = testTerrain();
         const remains = new RobotRemains(terrain, stubAudio());
         const sweeper = remains.getSites().find((site) => site.id === 'sweeper')!;

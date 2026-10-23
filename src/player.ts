@@ -59,15 +59,6 @@ export interface PlayerSnapshot {
 const MAX_WALKABLE_RISE = 1.5;
 // One extra jump is available while airborne. It is refilled whenever the player is grounded.
 const MAX_AIR_JUMPS = 1;
-// Pressing the charged attack while a swing is still playing is remembered for a moment, so the
-// charge starts the instant the swing ends instead of the press being lost. Easier difficulties
-// forgive more early input.
-const CHARGED_ATTACK_BUFFER_SECONDS: Record<Difficulty, number> = {
-    peaceful: 0.4,
-    easy: 0.4,
-    medium: 0.2,
-    hard: 0.2,
-};
 // A regular wrench swing covers this forward arc, in radians. Easier difficulties widen it so
 // nearby robots and boulders behind the robot stay easier to catch. The charged spin ignores it and
 // always sweeps the full circle.
@@ -82,9 +73,9 @@ const WRENCH_STRIKE_ARC: Record<Difficulty, number> = {
 // and changing the first-person FOV setting must not change that range.
 export const FIRST_PERSON_DEFAULT_FOV = 70;
 export const FIRST_PERSON_WRENCH_STRIKE_ARC = (FIRST_PERSON_DEFAULT_FOV * Math.PI) / 180;
-// First person trades the wide third-person arc for a narrower one, so the wrench reaches a little
-// further to keep the effective threat area comparable.
-export const FIRST_PERSON_WRENCH_REACH_SCALE = 1.2;
+// Third person keeps the wide difficulty arcs, so its regular swing reaches a little further than
+// the first-person one, which swings its narrower default-FOV cone at the base reach.
+export const THIRD_PERSON_WRENCH_REACH_SCALE = 1.2;
 // A jump pressed while falling this close (in seconds) to touchdown counts as a ground jump, so a
 // press that lands a frame before touchdown still launches the robot instead of being eaten.
 const JUMP_LANDING_GRACE_SECONDS: Record<Difficulty, number> = {
@@ -139,15 +130,29 @@ export const WRENCH_CHARGED_ATTACK_SECONDS = (WRENCH_ATTACK_SECONDS * 2) / 1.2;
 // A regular swing connects partway through the animation, once the arm has visibly swung. The
 // charged spin connects as the animation begins instead, so the release itself is the hit.
 export const WRENCH_STRIKE_PORTION = 1 / 3;
-// The charged strike fills the wrench in this long while the input stays held. Releasing before
-// it fills drops the charge; a full charge doubles the damage and turns the release into a
-// spinning strike: the robot makes two full turns with the wrench held forward.
-export const WRENCH_CHARGE_SECONDS = 1;
+// An attack press in the last moments of a swing is remembered, so a press meant for the next
+// strike is not lost while the previous animation finishes. The next hold starts when it ends.
+export const WRENCH_PRESS_BUFFER_SECONDS = 0.25;
+// One button drives both strikes: the press starts a hold and the release swings. Holding past
+// WRENCH_CHARGE_START_SECONDS begins filling the charge, so a tap or a short hold swings the
+// regular strike and only a longer hold reaches the charged spin.
+export const WRENCH_CHARGE_START_SECONDS = 0.1;
+// The charged strike fills the wrench in this long, counted from the moment the hold passes
+// WRENCH_CHARGE_START_SECONDS. Releasing before it fills swings the regular strike instead; a full
+// charge doubles the damage and turns the release into a spinning strike: the robot makes two full
+// turns with the wrench held forward.
+export const WRENCH_CHARGE_SECONDS = 0.9;
+// The build-up keeps animating this long after the wrench is charged, so the cage, the fill, and the
+// buzz all top out a moment after the release would already land the charged spin. Nothing waits for
+// it: the strike is ready as soon as the charge fills.
+export const WRENCH_CHARGE_TAIL_SECONDS = 0.2;
+// The whole build-up: the fill plus its tail. Drives the cage growth, the first-person fill sweep,
+// and the charge buzz.
+export const WRENCH_CHARGE_ANIMATION_SECONDS = WRENCH_CHARGE_SECONDS + WRENCH_CHARGE_TAIL_SECONDS;
 export const WRENCH_CHARGED_DAMAGE = 2;
-// The charged spin trades reach for its heavier hit: it stops at 2.5 m instead of the regular
-// wrench's 4.5 m. Its full circle needs no first-person arc compensation, so the same reach
-// applies in both view modes.
-export const WRENCH_CHARGED_REACH = 2.5;
+// The charged spin reaches as far as the base wrench range, so its own scale works out to 1; the
+// view-mode reach scale is applied on top of it like any other swing.
+export const WRENCH_CHARGED_REACH = 3.5;
 // Petting the wolf is a short scripted gesture: the arm reaches out, sweeps sideways twice, then
 // returns to rest. The first-person viewmodel and the third-person arm share this timing.
 export const PET_ANIMATION_SECONDS = 1.4;
@@ -195,14 +200,16 @@ export class Player {
     // Fires when a wrench swing plays to completion (not when it is interrupted), with whether
     // the strike was charged.
     onWrenchSwingEnd: ((charged: boolean) => void) | null = null;
-    // Fires once per swing, when the wrench connects. A regular swing connects a third of the way
-    // through; the charged spin connects as soon as the release starts it.
-    onWrenchStrike: ((charged: boolean) => void) | null = null;
+    // Fires when the wrench connects. A regular swing connects a third of the way through. The
+    // charged spin checks its reach twice: once as the release starts it, and once halfway through
+    // the turn, with `secondCheck` set on that second check so nothing already struck is struck
+    // again.
+    onWrenchStrike: ((charged: boolean, secondCheck: boolean) => void) | null = null;
     // Fires when a petting gesture (see startPetting) plays to completion, not when it is
     // interrupted by a knockdown or destruction.
     onPettingEnd: (() => void) | null = null;
-    // Fires whenever a charge begins, including one remembered from a press that arrived while
-    // the previous swing was still playing.
+    // Fires whenever a charge begins, including one remembered from a press that arrived in the
+    // last moments of the previous swing.
     onWrenchChargeStart: (() => void) | null = null;
     // Fires when a jump press is accepted just before touchdown, with the ground contact point
     // and the speed the robot would have hit at. Main uses it to leave the same footprint, dust,
@@ -221,14 +228,17 @@ export class Player {
     private wrenchPop = 0;
     private wrenchAttackElapsed = -1;
     private wrenchStrikeFired = false;
+    private wrenchSpinCheckFired = false;
     private petElapsed = -1;
     private petFacing = 0;
-    private wrenchChargeBufferRemaining = 0;
     private difficulty: Difficulty = 'medium';
     private wrenchCharging = false;
     private wrenchChargeElapsed = 0;
+    private wrenchHolding = false;
+    private wrenchHoldElapsed = 0;
     private wrenchSwingCharged = false;
     private wrenchSwingStartYaw = 0;
+    private wrenchPressBuffered = false;
     private wrenchBoltMesh: Mesh;
     private wrenchBoltMaterial: MeshBasicMaterial;
     private readonly wrenchBoltGeometries: BufferGeometry[];
@@ -409,10 +419,11 @@ export class Player {
         return this.wrenchChargeElapsed >= WRENCH_CHARGE_SECONDS;
     }
 
-    // 0..1 charge progress. It stays at 1 through the charged swing, so effects tied to the charge
-    // keep running until the swing ends, matching the third-person wrench bolts.
+    // 0..1 build-up progress, including the tail after the wrench is charged. The charged swing
+    // finishes it off, so effects tied to the charge keep running until the swing ends, matching the
+    // third-person wrench bolts.
     get wrenchChargeProgress(): number {
-        return Math.min(1, this.wrenchChargeElapsed / WRENCH_CHARGE_SECONDS);
+        return Math.min(1, this.wrenchChargeElapsed / WRENCH_CHARGE_ANIMATION_SECONDS);
     }
 
     // Forward arc covered by a regular wrench swing, in radians.
@@ -420,13 +431,14 @@ export class Player {
         return WRENCH_STRIKE_ARC[this.difficulty];
     }
 
-    get isWrenchCharging(): boolean {
-        return this.wrenchCharging;
+    // True while the attack button is held and the wrench is waiting to swing.
+    get isWrenchHolding(): boolean {
+        return this.wrenchHolding;
     }
 
-    // True while an early charged attack press is waiting for the current swing to end.
-    get isWrenchChargeBuffered(): boolean {
-        return this.wrenchChargeBufferRemaining > 0;
+    // True while the wrench is filling toward a charged strike.
+    get isWrenchCharging(): boolean {
+        return this.wrenchCharging;
     }
 
     // True while the current swing is the charged release.
@@ -543,7 +555,7 @@ export class Player {
         this.shockKnockbackRemaining = SHOCK_KNOCKBACK_SECONDS;
         this.verticalVelocity = Math.max(this.verticalVelocity, SHOCK_KNOCKBACK_LIFT);
         this.grounded = false;
-        this.cancelWrenchCharge();
+        this.cancelWrenchHold();
         this.stopWrenchAttack();
 
         // The burst is parented to the rotated robot, so bring the world-space shove direction into
@@ -557,79 +569,111 @@ export class Player {
         );
     }
 
-    // Sets the difficulty that tunes the input leniency. Easier settings accept early presses for
-    // longer and let a jump pressed shortly before touchdown count as a ground jump.
+    // Sets the difficulty that tunes the input leniency: easier settings let a jump pressed shortly
+    // before touchdown count as a ground jump.
     setDifficulty(difficulty: Difficulty): void {
         this.difficulty = difficulty;
     }
 
-    // Starts charging the wrench from the charged attack input. A press that arrives while a swing
-    // is still playing is remembered for the difficulty's short buffer window and starts the
-    // charge as soon as that swing ends.
-    beginWrenchCharge(): boolean {
+    // Starts a wrench hold from the attack press. The swing itself waits for the release, so a tap
+    // and a held press both end in an attack. A press during a swing is not a hold, but one in the
+    // last WRENCH_PRESS_BUFFER_SECONDS can be remembered with bufferWrenchPress. The press is
+    // otherwise dropped while a swing or the petting gesture is still playing.
+    beginWrenchHold(): boolean {
         if (
             this.destroyed ||
             !this.wrench.visible ||
             this.knockdownActive ||
-            this.wrenchCharging ||
+            this.wrenchHolding ||
+            this.wrenchAttackElapsed >= 0 ||
             this.petElapsed >= 0
         ) {
             return false;
         }
-        if (this.wrenchAttackElapsed >= 0) {
-            this.wrenchChargeBufferRemaining = CHARGED_ATTACK_BUFFER_SECONDS[this.difficulty];
-            return false;
-        }
-        this.wrenchCharging = true;
-        this.wrenchChargeElapsed = 0;
-        this.wrenchBoltTimer = 0;
-        this.onWrenchChargeStart?.();
+        this.wrenchHolding = true;
+        this.wrenchHoldElapsed = 0;
         return true;
     }
 
-    // Advances the charge by one frame. Main drops the charge when the input is released before
-    // it fills. Returns true when an interrupted charge had to be dropped without striking.
-    updateWrenchCharge(dt: number): boolean {
-        if (!this.wrenchCharging) {
+    // Remembers an attack press that arrived in the last WRENCH_PRESS_BUFFER_SECONDS of a swing, so
+    // the next hold starts as that swing ends instead of the press being lost. Returns whether the
+    // press was buffered.
+    bufferWrenchPress(): boolean {
+        if (
+            !this.isWrenchSwinging ||
+            this.destroyed ||
+            !this.wrench.visible ||
+            this.knockdownActive ||
+            this.wrenchSwingSeconds - this.wrenchAttackElapsed > WRENCH_PRESS_BUFFER_SECONDS
+        ) {
+            return false;
+        }
+        this.wrenchPressBuffered = true;
+        return true;
+    }
+
+    // Advances the hold by one frame. The charge only starts once the button has been down for
+    // WRENCH_CHARGE_START_SECONDS, so a quick tap never fills the wrench. It keeps filling to the end
+    // of the build-up — WRENCH_CHARGE_TAIL_SECONDS past the point where the strike is ready. Returns
+    // true when an interrupted charge had to be dropped without striking.
+    updateWrenchHold(dt: number): boolean {
+        if (!this.wrenchHolding) {
             return false;
         }
         if (this.destroyed || !this.wrench.visible || this.knockdownActive) {
-            this.cancelWrenchCharge();
-            return true;
+            const interrupted = this.wrenchCharging;
+            this.cancelWrenchHold();
+            return interrupted;
         }
-        this.wrenchChargeElapsed = Math.min(WRENCH_CHARGE_SECONDS, this.wrenchChargeElapsed + dt);
+
+        this.wrenchHoldElapsed += dt;
+        if (!this.wrenchCharging) {
+            if (this.wrenchHoldElapsed < WRENCH_CHARGE_START_SECONDS) {
+                return false;
+            }
+            this.wrenchCharging = true;
+            this.wrenchChargeElapsed = 0;
+            this.wrenchBoltTimer = 0;
+            this.onWrenchChargeStart?.();
+            return false;
+        }
+
+        this.wrenchChargeElapsed = Math.min(WRENCH_CHARGE_ANIMATION_SECONDS, this.wrenchChargeElapsed + dt);
         return false;
     }
 
-    cancelWrenchCharge(): void {
-        this.wrenchCharging = false;
-        this.wrenchChargeElapsed = 0;
-        this.wrenchSwingCharged = false;
-        this.wrenchChargeBufferRemaining = 0;
-    }
-
-    // Drops an early press that is waiting for the current swing to finish without touching the
-    // swing that is already playing.
-    cancelWrenchChargeBuffer(): void {
-        this.wrenchChargeBufferRemaining = 0;
-    }
-
-    // Releases a filled charge as a swing. Returns whether the strike was charged, or null when
-    // there was no charge to release.
-    releaseWrench(): boolean | null {
-        if (this.destroyed || !this.wrenchCharging) {
+    // Swings on the release. A filled charge becomes the charged spin; anything shorter, including a
+    // quick tap, becomes the regular strike. Returns whether the swing was charged, or null when no
+    // swing could start.
+    releaseWrenchHold(): boolean | null {
+        if (!this.wrenchHolding) {
             return null;
         }
-        const charged = this.isWrenchCharged;
+        const charged = this.wrenchCharging && this.isWrenchCharged;
         this.wrenchCharging = false;
+        this.wrenchHolding = false;
         if (!this.swingWrench(charged)) {
-            this.cancelWrenchCharge();
+            this.cancelWrenchHold();
             return null;
         }
         if (!charged) {
             this.wrenchChargeElapsed = 0;
         }
         return charged;
+    }
+
+    cancelWrenchHold(): void {
+        this.wrenchHolding = false;
+        this.wrenchHoldElapsed = 0;
+        // A pause or an interruption also drops a press that was waiting for the swing to end.
+        this.wrenchPressBuffered = false;
+        this.cancelWrenchCharge();
+    }
+
+    private cancelWrenchCharge(): void {
+        this.wrenchCharging = false;
+        this.wrenchChargeElapsed = 0;
+        this.wrenchSwingCharged = false;
     }
 
     // Starts a wrench swing. Returns false when the wrench is not equipped or a swing is already
@@ -646,14 +690,19 @@ export class Player {
         }
         this.wrenchAttackElapsed = 0;
         this.wrenchStrikeFired = false;
+        this.wrenchSpinCheckFired = false;
         this.wrenchSwingCharged = charged;
         this.wrenchSwingStartYaw = this.group.rotation.y;
         if (!charged) {
             this.wrenchChargeElapsed = 0;
         } else {
-            // The charged spin connects on release: its whole animation is the follow-through.
+            // The charged spin connects on release: its whole animation is the follow-through. Finish
+            // the build-up here too, so the cage sits full for the spin even when the release landed
+            // inside the animation's tail.
+            this.wrenchChargeElapsed = WRENCH_CHARGE_ANIMATION_SECONDS;
             this.wrenchStrikeFired = true;
-            this.onWrenchStrike?.(true);
+            this.wrenchSpinCheckFired = false;
+            this.onWrenchStrike?.(true, false);
         }
         return true;
     }
@@ -661,10 +710,13 @@ export class Player {
     private stopWrenchAttack(): void {
         this.wrenchAttackElapsed = -1;
         this.wrenchStrikeFired = false;
+        this.wrenchSpinCheckFired = false;
         this.wrenchCharging = false;
         this.wrenchChargeElapsed = 0;
         this.wrenchSwingCharged = false;
-        this.wrenchChargeBufferRemaining = 0;
+        this.wrenchHolding = false;
+        this.wrenchHoldElapsed = 0;
+        this.wrenchPressBuffered = false;
         this.wrenchBoltMesh.visible = false;
         this.wrenchArm.rotation.set(0, 0, this.wrenchArmRestZ);
         this.offArm.rotation.set(0, 0, this.offArmRestZ);
@@ -685,7 +737,6 @@ export class Player {
         }
         this.petElapsed = 0;
         this.petFacing = facing;
-        this.wrenchChargeBufferRemaining = 0;
         this.velocity.set(0, 0, 0);
         this.turnVelocity = 0;
         return true;
@@ -807,7 +858,7 @@ export class Player {
         this.knockdownActive = false;
         this.knockdownElapsed = 0;
         this.shockKnockbackRemaining = 0;
-        this.cancelWrenchCharge();
+        this.cancelWrenchHold();
         this.stopWrenchAttack();
         this.stopPetting();
 
@@ -889,9 +940,6 @@ export class Player {
         this.shockBurst.update(dt);
         if (this.destroyed) {
             return;
-        }
-        if (this.wrenchChargeBufferRemaining > 0) {
-            this.wrenchChargeBufferRemaining = Math.max(0, this.wrenchChargeBufferRemaining - dt);
         }
         const position = this.group.position;
 
@@ -1311,13 +1359,22 @@ export class Player {
                     // connected when the swing began.
                     if (this.wrenchAttackElapsed >= this.wrenchSwingSeconds * WRENCH_STRIKE_PORTION) {
                         this.wrenchStrikeFired = true;
-                        this.onWrenchStrike?.(false);
+                        this.onWrenchStrike?.(false, false);
                     }
+                }
+                // The charged spin checks its reach again halfway through the turn, so anything that
+                // only came into reach during the first half is caught while it is still playing.
+                if (
+                    this.wrenchSwingCharged &&
+                    !this.wrenchSpinCheckFired &&
+                    this.wrenchAttackElapsed >= this.wrenchSwingSeconds / 2
+                ) {
+                    this.wrenchSpinCheckFired = true;
+                    this.onWrenchStrike?.(true, true);
                 }
                 if (this.wrenchAttackElapsed >= this.wrenchSwingSeconds) {
                     const charged = this.wrenchSwingCharged;
-                    // stopWrenchAttack drops any remembered press, so capture it first.
-                    const bufferedCharge = this.wrenchChargeBufferRemaining > 0;
+                    const bufferedPress = this.wrenchPressBuffered;
                     if (charged) {
                         // Finish on the exact starting facing so a slow final frame cannot leave the
                         // robot a few degrees off after the full turn.
@@ -1325,8 +1382,10 @@ export class Player {
                     }
                     this.stopWrenchAttack();
                     this.onWrenchSwingEnd?.(charged);
-                    if (bufferedCharge) {
-                        this.beginWrenchCharge();
+                    // A press remembered from the end of this swing opens the next hold. If the
+                    // button is already up, main releases it on this same frame as a tap.
+                    if (bufferedPress) {
+                        this.beginWrenchHold();
                     }
                 } else {
                     const progress = this.wrenchAttackElapsed / this.wrenchSwingSeconds;
@@ -1433,7 +1492,7 @@ export class Player {
             this.wrenchBoltSize = 0.9 + Math.random() * 0.2;
         }
 
-        const growth = Math.min(1, this.wrenchChargeElapsed / WRENCH_CHARGE_SECONDS);
+        const growth = Math.min(1, this.wrenchChargeElapsed / WRENCH_CHARGE_ANIMATION_SECONDS);
         this.wrenchBoltMesh.scale.setScalar(this.wrenchBoltSize * growth);
         this.wrenchBoltMaterial.opacity = growth * (0.8 + Math.random() * 0.2) * this.opacity;
     }

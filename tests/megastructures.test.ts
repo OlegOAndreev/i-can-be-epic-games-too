@@ -1,5 +1,6 @@
 import {
     Color,
+    DoubleSide,
     LatheGeometry,
     Mesh,
     MeshBasicMaterial,
@@ -13,17 +14,22 @@ import { describe, expect, it } from 'vitest';
 
 import {
     MEGASTRUCTURE_LAYER,
+    RAMP_LANDING_DEPTH,
     SWITCH_CHARGE_SECONDS,
     WALL_THICKNESS,
     WINDOW_BAND_HEIGHT,
+    WINDOW_END_MARGIN,
     WINDOW_SILL_HEIGHT,
+    windowWallPair,
 } from '../src/megastructures';
 import type { CrownSpiral, MegastructureStorey } from '../src/megastructures';
 import { FIRST_PERSON_CEILING_CLEARANCE, PLAYER_HEIGHT } from '../src/player';
 import { FIRST_PERSON_EYE_HEIGHT } from '../src/player-camera';
 import { findStructureBlockingPoint } from '../src/ramp-collision';
-import { stepPlayer, testPlayer, testTerrain } from './test-helpers';
+import { SMOKE_RENDER_ORDER } from '../src/spaceship';
+import { testPlayer, testTerrain } from './test-helpers';
 import { getSurfaceTextures } from '../src/textures';
+import { WINDOW_GLASS_RENDER_ORDER } from '../src/window-glass';
 
 function spiralPoint(spiral: CrownSpiral, fraction: number, radialOffset: number): { x: number; y: number; z: number } {
     const angle = fraction * spiral.totalAngle * spiral.direction;
@@ -67,19 +73,79 @@ describe('megastructures', () => {
         });
         expect(meshCount).toBeGreaterThan(0);
 
-        // Every level is a full rectangular floor, not a perimeter catwalk.
-        const tower = structures.towers[0];
-        const centreX = (tower.minX + tower.maxX) / 2;
-        const centreZ = (tower.minZ + tower.maxZ) / 2;
-        for (let level = 0; level < tower.levelCount; level++) {
-            const floorY = tower.firstFloorY + level * tower.levelHeight;
-            expect(terrain.walkSurfaceAt(centreX, centreZ, floorY + 0.5)).toBeCloseTo(floorY, 1);
+        // Every level is a full rectangular floor, not a perimeter catwalk. Sample a grid across
+        // the storey standing on the floor: the ramp opening carves a corner out of it, so most of
+        // the grid must still find the floor slab just under the expected height. A catwalk would
+        // leave the middle of the floor far below it.
+        const steps = 6;
+        for (const tower of structures.towers) {
+            for (let level = 0; level < tower.levelCount; level++) {
+                const floorY = tower.firstFloorY + level * tower.levelHeight;
+                const room = tower.storeys[level + 1];
+                const minX = room.minX + WALL_THICKNESS;
+                const maxX = room.maxX - WALL_THICKNESS;
+                const minZ = room.minZ + WALL_THICKNESS;
+                const maxZ = room.maxZ - WALL_THICKNESS;
+                let onFloor = 0;
+                for (let stepX = 0; stepX <= steps; stepX++) {
+                    for (let stepZ = 0; stepZ <= steps; stepZ++) {
+                        const x = minX + ((maxX - minX) * stepX) / steps;
+                        const z = minZ + ((maxZ - minZ) * stepZ) / steps;
+                        const surface = terrain.walkSurfaceAt(x, z, floorY + 0.01);
+                        if (surface >= floorY - 0.05 && surface <= floorY + 0.6) {
+                            onFloor++;
+                        }
+                    }
+                }
+                expect(onFloor / (steps + 1) ** 2).toBeGreaterThan(0.85);
+            }
         }
 
         for (const ramp of structures.ramps) {
             const run = ramp.axis === 'x' ? ramp.maxX - ramp.minX : ramp.maxZ - ramp.minZ;
             expect(Math.abs(ramp.maxY - ramp.minY) / run).toBeLessThan(1.5);
         }
+    });
+
+    it('varies the storey sizes by up to 2.5x in area within one tower', () => {
+        const terrain = testTerrain();
+        const structures = terrain.megastructures;
+        let widestRatio = 0;
+
+        for (const tower of structures.towers) {
+            // Every storey stays a rectangle inside the tower's footprint.
+            for (const storey of tower.storeys) {
+                expect(storey.minX).toBeGreaterThanOrEqual(tower.minX - 1e-6);
+                expect(storey.maxX).toBeLessThanOrEqual(tower.maxX + 1e-6);
+                expect(storey.minZ).toBeGreaterThanOrEqual(tower.minZ - 1e-6);
+                expect(storey.maxZ).toBeLessThanOrEqual(tower.maxZ + 1e-6);
+            }
+
+            const areas = tower.storeys
+                .slice(1)
+                .map((storey) => (storey.maxX - storey.minX) * (storey.maxZ - storey.minZ));
+            const ratio = Math.max(...areas) / Math.min(...areas);
+            widestRatio = Math.max(widestRatio, ratio);
+            // No floor may be more than 2.5 times the area of another in the same tower.
+            expect(ratio).toBeLessThanOrEqual(2.5 + 1e-6);
+
+            // Two storeys joined by a flight keep enough shared length for its run and landings, which
+            // is what keeps every ramp under the slope the robot can climb.
+            const minSharedLength = tower.levelHeight / 1.5 + 2 * RAMP_LANDING_DEPTH;
+            for (let level = 1; level < tower.storeys.length - 1; level++) {
+                const below = tower.storeys[level];
+                const above = tower.storeys[level + 1];
+                expect(Math.min(below.maxX, above.maxX) - Math.max(below.minX, above.minX)).toBeGreaterThan(
+                    minSharedLength,
+                );
+                expect(Math.min(below.maxZ, above.maxZ) - Math.max(below.minZ, above.minZ)).toBeGreaterThan(
+                    minSharedLength,
+                );
+            }
+        }
+
+        // The tower sizes really use the range: somewhere a building has floors far apart in area.
+        expect(widestRatio).toBeGreaterThan(2);
     });
 
     it('fills the floors with differently sized rectangular glyph totems', () => {
@@ -97,19 +163,20 @@ describe('megastructures', () => {
                 const props = structures.floorProps.filter(
                     (prop) => prop.towerIndex === towerIndex && prop.level === level,
                 );
-                expect(props.length).toBeGreaterThanOrEqual(4);
-                expect(props.length).toBeLessThanOrEqual(6);
+                expect(props.length).toBeGreaterThanOrEqual(2);
+                expect(props.length).toBeLessThanOrEqual(4);
 
                 // The 2x3 lattice spans the floor instead of clustering in the corner away from
-                // the ramps. A totem can be nudged inside its cell to clear a ramp, so check the
-                // spread rather than exact lattice positions.
+                // the ramps: every row and column gets a totem before any cell takes a second one.
+                // A totem can still be nudged inside its cell to clear a ramp, and a ramp lane can
+                // cover a whole row or column, so the floor is checked for spread across its
+                // diagonal rather than against exact lattice positions on both axes.
                 const storey = tower.storeys[level + 1];
                 const interiorWidth = storey.maxX - storey.minX - 2 * WALL_THICKNESS;
                 const interiorDepth = storey.maxZ - storey.minZ - 2 * WALL_THICKNESS;
                 const xSpread = Math.max(...props.map((prop) => prop.x)) - Math.min(...props.map((prop) => prop.x));
                 const zSpread = Math.max(...props.map((prop) => prop.z)) - Math.min(...props.map((prop) => prop.z));
-                expect(xSpread).toBeGreaterThan(interiorWidth * 0.25);
-                expect(zSpread).toBeGreaterThan(interiorDepth * 0.4);
+                expect(Math.hypot(xSpread / interiorWidth, zSpread / interiorDepth)).toBeGreaterThan(0.4);
 
                 // Six small totems cannot fill the floor; only the lattice spans it.
                 const footprint = props.reduce((sum, prop) => sum + prop.width * prop.depth, 0);
@@ -299,7 +366,56 @@ describe('megastructures', () => {
         expect(overhangs).toBeGreaterThan(0);
     });
 
-    it('cuts a low band of real windows into every storey above the ground floor', () => {
+    it('turns the face of every window outward', () => {
+        const terrain = testTerrain();
+        const structures = terrain.megastructures;
+        const windows = structures.group.children.find(
+            (child): child is Mesh => child instanceof Mesh && child.name === 'tower-windows',
+        );
+        expect(windows).toBeDefined();
+        const position = windows!.geometry.getAttribute('position');
+        const normalAttribute = windows!.geometry.getAttribute('normal');
+        const index = windows!.geometry.index;
+        const triangleCount = (index ? index.count : position.count) / 3;
+        const corner = (vertex: number) => (index ? index.getX(vertex) : vertex);
+        const point = (vertex: number) =>
+            new Vector3(position.getX(vertex), position.getY(vertex), position.getZ(vertex));
+
+        let checked = 0;
+        for (let triangle = 0; triangle < triangleCount; triangle++) {
+            const a = point(corner(triangle * 3));
+            const b = point(corner(triangle * 3 + 1));
+            const c = point(corner(triangle * 3 + 2));
+            const first = corner(triangle * 3);
+            const normal = new Vector3(
+                normalAttribute.getX(first),
+                normalAttribute.getY(first),
+                normalAttribute.getZ(first),
+            ).normalize();
+            const centre = new Vector3()
+                .addVectors(a, b)
+                .add(c)
+                .multiplyScalar(1 / 3);
+            const tower = structures.towers.find(
+                (candidate) =>
+                    centre.x > candidate.minX - 2 &&
+                    centre.x < candidate.maxX + 2 &&
+                    centre.z > candidate.minZ - 2 &&
+                    centre.z < candidate.maxZ + 2,
+            );
+            expect(tower).toBeDefined();
+            const outwardX = centre.x - (tower!.minX + tower!.maxX) / 2;
+            const outwardZ = centre.z - (tower!.minZ + tower!.maxZ) / 2;
+            // The shader keys the inside-only sheen off this normal, so a window facing inward would
+            // show its sheen to the street.
+            expect(normal.x * outwardX + normal.z * outwardZ).toBeGreaterThan(0);
+            checked++;
+        }
+
+        expect(checked).toBeGreaterThan(0);
+    });
+
+    it('cuts a high, narrow band of real windows into every storey above the ground floor', () => {
         const terrain = testTerrain();
         const structures = terrain.megastructures;
         const windows = structures.group.children.find(
@@ -308,32 +424,64 @@ describe('megastructures', () => {
         expect(windows).toBeDefined();
         expect(windows!.material).toBeInstanceOf(MeshStandardMaterial);
         expect((windows!.material as MeshStandardMaterial).transparent).toBe(true);
+        // The glazing draws after the smoke and the ground decals, so a plume outside a window stays
+        // behind the sheen.
+        expect(windows!.renderOrder).toBe(WINDOW_GLASS_RENDER_ORDER);
+        expect(windows!.renderOrder).toBeGreaterThan(SMOKE_RENDER_ORDER);
+        // The glazing is drawn by the shader from per-window attributes, and stays visible from
+        // either side.
+        expect((windows!.material as MeshStandardMaterial).onBeforeCompile).toBeTypeOf('function');
+        expect((windows!.material as MeshStandardMaterial).side).toBe(DoubleSide);
+        const seed = windows!.geometry.getAttribute('windowGlassSeed');
+        expect(seed.count).toBe(windows!.geometry.getAttribute('position').count);
+        // Every window glazes itself from its own seed, so no two sheens run in step.
+        const seeds = new Set<number>();
+        for (let vertex = 0; vertex < seed.count; vertex++) {
+            seeds.add(seed.getX(vertex));
+        }
+        expect(seeds.size).toBeGreaterThan(1);
         const position = windows!.geometry.getAttribute('position');
+        const normals = windows!.geometry.getAttribute('normal');
         const stone = structures.group.children.find(
             (child): child is Mesh => child instanceof Mesh && child.material === structures.materials[0],
         );
         expect(stone).toBeDefined();
+        // The whole group lives on the megastructure layer, so a raycaster has to look there too.
         const raycaster = new Raycaster();
+        raycaster.layers.enable(MEGASTRUCTURE_LAYER);
 
-        // Vertical and horizontal extent of the glass in one storey's window band.
+        // Vertical and horizontal extent of the glass in one storey's window band, plus the plane it
+        // is mounted on. The pane is picked by the direction its face points, so the pane of the wall
+        // that meets it at the shared corner does not count towards this band.
         const bandExtent = (storey: MegastructureStorey, side: number) => {
             let minAlong = Infinity;
             let maxAlong = -Infinity;
             let minY = Infinity;
             let maxY = -Infinity;
+            let plane = 0;
+            let matched = false;
 
             for (let vertex = 0; vertex < position.count; vertex++) {
                 const x = position.getX(vertex);
                 const y = position.getY(vertex);
                 const z = position.getZ(vertex);
-                if (
-                    y < storey.baseY - 0.3 ||
-                    y > storey.topY + 0.3 ||
-                    x < storey.minX - 0.3 ||
-                    x > storey.maxX + 0.3 ||
-                    z < storey.minZ - 0.3 ||
-                    z > storey.maxZ + 0.3
-                ) {
+                if (y < storey.baseY - 0.3 || y > storey.topY + 0.3 || x < storey.minX - 2 || x > storey.maxX + 2) {
+                    continue;
+                }
+                if (z < storey.minZ - 2 || z > storey.maxZ + 2) {
+                    continue;
+                }
+                const normalX = normals.getX(vertex);
+                const normalZ = normals.getZ(vertex);
+                const facesOutward =
+                    side === 0
+                        ? normalZ > 0.9
+                        : side === 1
+                          ? normalZ < -0.9
+                          : side === 2
+                            ? normalX > 0.9
+                            : normalX < -0.9;
+                if (!facesOutward) {
                     continue;
                 }
 
@@ -342,9 +490,11 @@ describe('megastructures', () => {
                 maxAlong = Math.max(maxAlong, along);
                 minY = Math.min(minY, y);
                 maxY = Math.max(maxY, y);
+                plane = side < 2 ? z : x;
+                matched = true;
             }
 
-            return { minAlong, maxAlong, minY, maxY };
+            return { minAlong, maxAlong, minY, maxY, plane: matched ? plane : NaN };
         };
 
         for (const tower of structures.towers) {
@@ -352,48 +502,76 @@ describe('megastructures', () => {
             const ground = bandExtent(tower.storeys[0], 0);
             expect(ground.minAlong).toBe(Infinity);
 
-            const firstWindowSide = tower.entranceSide ^ 1;
             for (let level = 1; level < tower.levelCount; level++) {
                 const storey = tower.storeys[level];
-                const side = (firstWindowSide + level - 1) % 4;
-                const band = bandExtent(storey, side);
-                const wallLength =
-                    side < 2 ? storey.maxX - storey.minX : storey.maxZ - storey.minZ - 2 * WALL_THICKNESS;
+                const [firstWall, secondWall] = windowWallPair(tower.entranceSide, level);
+                for (const [side, neighbour] of [
+                    [firstWall, secondWall],
+                    [secondWall, firstWall],
+                ] as Array<[number, number]>) {
+                    const band = bandExtent(storey, side);
+                    const range =
+                        side < 2
+                            ? { min: storey.minX, max: storey.maxX }
+                            : { min: storey.minZ + WALL_THICKNESS, max: storey.maxZ - WALL_THICKNESS };
+                    const wallLength = range.max - range.min;
 
-                expect(band.minAlong).toBeLessThan(Infinity);
-                expect(band.maxY - band.minY).toBeCloseTo(WINDOW_BAND_HEIGHT, 2);
-                expect(band.minY - storey.baseY).toBeCloseTo(WINDOW_SILL_HEIGHT, 2);
-                expect(band.maxAlong - band.minAlong).toBeGreaterThan(wallLength * 0.8);
+                    expect(band.minAlong).toBeLessThan(Infinity);
+                    expect(band.maxY - band.minY).toBeCloseTo(WINDOW_BAND_HEIGHT, 2);
+                    expect(band.minY - storey.baseY).toBeCloseTo(WINDOW_SILL_HEIGHT, 2);
+                    expect(band.maxAlong - band.minAlong).toBeGreaterThan(wallLength * 0.8);
+                    // The pane sits in the middle of the wall, and it stops on the corner's mid-point:
+                    // the line where the neighbouring pane's plane crosses its own, so the two panes
+                    // meet edge to edge instead of crossing behind one another.
+                    const outerPlane =
+                        side === 0 ? storey.maxZ : side === 1 ? storey.minZ : side === 2 ? storey.maxX : storey.minX;
+                    const inwardPlane = side === 0 || side === 2 ? -1 : 1;
+                    expect(Math.abs(band.plane - (outerPlane + inwardPlane * (WALL_THICKNESS / 2)))).toBeLessThan(0.01);
+                    // The glazing runs to the corner's mid-point and stops at the pier of wall that
+                    // keeps the far end framed.
+                    const cornerAtMax = neighbour === 0 || neighbour === 2;
+                    const outerAlong = cornerAtMax
+                        ? side < 2
+                            ? storey.maxX
+                            : storey.maxZ
+                        : side < 2
+                          ? storey.minX
+                          : storey.minZ;
+                    const miterAlong = outerAlong + (cornerAtMax ? -1 : 1) * (WALL_THICKNESS / 2);
+                    const pierAlong =
+                        (cornerAtMax ? range.min : range.max) + (cornerAtMax ? WINDOW_END_MARGIN : -WINDOW_END_MARGIN);
+                    expect(Math.abs((cornerAtMax ? band.maxAlong : band.minAlong) - miterAlong)).toBeLessThan(0.01);
+                    expect(Math.abs((cornerAtMax ? band.minAlong : band.maxAlong) - pierAlong)).toBeLessThan(0.01);
 
-                // A ray aimed at the window from outside must pass through the wall instead of
-                // hitting the solid wall face.
-                const bandY = band.minY + 0.5;
-                const along = band.minAlong + 0.3;
-                const origin =
-                    side === 0
-                        ? new Vector3(along, bandY, storey.maxZ + 2)
-                        : side === 1
-                          ? new Vector3(along, bandY, storey.minZ - 2)
-                          : side === 2
-                            ? new Vector3(storey.maxX + 2, bandY, along)
-                            : new Vector3(storey.minX - 2, bandY, along);
-                const direction =
-                    side === 0
-                        ? new Vector3(0, 0, -1)
-                        : side === 1
-                          ? new Vector3(0, 0, 1)
-                          : side === 2
-                            ? new Vector3(-1, 0, 0)
-                            : new Vector3(1, 0, 0);
-                raycaster.set(origin, direction);
-                expect(raycaster.intersectObject(stone!, false).some((hit) => hit.distance < 2.5)).toBe(false);
+                    // A ray aimed at the middle of the opening from outside must pass through the wall
+                    // instead of hitting the solid wall face.
+                    const bandY = band.minY + 0.5;
+                    const along = (band.minAlong + band.maxAlong) / 2;
+                    const origin =
+                        side === 0
+                            ? new Vector3(along, bandY, storey.maxZ + 2)
+                            : side === 1
+                              ? new Vector3(along, bandY, storey.minZ - 2)
+                              : side === 2
+                                ? new Vector3(storey.maxX + 2, bandY, along)
+                                : new Vector3(storey.minX - 2, bandY, along);
+                    const direction =
+                        side === 0
+                            ? new Vector3(0, 0, -1)
+                            : side === 1
+                              ? new Vector3(0, 0, 1)
+                              : side === 2
+                                ? new Vector3(-1, 0, 0)
+                                : new Vector3(1, 0, 0);
+                    raycaster.set(origin, direction);
+                    expect(raycaster.intersectObject(stone!, false).some((hit) => hit.distance < 2.5)).toBe(false);
+                }
             }
         }
     });
 
-    it('moves every window sill into double-jump reach and keeps it standable', () => {
+    it('lifts every window sill out of jump reach', () => {
         const terrain = testTerrain();
-        const structures = terrain.megastructures;
 
         // Measure the real controller's apex so the sill height follows the game's physics.
         const peakFor = (airJumpFrame: number | null): number => {
@@ -410,30 +588,106 @@ describe('megastructures', () => {
 
         const singleJump = peakFor(null);
         const doubleJump = peakFor(27);
-        expect(doubleJump).toBeGreaterThan(WINDOW_SILL_HEIGHT + 0.5);
-        expect(singleJump).toBeLessThan(WINDOW_SILL_HEIGHT - 0.5);
+        // The band sits high in the storey, above even an air jump: the sill is no longer a ledge to
+        // hop onto, so the windows are reached from the tower's ramps instead.
+        expect(singleJump + 0.5).toBeLessThan(WINDOW_SILL_HEIGHT);
+        expect(doubleJump).toBeLessThan(WINDOW_SILL_HEIGHT);
+    });
 
-        for (const tower of structures.towers) {
-            const firstWindowSide = tower.entranceSide ^ 1;
+    it('merges the two windows of a storey into one glazed corner', () => {
+        const terrain = testTerrain();
+        const t = WALL_THICKNESS;
+        const windows = terrain.megastructures.group.children.find(
+            (child): child is Mesh => child instanceof Mesh && child.name === 'tower-windows',
+        );
+        expect(windows).toBeDefined();
+        const raycaster = new Raycaster();
+        raycaster.layers.enable(MEGASTRUCTURE_LAYER);
+
+        for (const tower of terrain.megastructures.towers) {
             for (let level = 1; level < tower.levelCount; level++) {
                 const storey = tower.storeys[level];
-                const side = (firstWindowSide + level - 1) % 4;
-                const t = WALL_THICKNESS;
-                const range =
-                    side < 2 ? { min: storey.minX, max: storey.maxX } : { min: storey.minZ + t, max: storey.maxZ - t };
-                const along = (range.min + range.max) / 2;
-                const sillY = storey.baseY + WINDOW_SILL_HEIGHT;
+                const [first, second] = windowWallPair(tower.entranceSide, level);
+                // The shared corner: the two walls of a pair are perpendicular, so each one fixes one
+                // coordinate of the corner.
+                const cornerX = first === 2 || second === 2 ? storey.maxX : storey.minX;
+                const cornerZ = first === 0 || second === 0 ? storey.maxZ : storey.minZ;
+                // Inward from the corner, clear of both panes, at the middle of the window band.
+                const inwardX = cornerX === storey.maxX ? -1 : 1;
+                const inwardZ = cornerZ === storey.maxZ ? -1 : 1;
+                const bandY = storey.baseY + WINDOW_SILL_HEIGHT + WINDOW_BAND_HEIGHT / 2;
+                // Where the two panes' planes cross: the corner's mid-point.
+                const miterX = cornerX + inwardX * (t / 2);
+                const miterZ = cornerZ + inwardZ * (t / 2);
 
-                // The glass only fills the middle of the wall, so stand 0.2 m into the interior
-                // half of the sill and let the controller settle.
-                const x = side === 2 ? storey.maxX - t + 0.2 : side === 3 ? storey.minX + t - 0.2 : along;
-                const z = side === 0 ? storey.maxZ - t + 0.2 : side === 1 ? storey.minZ + t - 0.2 : along;
+                // The panes meet on that line, so the nook just inside it belongs to the room and
+                // carries no stone at all.
+                expect(
+                    terrain.intersectsStructure(miterX + inwardX * (t * 0.45), bandY, miterZ + inwardZ * (t * 0.45)),
+                    `corner nook of level ${level}`,
+                ).toBe(false);
+                // Beyond the line the openings join around the corner: at window height the corner
+                // carries no stone either, so the two windows read as one opening.
+                expect(
+                    terrain.intersectsStructure(miterX - inwardX * (t * 0.4), bandY, miterZ - inwardZ * (t * 0.4)),
+                    `corner opening of level ${level}`,
+                ).toBe(false);
+                // The sill and the lintel carry around the corner, so the join is framed above and
+                // below rather than left as a hole in the facade.
+                const sillY = storey.baseY + WINDOW_SILL_HEIGHT / 2;
+                expect(
+                    terrain.intersectsStructure(miterX - inwardX * (t * 0.4), sillY, miterZ - inwardZ * (t * 0.4)),
+                    `corner sill of level ${level}`,
+                ).toBe(true);
+                expect(
+                    terrain.intersectsStructure(
+                        miterX - inwardX * (t * 0.4),
+                        storey.baseY + WINDOW_SILL_HEIGHT + WINDOW_BAND_HEIGHT + 0.3,
+                        miterZ - inwardZ * (t * 0.4),
+                    ),
+                    `corner lintel of level ${level}`,
+                ).toBe(true);
 
-                const player = testPlayer(terrain);
-                player.group.position.set(x, sillY, z);
-                stepPlayer(player, terrain, 5);
+                // The far end of each wall keeps its pier of wall, so the glazing stays framed by
+                // stone. Probing the middle of that pier must find the wall.
+                for (const [side, neighbour] of [
+                    [first, second],
+                    [second, first],
+                ] as Array<[number, number]>) {
+                    const range =
+                        side < 2
+                            ? { min: storey.minX, max: storey.maxX }
+                            : { min: storey.minZ + t, max: storey.maxZ - t };
+                    const cornerAtMax = neighbour === 0 || neighbour === 2;
+                    const along = cornerAtMax ? range.min + WINDOW_END_MARGIN / 2 : range.max - WINDOW_END_MARGIN / 2;
+                    const probe =
+                        side === 0
+                            ? { x: along, z: storey.maxZ - t / 2 }
+                            : side === 1
+                              ? { x: along, z: storey.minZ + t / 2 }
+                              : side === 2
+                                ? { x: storey.maxX - t / 2, z: along }
+                                : { x: storey.minX + t / 2, z: along };
+                    expect(terrain.intersectsStructure(probe.x, bandY, probe.z), `pier of level ${level}`).toBe(true);
 
-                expect(player.group.position.y).toBeCloseTo(sillY, 2);
+                    // A sight line that would slip through the corner if either pane stopped short:
+                    // it runs straight out along this wall's normal, a little inside the plane of the
+                    // neighbouring pane, which is where a gap between the two panes would show.
+                    const outwardX = side === 2 ? 1 : side === 3 ? -1 : 0;
+                    const outwardZ = side === 0 ? 1 : side === 1 ? -1 : 0;
+                    const inwardAlong =
+                        (side < 2 ? cornerX : cornerZ) === (side < 2 ? storey.maxX : storey.maxZ) ? -1 : 1;
+                    const origin = new Vector3();
+                    if (outwardX !== 0) {
+                        origin.set(cornerX - outwardX * (t + 1), bandY, cornerZ + inwardAlong * t * 0.7);
+                    } else {
+                        origin.set(cornerX + inwardAlong * t * 0.7, bandY, cornerZ - outwardZ * (t + 1));
+                    }
+                    raycaster.set(origin, new Vector3(outwardX, 0, outwardZ));
+                    const hits = raycaster.intersectObject(windows!, false);
+                    expect(hits.length, `corner sight line of level ${level}`).toBeGreaterThan(0);
+                    expect(hits[0].distance, `corner sight line of level ${level}`).toBeLessThan(t * 2 + 2);
+                }
             }
         }
     });
@@ -1137,38 +1391,38 @@ describe('megastructures', () => {
         expect(shoves).toHaveLength(2);
     });
 
-    it('gives the switch a generous, direction-free wrench reach', () => {
+    it('gives the switch a direction-free wrench reach', () => {
         // Reach is a radius around the console, not a cone in front of the player: standing beside
-        // it, well outside arm's length, still throws the switch with a swing.
+        // it, outside arm's length, still throws the switch with a swing.
         const terrain = testTerrain();
         const target = terrain.megastructures.switches[0];
-        const beside = new Vector3(target.x + 3.8, target.y, target.z);
+        const beside = new Vector3(target.x + 1.8, target.y, target.z);
 
         expect(terrain.megastructures.wrenchHit(beside)).not.toBeNull();
 
-        // Generous, but still bounded; a swing from across the catwalk misses.
+        // Bounded; a swing from further down the catwalk misses.
         const farTerrain = testTerrain();
         const farTarget = farTerrain.megastructures.switches[0];
         const far = new Vector3(farTarget.x + 5.5, farTarget.y, farTarget.z);
 
         expect(farTerrain.megastructures.wrenchHit(far)).toBeNull();
 
-        // First person reaches 1.2x further, so 5.2 m is inside its 5.4 m reach.
-        const scaled = new Vector3(farTarget.x + 5.2, farTarget.y, farTarget.z);
+        // Third person reaches 1.2x further, so 3.8 m is inside its 4.2 m reach.
+        const scaled = new Vector3(farTarget.x + 3.8, farTarget.y, farTarget.z);
         expect(farTerrain.megastructures.wrenchHit(scaled)).toBeNull();
         expect(farTerrain.megastructures.wrenchHit(scaled, null, Math.PI * 2, 1.2)).not.toBeNull();
     });
 
     it('limits a regular swing to the forward arc', () => {
-        // Facing 0 (+Z), stand 3 m south of the console so it is dead ahead.
+        // Facing 0 (+Z), stand 1.5 m south of the console so it is dead ahead.
         const aheadTerrain = testTerrain();
         const aheadSwitch = aheadTerrain.megastructures.switches[0];
-        const ahead = new Vector3(aheadSwitch.x, aheadSwitch.y, aheadSwitch.z - 3);
+        const ahead = new Vector3(aheadSwitch.x, aheadSwitch.y, aheadSwitch.z - 1.5);
         expect(aheadTerrain.megastructures.wrenchHit(ahead, 0, Math.PI / 2)).not.toBeNull();
 
         const behindTerrain = testTerrain();
         const behindSwitch = behindTerrain.megastructures.switches[0];
-        const behind = new Vector3(behindSwitch.x, behindSwitch.y, behindSwitch.z + 3);
+        const behind = new Vector3(behindSwitch.x, behindSwitch.y, behindSwitch.z + 1.5);
         expect(behindTerrain.megastructures.wrenchHit(behind, 0, Math.PI / 2)).toBeNull();
         // The charged spin omits the facing and still reaches behind.
         expect(behindTerrain.megastructures.wrenchHit(behind)).not.toBeNull();
