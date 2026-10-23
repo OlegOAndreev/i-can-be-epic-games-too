@@ -271,8 +271,9 @@ const DENT_SURFACE_OFFSET = 0.012;
 const COLLIDER_GRID_CELL_SIZE = 8;
 const COLLIDER_GRID_KEY_STRIDE = 4096;
 
-const GRASS_LUSH_COLOR = new Color(0x4c8b3a);
-const GRASS_DRY_COLOR = new Color(0x8e9a50);
+const GRASS_GREEN_COLOR = new Color(0x4c8b3a);
+const EARTH_LIGHT_COLOR = new Color(0xc59a63);
+const EARTH_DARK_COLOR = new Color(0x9a5f38);
 const FOREST_FLOOR_COLOR = new Color(0x3b5d31);
 const SAND_LIGHT_COLOR = new Color(0xe0cb96);
 const SAND_WARM_COLOR = new Color(0xbd9d66);
@@ -286,7 +287,18 @@ const CACTUS_CHAR_COLOR = new Color(0x3b2b22);
 const CACTUS_ASH_COLOR = new Color(0x8a6a45);
 const LEAF_DARK_COLOR = new Color(0x2f5a2b);
 const LEAF_LIGHT_COLOR = new Color(0x6f9644);
+const LEAF_ORANGE_DARK = new Color(0x8f3f16);
+const LEAF_ORANGE_LIGHT = new Color(0xe09a3c);
 const EMERALD_ROCK_COLOR = new Color(0x4fe39b);
+// Moisture above this band keeps its green cover; below it the grass turns to dry orange earth.
+// The ramp between the two ends is linear, so the ground fades gradually from orange to green
+// instead of forming a hard border. The wet end covers roughly the greenest third of the map.
+const EARTH_GREEN_START = 0.68;
+const EARTH_GREEN_END = 0.9;
+// Low coastal ground keeps a sand/green shore. This band is also the green buffer that keeps the
+// orange earth away from the large water; inland pool banks are exempt from it.
+const COAST_HEIGHT_START = 0.8;
+const COAST_HEIGHT_END = 5.5;
 
 export interface SpawnPoint {
     x: number;
@@ -987,6 +999,45 @@ export class Terrain {
     // 0 in sand/rock biomes, 1 on lush grass, used by close-range grass decoration.
     grassBiasAt(x: number, z: number): number {
         return this.grassBiasFromFields(this.desertField(x, z), this.rockField(x, z));
+    }
+
+    // 0 on lush green ground, 1 on dry orange-brown earth. The dry earth dominates the map, but
+    // wet forest cores and their surroundings keep both colours visible. The large water keeps a
+    // green/sand shore, while inland pools are allowed to open onto orange banks.
+    earthinessAt(x: number, z: number, height = this.heightAt(x, z)): number {
+        return 1 - this.greennessFromFields(this.seaCoastAt(height), this.forestField(x, z), this.poolProximityAt(x, z));
+    }
+
+    private seaCoastAt(height: number): number {
+        return 1 - smoothstep(COAST_HEIGHT_START, COAST_HEIGHT_END, height);
+    }
+
+    private greennessFromFields(seaCoast: number, moisture: number, poolProximity: number): number {
+        const moistureGreen = this.greennessFromMoisture(moisture);
+        // Near the large water the ground is forced green even on a steep shore where the sand
+        // weight drops away. Pool banks skip this buffer so they keep the surrounding biome.
+        return Math.max(moistureGreen, seaCoast * (1 - poolProximity));
+    }
+
+    // 1 on a pool's water and bank, fading to 0 where the basin stops lowering the ground. Used to
+    // exempt pools from the coastal band so orange earth can border them.
+    private poolProximityAt(x: number, z: number): number {
+        let proximity = 0;
+        for (const pool of this.pools) {
+            const distance = Math.hypot(x - pool.x, z - pool.z);
+            if (distance >= pool.reach) {
+                continue;
+            }
+            const waterEdge = pool.radius + pool.shapeWobble;
+            proximity = Math.max(proximity, 1 - smoothstep(waterEdge, pool.reach, distance));
+        }
+        return proximity;
+    }
+
+    private greennessFromMoisture(moisture: number): number {
+        // A linear ramp keeps the orange-to-green transition even across the whole moisture band;
+        // a smoothstep would bunch the colour change into the middle and read as a border.
+        return clamp((moisture - EARTH_GREEN_START) / (EARTH_GREEN_END - EARTH_GREEN_START), 0, 1);
     }
 
     private grassBiasFromFields(sand: number, rock: number): number {
@@ -2637,9 +2688,11 @@ export class Terrain {
                 const normals = new Float32Array(vertexCount * 3);
                 const colors = new Float32Array(vertexCount * 3);
                 const splats = new Float32Array(vertexCount * 3);
+                const earths = new Float32Array(vertexCount);
                 const normal = new Vector3();
                 const color = new Color();
                 const splat = new Vector3();
+                const earth = { value: 0 };
                 let vertex = 0;
 
                 for (let gz = 0; gz < verticesPerSide; gz++) {
@@ -2666,13 +2719,14 @@ export class Terrain {
                         normals[vertex * 3 + 1] = normal.y;
                         normals[vertex * 3 + 2] = normal.z;
 
-                        this.vertexColor(worldX, worldZ, height, normal.y, color, splat);
+                        this.vertexColor(worldX, worldZ, height, normal.y, color, splat, earth);
                         colors[vertex * 3] = color.r;
                         colors[vertex * 3 + 1] = color.g;
                         colors[vertex * 3 + 2] = color.b;
                         splats[vertex * 3] = splat.x;
                         splats[vertex * 3 + 1] = splat.y;
                         splats[vertex * 3 + 2] = splat.z;
+                        earths[vertex] = earth.value;
 
                         vertex++;
                     }
@@ -2701,6 +2755,7 @@ export class Terrain {
                 geometry.setAttribute('normal', new BufferAttribute(normals, 3));
                 geometry.setAttribute('color', new BufferAttribute(colors, 3));
                 geometry.setAttribute('splat', new BufferAttribute(splats, 3));
+                geometry.setAttribute('earth', new BufferAttribute(earths, 1));
                 geometry.setIndex(new BufferAttribute(indices, 1));
                 geometry.computeBoundingSphere();
 
@@ -2713,19 +2768,34 @@ export class Terrain {
         }
     }
 
-    private vertexColor(x: number, z: number, height: number, normalY: number, target: Color, splat?: Vector3): void {
+    private vertexColor(
+        x: number,
+        z: number,
+        height: number,
+        normalY: number,
+        target: Color,
+        splat?: Vector3,
+        earthiness?: { value: number },
+    ): void {
         const variation = this.noise.fbm(x * 0.03, z * 0.03, 2) * 0.5 + 0.5;
         const moisture = this.forestField(x, z);
+        const seaCoast = this.seaCoastAt(height);
+        const poolProximity = this.poolProximityAt(x, z);
+        const greenness = this.greennessFromFields(seaCoast, moisture, poolProximity);
         const desert = this.desertField(x, z);
         const rockField = this.rockField(x, z);
 
         const slopeRock = smoothstep(0.16, 0.44, 1 - normalY);
-        const coastalSand = 1 - smoothstep(0.8, 5.5, height);
+        // The large water gets the coastal sand band; a pool bank does not, so orange earth may
+        // reach the water there.
+        const coastalSand = seaCoast * (1 - poolProximity);
         const desertSand = desert * (1 - smoothstep(24, 70, height));
         const sandiness = Math.max(coastalSand, desertSand) * (1 - slopeRock * 0.85);
 
-        target.copy(GRASS_DRY_COLOR).lerp(GRASS_LUSH_COLOR, moisture);
-        target.lerp(FOREST_FLOOR_COLOR, moisture * 0.3 * smoothstep(10, 55, height));
+        // Dry ground ranges from pale ochre to reddish clay; the wet cores keep their green.
+        this.scratchColor.copy(EARTH_LIGHT_COLOR).lerp(EARTH_DARK_COLOR, variation);
+        target.copy(this.scratchColor).lerp(GRASS_GREEN_COLOR, greenness);
+        target.lerp(FOREST_FLOOR_COLOR, greenness * 0.3 * smoothstep(10, 55, height));
 
         this.scratchColor.copy(SAND_LIGHT_COLOR).lerp(SAND_WARM_COLOR, variation * 0.85);
         target.lerp(this.scratchColor, sandiness);
@@ -2750,6 +2820,10 @@ export class Terrain {
             const sandWeight = sandiness * (1 - rockiness) * (1 - snowBlend);
             const stoneWeight = rockiness * (1 - snowBlend) + snowBlend;
             splat.set(grassWeight, sandWeight, stoneWeight);
+        }
+
+        if (earthiness) {
+            earthiness.value = 1 - greenness;
         }
 
         if (height < WATER_LEVEL) {
@@ -3218,6 +3292,8 @@ export class Terrain {
             const desert = this.desertField(x, z);
             const rock = this.rockField(x, z);
             const forest = this.forestField(x, z);
+            const earthiness =
+                1 - this.greennessFromFields(this.seaCoastAt(height), forest, this.poolProximityAt(x, z));
             const density = 0.06 + forest * 0.9 * (1 - desert * 0.9) * (1 - rock * 0.75);
             if (rng() > density) {
                 continue;
@@ -3260,9 +3336,13 @@ export class Terrain {
             if (grassiness > 0.2 && rng() < 0.66) {
                 const tint = (girth - 0.65) / 0.8;
                 const brightness = (heightScale - 0.7) / 0.9;
+                // Canopies on dry earth turn orange-brown; the green cores keep green foliage.
+                // The chance of turning early rises linearly with the local earthiness, so the
+                // tree line fades between colours instead of stopping at a hard border.
+                const autumn = tint < earthiness;
                 instance.leafColor = color
-                    .copy(LEAF_DARK_COLOR)
-                    .lerp(LEAF_LIGHT_COLOR, 0.2 + tint * 0.5 + forest * 0.2)
+                    .copy(autumn ? LEAF_ORANGE_DARK : LEAF_DARK_COLOR)
+                    .lerp(autumn ? LEAF_ORANGE_LIGHT : LEAF_LIGHT_COLOR, 0.2 + tint * 0.5 + forest * 0.2)
                     .offsetHSL((brightness - 0.5) * 0.02, 0, (tint - 0.5) * 0.05)
                     .clone();
                 leafInstances[variantIndex].push(instance);

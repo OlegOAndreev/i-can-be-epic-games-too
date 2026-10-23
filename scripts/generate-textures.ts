@@ -126,7 +126,75 @@ interface WaterStyle {
     strokeColors: string[];
 }
 
+// The array packs dry earth first and green ground last: the terrain shader picks the band from
+// the per-vertex earth field, so the four orange-brown styles must stay in front of the two green
+// ones. Keep the layout in sync with GRASS_GREEN_LAYERS in src/textures.ts.
 const GRASS_STYLES: GrassStyle[] = [
+    // Ochre earth: golden dry ground with sparse straw-like blades.
+    {
+        seed: 0x9a6b3d21,
+        base: '#c0945c',
+        patches: ['#a97b48', '#d3ad74', '#94683c', '#e0c18c', '#b8894f', '#c9a269', '#edd6a8'],
+        clump: '#8a6236',
+        blades: ['#7d5a30', '#926c3a', '#a87f47', '#bd9457', '#d0aa6a', '#e2c287', '#f0d9a8'],
+        highlight: '#f1ddb0',
+        flowers: ['#e8cf9a', '#f4e7c4', '#cba66a'],
+        flowerCount: 16,
+        clusterCount: 240,
+        bladeLengthMin: 9,
+        bladeLengthRange: 23,
+        bladeWidthMin: 2,
+        bladeWidthRange: 2.3,
+    },
+    // Terracotta earth: warmer and redder, with a denser cover of dry stalks.
+    {
+        seed: 0x4d2f8a13,
+        base: '#b5784a',
+        patches: ['#9c5f36', '#cb9362', '#8d522e', '#dba97a', '#a86a3f', '#bd8254', '#e7c199'],
+        clump: '#7e4728',
+        blades: ['#6e3d23', '#844b2b', '#9b5c35', '#b47445', '#c98d59', '#dba973', '#ecc797'],
+        highlight: '#eecda2',
+        flowers: ['#d9a86a', '#ecd0a2', '#b97f4a'],
+        flowerCount: 10,
+        clusterCount: 270,
+        bladeLengthMin: 8,
+        bladeLengthRange: 22,
+        bladeWidthMin: 2,
+        bladeWidthRange: 2.2,
+    },
+    // Burnt sienna: the darkest earth variant, with almost bare red-brown soil.
+    {
+        seed: 0x7b3c0e55,
+        base: '#a2653f',
+        patches: ['#8a4f2f', '#b97d52', '#7a4226', '#c99367', '#975a37', '#ab7047', '#d6a67c'],
+        clump: '#6f3d23',
+        blades: ['#5f331d', '#744024', '#8a4e2c', '#a06038', '#b67748', '#cb9563', '#dfb68a'],
+        highlight: '#e4bf95',
+        flowers: ['#c98f5c', '#e2b98c', '#a96c40'],
+        flowerCount: 6,
+        clusterCount: 300,
+        bladeLengthMin: 8,
+        bladeLengthRange: 19,
+        bladeWidthMin: 1.8,
+        bladeWidthRange: 2.2,
+    },
+    // Sandy amber: the palest earth, close to sun-bleached clay and dry sand.
+    {
+        seed: 0x2f7a4c91,
+        base: '#cfa76d',
+        patches: ['#b98e55', '#e0c08a', '#a67b46', '#ecd4a5', '#c59a61', '#d6b17a', '#f2e2bb'],
+        clump: '#98713f',
+        blades: ['#8a6436', '#9f7843', '#b48b51', '#c9a162', '#dcb87b', '#e9cc96', '#f4e2b5'],
+        highlight: '#f6e6b8',
+        flowers: ['#f0dcae', '#e6c68b', '#d9ae70'],
+        flowerCount: 24,
+        clusterCount: 220,
+        bladeLengthMin: 9,
+        bladeLengthRange: 21,
+        bladeWidthMin: 2,
+        bladeWidthRange: 2.3,
+    },
+    // Bright green: the lush lowland cover that survives in the wettest habitats.
     {
         seed: 0x51a55eed,
         base: '#b9cf85',
@@ -142,21 +210,7 @@ const GRASS_STYLES: GrassStyle[] = [
         bladeWidthMin: 2,
         bladeWidthRange: 2.5,
     },
-    {
-        seed: 0x1b873593,
-        base: '#ccc781',
-        patches: ['#b8b06d', '#e3dda0', '#c9bc75', '#f0eac0', '#a89f5f', '#d8d290'],
-        clump: '#8f8540',
-        blades: ['#7f7a3d', '#948c47', '#aaa052', '#c0b463', '#d8cb7d', '#ece2a0', '#f5eec0'],
-        highlight: '#fbf6d2',
-        flowers: ['#f4eaa4', '#e6c36a', '#fbf4cf'],
-        flowerCount: 45,
-        clusterCount: 260,
-        bladeLengthMin: 10,
-        bladeLengthRange: 22,
-        bladeWidthMin: 2,
-        bladeWidthRange: 2,
-    },
+    // Deep green: the shaded forest-floor cover, kept as the second green variant.
     {
         seed: 0x6b8e23,
         base: '#7f9960',
@@ -170,51 +224,6 @@ const GRASS_STYLES: GrassStyle[] = [
         bladeLengthMin: 8,
         bladeLengthRange: 20,
         bladeWidthMin: 2,
-        bladeWidthRange: 2.2,
-    },
-    {
-        seed: 0x9e3779b9,
-        base: '#c7d19a',
-        patches: ['#b5c285', '#dce4b2', '#a7b77a', '#e9edc8', '#c1ce97', '#d2dca8'],
-        clump: '#8c9a68',
-        blades: ['#788a52', '#8fa263', '#a8b97b', '#c1cf95', '#dbe5b3', '#eff4d0'],
-        highlight: '#fbfce4',
-        flowers: ['#f7f1c4', '#e7d98b'],
-        flowerCount: 20,
-        clusterCount: 250,
-        bladeLengthMin: 9,
-        bladeLengthRange: 21,
-        bladeWidthMin: 1.8,
-        bladeWidthRange: 2,
-    },
-    {
-        seed: 0xc2b280,
-        base: '#a9c77a',
-        patches: ['#8fae62', '#cde3a0', '#7fa15c', '#e1edb8', '#b4cc86', '#97b76c'],
-        clump: '#5f8046',
-        blades: ['#547c3d', '#6b9349', '#82a957', '#9cbf6c', '#b8d488', '#d3e5a9', '#eaf4c8'],
-        highlight: '#f2f8d8',
-        flowers: ['#f3c6d4', '#f6e08a', '#fff8dc', '#e9a6bd', '#f4eaa4'],
-        flowerCount: 80,
-        clusterCount: 290,
-        bladeLengthMin: 9,
-        bladeLengthRange: 23,
-        bladeWidthMin: 2,
-        bladeWidthRange: 2.4,
-    },
-    {
-        seed: 0x7f4a7c15,
-        base: '#a9b89a',
-        patches: ['#93a486', '#c4cfb6', '#8a9b7d', '#d5ddc8', '#9fae90', '#b6c3a8'],
-        clump: '#75856b',
-        blades: ['#5d7258', '#70856a', '#83977c', '#98ab8e', '#adbea2', '#c3d1b9', '#dbe5d1'],
-        highlight: '#e8efdf',
-        flowers: ['#e9e4c7', '#cfd9bd'],
-        flowerCount: 14,
-        clusterCount: 280,
-        bladeLengthMin: 8,
-        bladeLengthRange: 20,
-        bladeWidthMin: 1.8,
         bladeWidthRange: 2.2,
     },
 ];
@@ -797,7 +806,7 @@ function paintGrass(context: CanvasRenderingContext2D, size: number, style: Gras
         const color = style.flowers[Math.floor(rng() * style.flowers.length)];
 
         forWrappedPosition(x, y, radius + 3, size, (wrappedX, wrappedY) => {
-            context.fillStyle = rgba('#6d8a50', 0.55);
+            context.fillStyle = rgba(style.clump, 0.55);
             context.beginPath();
             context.arc(wrappedX, wrappedY, radius + 1.1, 0, TAU);
             context.fill();
@@ -811,8 +820,8 @@ function paintGrass(context: CanvasRenderingContext2D, size: number, style: Gras
 
     paintSpeckles(context, size, rng, {
         count: 1800,
-        light: '#f4f9dc',
-        dark: '#7d9959',
+        light: style.highlight,
+        dark: style.clump,
         lightChance: 0.5,
         radiusMin: 0.5,
         radiusRange: 1.1,

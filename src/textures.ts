@@ -26,6 +26,10 @@ const METAL_TILE = 4.5;
 // realign over a long distance instead of doubling the visible repeat.
 const METAL_ALT_TILE = 7.28;
 const MACRO_TILE = 190;
+// The grass array packs the dry earth variants first and the green variants last, so the shader
+// can pick a band from the per-vertex earth field. Keep in sync with GRASS_STYLES in
+// scripts/generate-textures.ts.
+const GRASS_GREEN_LAYERS = 2;
 
 // World-space size of one repeat of the water texture, used by the water shader.
 const WATER_TILE_SIZE = 160;
@@ -189,6 +193,7 @@ export function applyTerrainSurfaceShader(material: MeshStandardMaterial, textur
         shader.uniforms.uStoneMaps = { value: textures.stone };
         shader.uniforms.uMacroMap = { value: textures.macro };
         shader.uniforms.uGrassLayers = { value: textures.grassLayers };
+        shader.uniforms.uGrassGreenLayers = { value: GRASS_GREEN_LAYERS };
         shader.uniforms.uSandLayers = { value: textures.sandLayers };
         shader.uniforms.uStoneLayers = { value: textures.stoneLayers };
 
@@ -197,13 +202,16 @@ export function applyTerrainSurfaceShader(material: MeshStandardMaterial, textur
                 '#include <common>',
                 `#include <common>
 attribute vec3 splat;
+attribute float earth;
 varying vec3 vSplat;
+varying float vEarth;
 varying vec2 vSurfaceUv;`,
             )
             .replace(
                 '#include <begin_vertex>',
                 `#include <begin_vertex>
 vSplat = splat;
+vEarth = earth;
 vSurfaceUv = (modelMatrix * vec4(transformed, 1.0)).xz;`,
             );
 
@@ -216,9 +224,11 @@ uniform sampler2DArray uSandMaps;
 uniform sampler2DArray uStoneMaps;
 uniform sampler2D uMacroMap;
 uniform float uGrassLayers;
+uniform float uGrassGreenLayers;
 uniform float uSandLayers;
 uniform float uStoneLayers;
 varying vec3 vSplat;
+varying float vEarth;
 varying vec2 vSurfaceUv;${SAMPLE_VARIANT_GLSL}`,
             )
             .replace(
@@ -237,13 +247,27 @@ vec3 surfaceDetail = vec3(0.0);
 float surfaceWeight = 0.0;
 
 if (vSplat.x > 0.01) {
-    float grassField = macroSample.r * 1.4 + variantSample.g * 2.6 + variantJitter * 0.9;
-    surfaceDetail += sampleSurfaceVariant(
+    // Sample both colour bands and blend them linearly with the earth field, so orange earth and
+    // green ground fade through a broad gradient instead of meeting at a hard border.
+    float grassNoise = fract((macroSample.r * 1.4 + variantSample.g * 2.6 + variantJitter * 0.9) / 4.9);
+    float orangeLayers = max(uGrassLayers - uGrassGreenLayers, 0.0);
+    float orangeSpan = max(orangeLayers - 1.0, 0.0) / max(uGrassLayers, 1.0);
+    float greenStart = orangeLayers / max(uGrassLayers, 1.0);
+    float greenSpan = max(uGrassGreenLayers - 1.0, 0.0) / max(uGrassLayers, 1.0);
+    vec2 grassUv = warpedSurfaceUv / ${GRASS_TILE.toFixed(1)};
+    vec3 greenDetail = sampleSurfaceVariant(
         uGrassMaps,
-        warpedSurfaceUv / ${GRASS_TILE.toFixed(1)},
+        grassUv,
         uGrassLayers,
-        grassField
-    ) * vSplat.x;
+        greenStart + grassNoise * greenSpan
+    );
+    vec3 orangeDetail = sampleSurfaceVariant(
+        uGrassMaps,
+        grassUv,
+        uGrassLayers,
+        grassNoise * orangeSpan
+    );
+    surfaceDetail += mix(greenDetail, orangeDetail, clamp(vEarth, 0.0, 1.0)) * vSplat.x;
     surfaceWeight += vSplat.x;
 }
 
@@ -284,7 +308,7 @@ surfaceDetail *= 0.7 + macroSample.r * 0.6;
 diffuseColor.rgb *= surfaceDetail * 1.3;`,
             );
     };
-    material.customProgramCacheKey = () => 'terrain-surface-textures-v4';
+    material.customProgramCacheKey = () => 'terrain-surface-textures-v5';
 }
 
 // Water blends two scrolling layers, each picking a different style from the water array based on

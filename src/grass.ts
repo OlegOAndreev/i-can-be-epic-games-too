@@ -26,9 +26,11 @@ const BLADE_COUNT = 6;
 // flicker in the distance.
 const FADE_START = 50;
 const FADE_END = 80;
-// The terrain shader multiplies its vertex color by the grass texture. This is the average of
-// the grass texture variants, so tuft colors land on the same value as the ground under them.
-const GROUND_TEXTURE_TINT = new Color().setRGB(0.65, 0.74, 0.4);
+// The terrain shader multiplies its vertex color by the grass texture. These are the average
+// tints of the two texture families (green ground and orange-brown earth), so tuft colors land on
+// the same value as the ground under them.
+const GREEN_GROUND_TEXTURE_TINT = new Color().setRGB(0.65, 0.74, 0.4);
+const EARTH_GROUND_TEXTURE_TINT = new Color().setRGB(0.72, 0.5, 0.28);
 // Released slots keep their index and are zero-scaled, so no active instance ever has to shift.
 const HIDDEN_MATRIX = new Matrix4().makeScale(0, 0, 0);
 
@@ -54,6 +56,7 @@ export class GrassField {
     private terrain: Terrain;
     private material: MeshStandardMaterial;
     private dummy = new Object3D();
+    private readonly tuftTint = new Color();
     private cells = new Map<string, GrassCell>();
     private generation = 0;
     // Cells own their instance slots for their whole lifetime. Freed slots become zero-scale
@@ -251,9 +254,12 @@ export class GrassField {
             this.dummy.updateMatrix();
 
             const normalY = 1 / Math.sqrt(1 + slope * slope);
+            const tint = this.tuftTint
+                .copy(GREEN_GROUND_TEXTURE_TINT)
+                .lerp(EARTH_GROUND_TEXTURE_TINT, this.terrain.earthinessAt(x, z, height));
             const color = this.terrain
                 .biomeColorAt(x, z, height, normalY)
-                .multiply(GROUND_TEXTURE_TINT)
+                .multiply(tint)
                 .multiplyScalar(0.9 + rng() * 0.2);
             const slot = this.allocateSlot();
             if (slot === -1) {

@@ -474,6 +474,73 @@ describe('Terrain', () => {
         expect(Math.min(...values)).toBeLessThan(0.3);
     });
 
+    it('turns most of the grassland orange-brown while keeping green cores', () => {
+        const terrain = testTerrain(13579, FAST_TERRAIN);
+        let grassySamples = 0;
+        let orangeSamples = 0;
+
+        for (let x = -WORLD_HALF_SIZE; x <= WORLD_HALF_SIZE; x += 16) {
+            for (let z = -WORLD_HALF_SIZE; z <= WORLD_HALF_SIZE; z += 16) {
+                if (terrain.grassBiasAt(x, z) < 0.5) {
+                    continue;
+                }
+                const height = terrain.heightAt(x, z);
+                if (height < 2.8 || height > 62) {
+                    continue;
+                }
+                grassySamples++;
+                if (terrain.earthinessAt(x, z) > 0.5) {
+                    orangeSamples++;
+                }
+            }
+        }
+
+        const orangeShare = orangeSamples / grassySamples;
+        expect(grassySamples).toBeGreaterThan(100);
+        expect(orangeShare).toBeGreaterThan(0.55);
+        expect(orangeShare).toBeLessThan(0.85);
+    });
+
+    it('keeps the large-water shore green or sand and lets orange earth reach the pools', () => {
+        const terrain = testTerrain(13579, FAST_TERRAIN);
+
+        // Outside pool basins, low ground is the sea's green/sand shore and must not expose orange.
+        let coastalSamples = 0;
+        for (let x = -WORLD_HALF_SIZE; x <= WORLD_HALF_SIZE; x += 24) {
+            for (let z = -WORLD_HALF_SIZE; z <= WORLD_HALF_SIZE; z += 24) {
+                const height = terrain.heightAt(x, z);
+                if (height < WATER_LEVEL + 0.2 || height > WATER_LEVEL + 1.5) {
+                    continue;
+                }
+                const inPoolBasin = terrain.pools.some(
+                    (pool) => Math.hypot(x - pool.x, z - pool.z) < pool.reach,
+                );
+                if (inPoolBasin) {
+                    continue;
+                }
+                coastalSamples++;
+                expect(terrain.earthinessAt(x, z, height)).toBeLessThan(0.1);
+            }
+        }
+        expect(coastalSamples).toBeGreaterThan(10);
+
+        // Pool banks skip the coastal band, so the local orange earth can meet the water.
+        let orangePoolBanks = 0;
+        for (const pool of terrain.pools) {
+            for (let step = 0; step < 12; step++) {
+                const angle = (step / 12) * Math.PI * 2;
+                const distance = pool.radius + pool.shapeWobble + 2;
+                const x = pool.x + Math.cos(angle) * distance;
+                const z = pool.z + Math.sin(angle) * distance;
+                const height = terrain.heightAt(x, z);
+                if (height > WATER_LEVEL + 0.1 && terrain.earthinessAt(x, z, height) > 0.5) {
+                    orangePoolBanks++;
+                }
+            }
+        }
+        expect(orangePoolBanks).toBeGreaterThan(0);
+    });
+
     it('scatters trees with varied heights and branch sizes', () => {
         const terrain = testTerrain(13579, { meshes: false });
         const treeMeshes: InstancedMesh[] = [];

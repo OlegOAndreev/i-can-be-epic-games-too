@@ -64,6 +64,7 @@ export function fakeTerrain(overrides: Partial<Record<keyof Terrain, unknown>> =
         heightAt: () => 0,
         walkSurfaceAt: () => 0,
         slopeAt: () => 0,
+        earthinessAt: () => 0,
         isOnStructure: () => false,
         megastructures: { towers: [], ramps: [], boxes: [] },
         ...overrides,
