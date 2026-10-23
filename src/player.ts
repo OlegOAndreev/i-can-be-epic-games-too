@@ -14,6 +14,7 @@ import type { Material } from 'three';
 import { buildElectricBolts } from './electric-bolts';
 import { DetectorPulse } from './detector-pulse';
 import type { Difficulty } from './enemies';
+import { moveCharacterHorizontally, moveCharacterVertically } from './character-physics';
 import { GLOW_RING_TEXTURE_INNER_RADIUS } from './glow';
 import { angleDelta, clamp, damp, dampAngle, smoothstep } from './math-utils';
 import {
@@ -31,7 +32,6 @@ import {
 } from './player-model';
 import { RAMP_STEP_HEIGHT, WATER_LEVEL, WORLD_HALF_SIZE } from './terrain';
 import type { CylinderCollider, Terrain } from './terrain';
-import { rampsBlockBody } from './ramp-collision';
 import { ShockBurst } from './shock-burst';
 
 export interface PlayerSettings {
@@ -56,7 +56,6 @@ export interface PlayerSnapshot {
     grounded: boolean;
 }
 
-const MAX_WALKABLE_RISE = 1.5;
 // One extra jump is available while airborne. It is refilled whenever the player is grounded.
 const MAX_AIR_JUMPS = 1;
 // A regular wrench swing covers this forward arc, in radians. Easier difficulties widen it so
@@ -1016,82 +1015,27 @@ export class Player {
             this.shockKnockbackRemaining = Math.max(0, this.shockKnockbackRemaining - dt);
         }
 
-        // Move horizontally, but refuse to walk up slopes that are too steep to be a path. Ramps
-        // get a taller allowance because their low edge can sit above the ground it is entered from.
+        // Walk the body through the world. The controller substeps the move, so a fast fall or a
+        // shock impulse cannot skip a thin wall or floor, and it turns the push-out normal into a
+        // velocity slide along rotated walls and ramps.
         const limit = WORLD_HALF_SIZE - 16;
-        let nextX = Math.min(limit, Math.max(-limit, position.x + (this.velocity.x + shockKnockbackX) * dt));
-        let nextZ = Math.min(limit, Math.max(-limit, position.z + (this.velocity.z + shockKnockbackZ) * dt));
-        const stepDistance = Math.hypot(nextX - position.x, nextZ - position.z);
-        const currentGround = terrain.walkSurfaceAt(position.x, position.z, position.y);
-        const groundStepHeight = this.grounded ? RAMP_STEP_HEIGHT : undefined;
-        const nextGround = terrain.walkSurfaceAt(nextX, nextZ, position.y, groundStepHeight);
-        const climbingRamp = this.grounded && terrain.isOnRamp(nextX, nextZ, nextGround, 0.05);
-        const maxRise = climbingRamp
-            ? Math.max(RAMP_STEP_HEIGHT, stepDistance * MAX_WALKABLE_RISE)
-            : Math.max(0.14, stepDistance * MAX_WALKABLE_RISE);
-        const clearsNextGround = !this.grounded && position.y >= nextGround;
-
-        if (nextGround - currentGround <= maxRise || clearsNextGround) {
-            // A ramp is the floor when it is walked on, but its low underside is a solid obstacle.
-            // Resolve that before moving, so a blocked step stops or slides along the ramp instead
-            // of letting the post-move push-out shove the body to the nearest edge of the ramp
-            // footprint. First person blocks at the same eye-safe height as the jump ceiling stop,
-            // so the near plane and its corners stay below a sloped underside. If the body is
-            // already overlapping, let resolveCollisions recover it.
-            const rampBlockHeight = firstPerson && !knockedDown ? ceilingHeight : PLAYER_HEIGHT;
-            const rampBlocksAt = (x: number, z: number): boolean =>
-                rampsBlockBody(
-                    terrain.megastructures.ramps,
-                    x,
-                    z,
-                    position.y,
-                    rampBlockHeight,
-                    PLAYER_RADIUS,
-                    RAMP_STEP_HEIGHT,
-                );
-            if (!rampBlocksAt(position.x, position.z) && rampBlocksAt(nextX, nextZ)) {
-                if (!rampBlocksAt(nextX, position.z)) {
-                    nextZ = position.z;
-                } else if (!rampBlocksAt(position.x, nextZ)) {
-                    nextX = position.x;
-                } else {
-                    nextX = position.x;
-                    nextZ = position.z;
-                }
-            }
-
-            position.x = nextX;
-            position.z = nextZ;
-
-            terrain.resolveCollisions(position, PLAYER_RADIUS, PLAYER_HEIGHT, actorColliders);
-            position.x = Math.min(limit, Math.max(-limit, position.x));
-            position.z = Math.min(limit, Math.max(-limit, position.z));
-        } else {
-            this.velocity.x *= 0.2;
-            this.velocity.z *= 0.2;
+        const motion = moveCharacterHorizontally(position, this.velocity, this.grounded, dt, terrain, {
+            radius: PLAYER_RADIUS,
+            height: PLAYER_HEIGHT,
+            // First person blocks at the same eye-safe height as the jump ceiling stop, so the
+            // near plane and its corners stay below a sloped underside.
+            blockHeight: firstPerson && !knockedDown ? ceilingHeight : PLAYER_HEIGHT,
+            rampStepHeight: RAMP_STEP_HEIGHT,
+            worldLimit: limit,
+            actorColliders,
+            impulseX: shockKnockbackX,
+            impulseZ: shockKnockbackZ,
+        });
+        this.grounded = motion.grounded;
+        if (motion.fellOffLedge) {
+            this.verticalVelocity = 0;
         }
-
-        if (position.x === limit || position.x === -limit || position.z === limit || position.z === -limit) {
-            this.velocity.x *= 0.5;
-            this.velocity.z *= 0.5;
-        }
-
-        const ground = terrain.walkSurfaceAt(
-            position.x,
-            position.z,
-            position.y,
-            this.grounded ? RAMP_STEP_HEIGHT : undefined,
-        );
-
-        // Fall off ledges instead of snapping down them.
-        if (this.grounded) {
-            if (position.y - ground > 0.45) {
-                this.grounded = false;
-                this.verticalVelocity = 0;
-            } else {
-                position.y = ground;
-            }
-        }
+        const ground = motion.groundHeight;
 
         // A press just before touchdown counts as a ground jump. "Before" is measured in time to
         // impact under the current fall speed, not in metres, so a fast fall is forgiven from
@@ -1127,24 +1071,17 @@ export class Player {
         }
 
         if (!this.grounded) {
-            const previousHead = position.y + ceilingHeight;
-            this.verticalVelocity -= this.settings.gravity * dt;
-            position.y += this.verticalVelocity * dt;
+            const fall = moveCharacterVertically(position, this.verticalVelocity, dt, terrain, {
+                radius: PLAYER_RADIUS,
+                height: PLAYER_HEIGHT,
+                ceilingHeight,
+                gravity: this.settings.gravity,
+            });
+            this.verticalVelocity = fall.verticalVelocity;
 
-            // Stop the head at the underside of ledges and floors instead of popping through them.
-            if (this.verticalVelocity > 0) {
-                const ceiling = terrain.ceilingAt(position.x, position.z, previousHead, PLAYER_RADIUS);
-                if (position.y + ceilingHeight > ceiling) {
-                    position.y = ceiling - ceilingHeight;
-                    this.verticalVelocity = 0;
-                }
-            }
-
-            if (position.y <= ground) {
-                const impactSpeed = Math.max(0, -this.verticalVelocity);
-                position.y = ground;
-                this.verticalVelocity = 0;
+            if (fall.landed) {
                 this.grounded = true;
+                const impactSpeed = fall.impactSpeed;
 
                 if (impactSpeed > LANDING_EFFECT_THRESHOLD) {
                     const hardLanding = impactSpeed >= HARD_LANDING_SPEED && position.y >= WATER_LEVEL - 0.05;

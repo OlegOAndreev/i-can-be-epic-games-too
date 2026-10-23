@@ -1015,7 +1015,12 @@ export class Finale {
             this.terrain.spaceshipSite,
             (x, z) => this.terrain.heightAt(x, z),
             this.maxAltitude,
-            this.terrain.megastructures.towers,
+            this.terrain.megastructures.towers.map((tower) => ({
+                minX: tower.worldMinX ?? tower.minX,
+                maxX: tower.worldMaxX ?? tower.maxX,
+                minZ: tower.worldMinZ ?? tower.minZ,
+                maxZ: tower.worldMaxZ ?? tower.maxZ,
+            })),
         );
 
         for (let index = 0; index < plans.length; index++) {

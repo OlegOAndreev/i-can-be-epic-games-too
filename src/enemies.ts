@@ -5,6 +5,7 @@ import {
     Group,
     Mesh,
     MeshBasicMaterial,
+    Quaternion,
     Sprite,
     SpriteMaterial,
     Vector3,
@@ -16,6 +17,7 @@ import { getRadialGlowTexture, glowMaterial, glowSpriteMaterial } from './glow';
 import { clamp, dampAngle } from './math-utils';
 import { disposeGeometry, isSharedMaterial } from './mesh-optimize';
 import type { MegastructureStorey, MegastructureTower, Ramp } from './megastructures';
+import { WALL_THICKNESS } from './megastructures';
 import { mulberry32 } from './noise';
 import {
     buildRobotBeepTimes,
@@ -27,7 +29,20 @@ import {
 import type { RobotKind, RobotModel } from './npc-robots';
 import { PLAYER_HEIGHT, PLAYER_RADIUS } from './player';
 import type { PlayerSettings } from './player';
-import { boxesBlockBody, findRampBlockingPoint, findStructureBlockingPoint, rampsBlockBody } from './ramp-collision';
+import {
+    boxesBlockBody,
+    findRampBlockingPoint,
+    findStructureBlockingPoint,
+    rampHighY,
+    rampLowY,
+    rampMaxX,
+    rampMaxZ,
+    rampMinX,
+    rampMinZ,
+    rampsBlockBody,
+} from './ramp-collision';
+import { IDENTITY_FRAME, createStructureFrame, intersectWorldVerticalWithLocalPlane, localDirectionToWorld, localToWorld, worldToLocal } from './structure-frame';
+import type { StructureFrame } from './structure-frame';
 import { ShockBurst } from './shock-burst';
 import type { CylinderCollider, Terrain } from './terrain';
 
@@ -111,7 +126,9 @@ const SPAWN_GRID = 7;
 const SPAWN_INSET = 3;
 const SPAWN_SPACING = 3;
 const CROWN_CLEARANCE = 0.36;
-const WALK_CLEARANCE = 2.2;
+// Local clearance from the interior wall faces. Larger than the widest robot radius so a body
+// cannot clip a wall, while still letting the corner spawns move inward.
+const WALK_CLEARANCE = 1;
 const STOP_DISTANCE = 6;
 const ENEMY_SPEED_FACTOR = 0.4;
 const SECOND_ENEMY_SPEED_FACTOR = 0.5;
@@ -221,7 +238,10 @@ interface Enemy {
     model: RobotModel;
     group: Group;
     storey: MegastructureStorey;
+    // Current floor height at the robot's feet. It changes as it crosses a leaned floor.
     floorY: number;
+    // Floor height at the spawn spot, reused when the encounter starts over.
+    spawnFloorY: number;
     height: number;
     speedFactor: number;
     // Initial spot, reused when the player is killed and the encounter starts over.
@@ -301,8 +321,11 @@ export function playerInAttackZone(
     nextRamp: Ramp | null,
     position: Vector3,
 ): boolean {
-    const insideFloor =
-        position.x > storey.minX && position.x < storey.maxX && position.z > storey.minZ && position.z < storey.maxZ;
+    const minX = storey.worldMinX ?? storey.minX;
+    const maxX = storey.worldMaxX ?? storey.maxX;
+    const minZ = storey.worldMinZ ?? storey.minZ;
+    const maxZ = storey.worldMaxZ ?? storey.maxZ;
+    const insideFloor = position.x > minX && position.x < maxX && position.z > minZ && position.z < maxZ;
     const rise = position.y - floorY;
     if (insideFloor && rise >= -0.05 && rise < FLOOR_ENGAGE_HEIGHT) {
         return true;
@@ -314,13 +337,21 @@ export function playerInAttackZone(
     );
 }
 
+const rampLocalPoint = new Vector3();
+
 function inRampQuarter(ramp: Ramp, position: Vector3, topQuarter: boolean): boolean {
-    if (position.x < ramp.minX || position.x > ramp.maxX || position.z < ramp.minZ || position.z > ramp.maxZ) {
+    const frame = ramp.frame ?? IDENTITY_FRAME;
+    const local = worldToLocal(frame, position.x, position.y, position.z, rampLocalPoint);
+    const minX = rampMinX(ramp);
+    const maxX = rampMaxX(ramp);
+    const minZ = rampMinZ(ramp);
+    const maxZ = rampMaxZ(ramp);
+    if (local.x < minX || local.x > maxX || local.z < minZ || local.z > maxZ) {
         return false;
     }
 
-    const lowY = Math.min(ramp.minY, ramp.maxY);
-    const highY = Math.max(ramp.minY, ramp.maxY);
+    const lowY = Math.min(rampLowY(ramp), rampHighY(ramp));
+    const highY = Math.max(rampLowY(ramp), rampHighY(ramp));
     const height = highY - lowY;
     if (height <= 0.001) {
         return false;
@@ -329,49 +360,74 @@ function inRampQuarter(ramp: Ramp, position: Vector3, topQuarter: boolean): bool
     const quarter = height * RAMP_ATTACK_QUARTER;
     const minimumY = topQuarter ? highY - quarter : lowY;
     const maximumY = topQuarter ? highY : lowY + quarter;
-    if (position.y < minimumY - 0.05 || position.y > maximumY + 0.05) {
+    if (local.y < minimumY - 0.05 || local.y > maximumY + 0.05) {
         return false;
     }
 
-    const run = ramp.axis === 'x' ? ramp.maxX - ramp.minX : ramp.maxZ - ramp.minZ;
+    const run = ramp.axis === 'x' ? maxX - minX : maxZ - minZ;
     const t =
-        ramp.axis === 'x'
-            ? (position.x - ramp.minX) / Math.max(run, 0.001)
-            : (position.z - ramp.minZ) / Math.max(run, 0.001);
-    const rampY = ramp.minY + (ramp.maxY - ramp.minY) * t;
-    return Math.abs(position.y - rampY) <= 0.3;
+        ramp.axis === 'x' ? (local.x - minX) / Math.max(run, 0.001) : (local.z - minZ) / Math.max(run, 0.001);
+    const rampY = rampLowY(ramp) + (rampHighY(ramp) - rampLowY(ramp)) * t;
+    return Math.abs(local.y - rampY) <= 0.3;
 }
 
 // World position at the bottom of a ramp and the heading toward its high end. A destroyed robot
 // respawns just inside the low edge so it stands on the deck rather than the ground seam.
 export function rampFootPoint(ramp: Ramp): { position: Vector3; facing: number } {
     const alongX = ramp.axis === 'x';
-    const ascendingPositive = ramp.maxY > ramp.minY;
-    const minimal = alongX ? ramp.minX : ramp.minZ;
-    const maximal = alongX ? ramp.maxX : ramp.maxZ;
-    const lowAlong = ascendingPositive ? minimal : maximal;
-    const highAlong = ascendingPositive ? maximal : minimal;
-    const lowY = Math.min(ramp.minY, ramp.maxY);
-    const highY = Math.max(ramp.minY, ramp.maxY);
+    const minX = rampMinX(ramp);
+    const maxX = rampMaxX(ramp);
+    const minZ = rampMinZ(ramp);
+    const maxZ = rampMaxZ(ramp);
+    const minEndY = rampLowY(ramp);
+    const maxEndY = rampHighY(ramp);
+    const ascending = maxEndY > minEndY;
+    const lowAlong = alongX ? (ascending ? minX : maxX) : ascending ? minZ : maxZ;
+    const highAlong = alongX ? (ascending ? maxX : minX) : ascending ? maxZ : minZ;
+    const lowY = ascending ? minEndY : maxEndY;
+    const highY = ascending ? maxEndY : minEndY;
     const t = 0.06;
     const along = lowAlong + (highAlong - lowAlong) * t;
-    const transverse = alongX ? (ramp.minZ + ramp.maxZ) / 2 : (ramp.minX + ramp.maxX) / 2;
+    const transverse = alongX ? (minZ + maxZ) / 2 : (minX + maxX) / 2;
     const y = lowY + (highY - lowY) * t;
-    const direction = ascendingPositive ? 1 : -1;
+    const frame = ramp.frame ?? IDENTITY_FRAME;
+    const position = localToWorld(
+        frame,
+        alongX ? along : transverse,
+        y,
+        alongX ? transverse : along,
+    );
+    const direction = localDirectionToWorld(
+        frame,
+        alongX ? Math.sign(highAlong - lowAlong) : 0,
+        0,
+        alongX ? 0 : Math.sign(highAlong - lowAlong),
+    );
 
     return {
-        position: alongX ? new Vector3(along, y, transverse) : new Vector3(transverse, y, along),
-        facing: alongX ? Math.atan2(direction, 0) : Math.atan2(0, direction),
+        position,
+        facing: Math.atan2(direction.x, direction.z),
     };
 }
 
 // World position of a ramp's high end, where it emerges onto the floor above.
 function rampExitPoint(ramp: Ramp): { x: number; z: number } {
     const alongX = ramp.axis === 'x';
-    const highAtMax = ramp.maxY > ramp.minY;
-    const along = highAtMax ? (alongX ? ramp.maxX : ramp.maxZ) : alongX ? ramp.minX : ramp.minZ;
-    const transverse = alongX ? (ramp.minZ + ramp.maxZ) / 2 : (ramp.minX + ramp.maxX) / 2;
-    return alongX ? { x: along, z: transverse } : { x: transverse, z: along };
+    const minX = rampMinX(ramp);
+    const maxX = rampMaxX(ramp);
+    const minZ = rampMinZ(ramp);
+    const maxZ = rampMaxZ(ramp);
+    const highAtMax = rampHighY(ramp) > rampLowY(ramp);
+    const along = highAtMax ? (alongX ? maxX : maxZ) : alongX ? minX : minZ;
+    const transverse = alongX ? (minZ + maxZ) / 2 : (minX + maxX) / 2;
+    const y = highAtMax ? rampHighY(ramp) : rampLowY(ramp);
+    const world = localToWorld(
+        ramp.frame ?? IDENTITY_FRAME,
+        alongX ? along : transverse,
+        y,
+        alongX ? transverse : along,
+    );
+    return { x: world.x, z: world.z };
 }
 
 export interface LaserAim {
@@ -430,6 +486,11 @@ export class EnemyRobots {
     private readonly enemies: Enemy[] = [];
     private readonly levels: EnemyLevel[] = [];
     private readonly blockerColliders: CylinderCollider[] = [];
+    private readonly storeyGeometry = new WeakMap<
+        MegastructureStorey,
+        { frame: StructureFrame; floorLocalY: number }
+    >();
+    private readonly floorScratch = new Vector3();
     // Hit bursts are shared between enemies of the same size and rebound to whichever chassis was
     // struck last, so no hit allocates geometry or retains an effect group per robot.
     private readonly shockBursts: ShockBurst[] = [];
@@ -960,12 +1021,16 @@ export class EnemyRobots {
     // chosen. The first robot's spawn is the fallback when no sampled point is clear.
     private findOppositeArrival(level: EnemyLevel, groupX: number, groupZ: number): { x: number; z: number } {
         const storey = level.storey;
-        const insetX = Math.min(SPAWN_INSET, (storey.maxX - storey.minX) * 0.35);
-        const insetZ = Math.min(SPAWN_INSET, (storey.maxZ - storey.minZ) * 0.35);
-        const minX = storey.minX + insetX;
-        const maxX = storey.maxX - insetX;
-        const minZ = storey.minZ + insetZ;
-        const maxZ = storey.maxZ - insetZ;
+        const storeyMinX = storey.worldMinX ?? storey.minX;
+        const storeyMaxX = storey.worldMaxX ?? storey.maxX;
+        const storeyMinZ = storey.worldMinZ ?? storey.minZ;
+        const storeyMaxZ = storey.worldMaxZ ?? storey.maxZ;
+        const insetX = Math.min(SPAWN_INSET, (storeyMaxX - storeyMinX) * 0.35);
+        const insetZ = Math.min(SPAWN_INSET, (storeyMaxZ - storeyMinZ) * 0.35);
+        const minX = storeyMinX + insetX;
+        const maxX = storeyMaxX - insetX;
+        const minZ = storeyMinZ + insetZ;
+        const maxZ = storeyMaxZ - insetZ;
         const boxes = this.terrain.megastructures.boxes ?? [];
         const ramps = this.terrain.megastructures.ramps ?? [];
         const floorY = level.floorY;
@@ -1009,10 +1074,19 @@ export class EnemyRobots {
         level.timer = this.fireInterval;
         for (const enemy of level.enemies) {
             this.hideBeam(enemy);
-            enemy.group.position.set(enemy.spawnX, enemy.floorY + ENEMY_HOVER[enemy.kind], enemy.spawnZ);
+            enemy.floorY = enemy.spawnFloorY;
+            enemy.group.position.set(
+                enemy.spawnX,
+                enemy.spawnFloorY + ENEMY_HOVER[enemy.kind],
+                enemy.spawnZ,
+            );
             enemy.group.rotation.y = enemy.spawnFacing;
             enemy.group.visible = true;
             enemy.model.visual.visible = true;
+            enemy.collider.x = enemy.spawnX;
+            enemy.collider.z = enemy.spawnZ;
+            enemy.collider.base = enemy.group.position.y;
+            enemy.collider.top = enemy.group.position.y + enemy.height;
             enemy.maxHitPoints = Math.max(1, ENEMY_HITS_TO_DEFEAT[enemy.kind] + this.hitPointDelta);
             enemy.hitPoints = enemy.maxHitPoints;
             enemy.invulnerableRemaining = 0;
@@ -1112,10 +1186,10 @@ export class EnemyRobots {
         for (const level of this.levels) {
             const storey = level.storey;
             if (
-                position.x > storey.minX &&
-                position.x < storey.maxX &&
-                position.z > storey.minZ &&
-                position.z < storey.maxZ &&
+                position.x > (storey.worldMinX ?? storey.minX) &&
+                position.x < (storey.worldMaxX ?? storey.maxX) &&
+                position.z > (storey.worldMinZ ?? storey.minZ) &&
+                position.z < (storey.worldMaxZ ?? storey.maxZ) &&
                 position.y >= level.floorY - 0.05 &&
                 position.y < storey.topY
             ) {
@@ -1128,17 +1202,26 @@ export class EnemyRobots {
 
     private isOverRamp(position: Vector3): boolean {
         for (const ramp of this.terrain.megastructures.ramps ?? []) {
-            if (position.x < ramp.minX || position.x > ramp.maxX || position.z < ramp.minZ || position.z > ramp.maxZ) {
+            const local = worldToLocal(
+                ramp.frame ?? IDENTITY_FRAME,
+                position.x,
+                position.y,
+                position.z,
+                rampLocalPoint,
+            );
+            const minX = rampMinX(ramp);
+            const maxX = rampMaxX(ramp);
+            const minZ = rampMinZ(ramp);
+            const maxZ = rampMaxZ(ramp);
+            if (local.x < minX || local.x > maxX || local.z < minZ || local.z > maxZ) {
                 continue;
             }
 
-            const run = ramp.axis === 'x' ? ramp.maxX - ramp.minX : ramp.maxZ - ramp.minZ;
+            const run = ramp.axis === 'x' ? maxX - minX : maxZ - minZ;
             const t =
-                ramp.axis === 'x'
-                    ? (position.x - ramp.minX) / Math.max(run, 0.001)
-                    : (position.z - ramp.minZ) / Math.max(run, 0.001);
-            const rampY = ramp.minY + (ramp.maxY - ramp.minY) * t;
-            if (Math.abs(position.y - rampY) <= 0.3) {
+                ramp.axis === 'x' ? (local.x - minX) / Math.max(run, 0.001) : (local.z - minZ) / Math.max(run, 0.001);
+            const rampY = rampLowY(ramp) + (rampHighY(ramp) - rampLowY(ramp)) * t;
+            if (Math.abs(local.y - rampY) <= 0.3) {
                 return true;
             }
         }
@@ -1424,6 +1507,7 @@ export class EnemyRobots {
             enemy.detourZ = 0;
             position.x = nextX;
             position.z = nextZ;
+            this.syncEnemyHeight(enemy);
             return;
         }
 
@@ -1435,6 +1519,7 @@ export class EnemyRobots {
             if (this.canMoveTo(enemy, level, detourX, detourZ)) {
                 position.x = detourX;
                 position.z = detourZ;
+                this.syncEnemyHeight(enemy);
                 return;
             }
         }
@@ -1447,6 +1532,7 @@ export class EnemyRobots {
             enemy.detourZ = tangentZ;
             position.x += tangentX * step;
             position.z += tangentZ * step;
+            this.syncEnemyHeight(enemy);
             return;
         }
         if (this.canMoveTo(enemy, level, position.x - tangentX * step, position.z - tangentZ * step)) {
@@ -1454,6 +1540,7 @@ export class EnemyRobots {
             enemy.detourZ = -tangentZ;
             position.x -= tangentX * step;
             position.z -= tangentZ * step;
+            this.syncEnemyHeight(enemy);
             return;
         }
 
@@ -1463,10 +1550,12 @@ export class EnemyRobots {
         const movesZ = Math.abs(nextZ - position.z) > 1e-6;
         if (movesX && this.canMoveTo(enemy, level, nextX, position.z)) {
             position.x = nextX;
+            this.syncEnemyHeight(enemy);
             return;
         }
         if (movesZ && this.canMoveTo(enemy, level, position.x, nextZ)) {
             position.z = nextZ;
+            this.syncEnemyHeight(enemy);
         }
     }
 
@@ -1530,36 +1619,91 @@ export class EnemyRobots {
     }
 
     private pickWanderTarget(enemy: Enemy, level: EnemyLevel): { x: number; z: number } | null {
-        const storey = enemy.storey;
-        const insetX = Math.min(SPAWN_INSET, (storey.maxX - storey.minX) * 0.35);
-        const insetZ = Math.min(SPAWN_INSET, (storey.maxZ - storey.minZ) * 0.35);
-        const minX = storey.minX + insetX;
-        const maxX = storey.maxX - insetX;
-        const minZ = storey.minZ + insetZ;
-        const maxZ = storey.maxZ - insetZ;
+        const interior = this.storeyInterior(enemy.storey, 0);
+        const insetX = Math.min(SPAWN_INSET, (interior.maxX - interior.minX) * 0.35);
+        const insetZ = Math.min(SPAWN_INSET, (interior.maxZ - interior.minZ) * 0.35);
+        const minX = interior.minX + insetX;
+        const maxX = interior.maxX - insetX;
+        const minZ = interior.minZ + insetZ;
+        const maxZ = interior.maxZ - insetZ;
 
         for (let attempt = 0; attempt < 12; attempt++) {
-            const x = minX + this.rng() * (maxX - minX);
-            const z = minZ + this.rng() * (maxZ - minZ);
-            if (!this.canStand(enemy, x, z)) {
+            const localX = minX + this.rng() * (maxX - minX);
+            const localZ = minZ + this.rng() * (maxZ - minZ);
+            const world = localToWorld(interior.frame, localX, interior.floorLocalY, localZ);
+            if (!this.canStand(enemy, world.x, world.z)) {
                 continue;
             }
-            if (this.nearestEnemyDistance(level, enemy, x, z) < MIN_ENEMY_DISTANCE) {
+            if (this.nearestEnemyDistance(level, enemy, world.x, world.z) < MIN_ENEMY_DISTANCE) {
                 continue;
             }
-            return { x, z };
+            return { x: world.x, z: world.z };
         }
 
         return null;
     }
 
+    // Storey-local frame and floor plane. Generated towers carry a frame; hand-built test fixtures
+    // may not, so synthesize an axis-aligned one centred on the storey.
+    private storeyGeometryAt(storey: MegastructureStorey): { frame: StructureFrame; floorLocalY: number } {
+        let geometry = this.storeyGeometry.get(storey);
+        if (!geometry) {
+            if (storey.frame) {
+                const tower = storey.towerIndex !== undefined
+                    ? this.terrain.megastructures.towers[storey.towerIndex]
+                    : undefined;
+                const towerOriginY = tower?.frame?.origin.y ?? 0;
+                geometry = { frame: storey.frame, floorLocalY: storey.baseY - towerOriginY };
+            } else {
+                const centreX = (storey.minX + storey.maxX) / 2;
+                const centreZ = (storey.minZ + storey.maxZ) / 2;
+                geometry = {
+                    frame: createStructureFrame(centreX, storey.baseY, centreZ, new Quaternion()),
+                    floorLocalY: 0,
+                };
+            }
+            this.storeyGeometry.set(storey, geometry);
+        }
+        return geometry;
+    }
+
+    private floorYAt(storey: MegastructureStorey, x: number, z: number): number {
+        const { frame, floorLocalY } = this.storeyGeometryAt(storey);
+        const y = intersectWorldVerticalWithLocalPlane(frame, x, z, floorLocalY, this.floorScratch);
+        return Number.isFinite(y) ? y : storey.baseY;
+    }
+
+    // Bounds relative to the storey frame origin, already inside the walls.
+    private storeyInterior(
+        storey: MegastructureStorey,
+        inset: number,
+    ): { frame: StructureFrame; floorLocalY: number; minX: number; maxX: number; minZ: number; maxZ: number } {
+        const { frame, floorLocalY } = this.storeyGeometryAt(storey);
+        const centreX = (storey.minX + storey.maxX) / 2;
+        const centreZ = (storey.minZ + storey.maxZ) / 2;
+        return {
+            frame,
+            floorLocalY,
+            minX: storey.minX + WALL_THICKNESS - centreX + inset,
+            maxX: storey.maxX - WALL_THICKNESS - centreX - inset,
+            minZ: storey.minZ + WALL_THICKNESS - centreZ + inset,
+            maxZ: storey.maxZ - WALL_THICKNESS - centreZ - inset,
+        };
+    }
+
+    private syncEnemyHeight(enemy: Enemy): void {
+        const floorY = this.floorYAt(enemy.storey, enemy.group.position.x, enemy.group.position.z);
+        enemy.floorY = floorY;
+        enemy.group.position.y = floorY + ENEMY_HOVER[enemy.kind];
+        enemy.collider.base = enemy.group.position.y;
+        enemy.collider.top = enemy.group.position.y + enemy.height;
+    }
+
     private canStand(enemy: Enemy, x: number, z: number): boolean {
-        if (
-            x < enemy.storey.minX + WALK_CLEARANCE ||
-            x > enemy.storey.maxX - WALK_CLEARANCE ||
-            z < enemy.storey.minZ + WALK_CLEARANCE ||
-            z > enemy.storey.maxZ - WALK_CLEARANCE
-        ) {
+        const interior = this.storeyInterior(enemy.storey, WALK_CLEARANCE);
+        const floorY = this.floorYAt(enemy.storey, x, z);
+        const local = worldToLocal(interior.frame, x, floorY, z, this.floorScratch);
+        if (local.x < interior.minX || local.x > interior.maxX || local.z < interior.minZ || local.z > interior.maxZ) {
             return false;
         }
         if (enemy.crownClearance > 0 && Math.hypot(x - enemy.centreX, z - enemy.centreZ) < enemy.crownClearance) {
@@ -1570,7 +1714,7 @@ export class EnemyRobots {
                 this.terrain.megastructures.boxes ?? [],
                 x,
                 z,
-                enemy.floorY,
+                floorY,
                 enemy.height,
                 ENEMY_RADIUS[enemy.kind],
             )
@@ -1582,7 +1726,7 @@ export class EnemyRobots {
                 this.terrain.megastructures.ramps ?? [],
                 x,
                 z,
-                enemy.floorY,
+                floorY,
                 enemy.height,
                 ENEMY_RADIUS[enemy.kind],
             )
@@ -1590,7 +1734,7 @@ export class EnemyRobots {
             return false;
         }
 
-        return Math.abs(this.terrain.walkSurfaceAt(x, z, enemy.floorY + 0.4) - enemy.floorY) <= 0.25;
+        return Math.abs(this.terrain.walkSurfaceAt(x, z, floorY + 0.4) - floorY) <= 0.25;
     }
 
     private hideBeam(enemy: Enemy): void {
@@ -1630,8 +1774,8 @@ export class EnemyRobots {
             const count = baseEnemyCount + (this.rng() < extraEnemyChance ? 1 : 0);
             const spots = previousRamp ? this.findOppositeCorners(terrain, storey, previousRamp, count) : [];
             const occupied = spots.map(({ x, z }) => ({ x, z }));
-            const centreX = (storey.minX + storey.maxX) / 2;
-            const centreZ = (storey.minZ + storey.maxZ) / 2;
+            const centreX = ((storey.worldMinX ?? storey.minX) + (storey.worldMaxX ?? storey.maxX)) / 2;
+            const centreZ = ((storey.worldMinZ ?? storey.minZ) + (storey.worldMaxZ ?? storey.maxZ)) / 2;
 
             while (spots.length < count) {
                 const spot = this.findSpot(terrain, tower, storey, level, occupied);
@@ -1700,14 +1844,26 @@ export class EnemyRobots {
         previousRamp: Ramp,
         count: number,
     ): Array<{ x: number; y: number; z: number }> {
-        const insetX = Math.min(SPAWN_INSET, (storey.maxX - storey.minX) * 0.35);
-        const insetZ = Math.min(SPAWN_INSET, (storey.maxZ - storey.minZ) * 0.35);
-        const corners = [
-            { x: storey.minX + insetX, z: storey.minZ + insetZ },
-            { x: storey.maxX - insetX, z: storey.minZ + insetZ },
-            { x: storey.minX + insetX, z: storey.maxZ - insetZ },
-            { x: storey.maxX - insetX, z: storey.maxZ - insetZ },
+        const interior = this.storeyInterior(storey, 0);
+        const insetX = Math.max(
+            0,
+            Math.min(SPAWN_INSET, (interior.maxX - interior.minX + 2 * WALL_THICKNESS) * 0.35) -
+                WALL_THICKNESS,
+        );
+        const insetZ = Math.max(
+            0,
+            Math.min(SPAWN_INSET, (interior.maxZ - interior.minZ + 2 * WALL_THICKNESS) * 0.35) -
+                WALL_THICKNESS,
+        );
+        const localCorners = [
+            { x: interior.minX + insetX, z: interior.minZ + insetZ },
+            { x: interior.maxX - insetX, z: interior.minZ + insetZ },
+            { x: interior.minX + insetX, z: interior.maxZ - insetZ },
+            { x: interior.maxX - insetX, z: interior.maxZ - insetZ },
         ];
+        const corners = localCorners.map((corner) =>
+            localToWorld(interior.frame, corner.x, interior.floorLocalY, corner.z),
+        );
         const exit = rampExitPoint(previousRamp);
         corners.sort((a, b) => Math.hypot(b.x - exit.x, b.z - exit.z) - Math.hypot(a.x - exit.x, a.z - exit.z));
 
@@ -1716,8 +1872,9 @@ export class EnemyRobots {
             if (spots.length >= count) {
                 break;
             }
-            const surface = terrain.walkSurfaceAt(corner.x, corner.z, storey.baseY + 0.4);
-            if (Math.abs(surface - storey.baseY) > 0.25) {
+            const y = corner.y;
+            const surface = terrain.walkSurfaceAt(corner.x, corner.z, y + 0.4);
+            if (Math.abs(surface - y) > 0.25) {
                 continue;
             }
             if (
@@ -1725,7 +1882,7 @@ export class EnemyRobots {
                     terrain.megastructures.boxes ?? [],
                     corner.x,
                     corner.z,
-                    storey.baseY,
+                    y,
                     ENEMY_HEIGHT.matron,
                     ENEMY_RADIUS.matron,
                 )
@@ -1737,7 +1894,7 @@ export class EnemyRobots {
                     terrain.megastructures.ramps ?? [],
                     corner.x,
                     corner.z,
-                    storey.baseY,
+                    y,
                     ENEMY_HEIGHT.matron,
                     ENEMY_RADIUS.matron,
                 )
@@ -1747,7 +1904,7 @@ export class EnemyRobots {
             if (spots.some((spot) => Math.hypot(spot.x - corner.x, spot.z - corner.z) < SPAWN_SPACING)) {
                 continue;
             }
-            spots.push({ ...corner, y: storey.baseY });
+            spots.push({ x: corner.x, y, z: corner.z });
         }
 
         return spots;
@@ -1755,11 +1912,14 @@ export class EnemyRobots {
 
     // Ramps only span one tower, so this keeps one site's ramps from matching another's floor heights.
     private rampOverlapsTower(ramp: Ramp, tower: MegastructureTower): boolean {
+        if (ramp.towerIndex !== undefined) {
+            return this.terrain.megastructures.towers[ramp.towerIndex] === tower;
+        }
         return (
-            ramp.maxX >= tower.minX - 1 &&
-            ramp.minX <= tower.maxX + 1 &&
-            ramp.maxZ >= tower.minZ - 1 &&
-            ramp.minZ <= tower.maxZ + 1
+            ramp.maxX >= (tower.worldMinX ?? tower.minX) - 1 &&
+            ramp.minX <= (tower.worldMaxX ?? tower.maxX) + 1 &&
+            ramp.maxZ >= (tower.worldMinZ ?? tower.minZ) - 1 &&
+            ramp.minZ <= (tower.worldMaxZ ?? tower.maxZ) + 1
         );
     }
 
@@ -1772,17 +1932,24 @@ export class EnemyRobots {
         level: number,
         occupied: Array<{ x: number; z: number }>,
     ): { x: number; y: number; z: number } | null {
-        const insetX = Math.min(SPAWN_INSET, (storey.maxX - storey.minX) * 0.35);
-        const insetZ = Math.min(SPAWN_INSET, (storey.maxZ - storey.minZ) * 0.35);
-        const minX = storey.minX + insetX;
-        const maxX = storey.maxX - insetX;
-        const minZ = storey.minZ + insetZ;
-        const maxZ = storey.maxZ - insetZ;
-        const centreX = (storey.minX + storey.maxX) / 2;
-        const centreZ = (storey.minZ + storey.maxZ) / 2;
+        const interior = this.storeyInterior(storey, 0);
+        const insetX = Math.max(
+            0,
+            Math.min(SPAWN_INSET, (interior.maxX - interior.minX + 2 * WALL_THICKNESS) * 0.35) -
+                WALL_THICKNESS,
+        );
+        const insetZ = Math.max(
+            0,
+            Math.min(SPAWN_INSET, (interior.maxZ - interior.minZ + 2 * WALL_THICKNESS) * 0.35) -
+                WALL_THICKNESS,
+        );
+        const minX = interior.minX + insetX;
+        const maxX = interior.maxX - insetX;
+        const minZ = interior.minZ + insetZ;
+        const maxZ = interior.maxZ - insetZ;
         const crownClearance =
             level === tower.levelCount
-                ? Math.min(storey.maxX - storey.minX, storey.maxZ - storey.minZ) * CROWN_CLEARANCE
+                ? Math.min(interior.maxX - interior.minX, interior.maxZ - interior.minZ) * CROWN_CLEARANCE
                 : 0;
 
         const candidates: Array<{ x: number; z: number }> = [];
@@ -1799,18 +1966,18 @@ export class EnemyRobots {
             [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
         }
 
-        let lastResort: { x: number; y: number; z: number } | null = null;
         for (const candidate of candidates) {
-            if (Math.hypot(candidate.x - centreX, candidate.z - centreZ) < crownClearance) {
+            if (Math.hypot(candidate.x, candidate.z) < crownClearance) {
                 continue;
             }
 
-            const y = storey.baseY;
+            const world = localToWorld(interior.frame, candidate.x, interior.floorLocalY, candidate.z);
+            const y = world.y;
             if (
                 boxesBlockBody(
                     terrain.megastructures.boxes ?? [],
-                    candidate.x,
-                    candidate.z,
+                    world.x,
+                    world.z,
                     y,
                     ENEMY_HEIGHT.matron,
                     ENEMY_RADIUS.matron,
@@ -1821,8 +1988,8 @@ export class EnemyRobots {
             if (
                 rampsBlockBody(
                     terrain.megastructures.ramps ?? [],
-                    candidate.x,
-                    candidate.z,
+                    world.x,
+                    world.z,
                     y,
                     ENEMY_HEIGHT.matron,
                     ENEMY_RADIUS.matron,
@@ -1830,22 +1997,22 @@ export class EnemyRobots {
             ) {
                 continue;
             }
-            if (occupied.some((other) => Math.hypot(candidate.x - other.x, candidate.z - other.z) < SPAWN_SPACING)) {
+            if (
+                occupied.some(
+                    (other) => Math.hypot(world.x - other.x, world.z - other.z) < SPAWN_SPACING,
+                )
+            ) {
                 continue;
             }
-            if (lastResort === null) {
-                lastResort = { ...candidate, y };
-            }
 
-            const surface = terrain.walkSurfaceAt(candidate.x, candidate.z, y + 0.4);
+            const surface = terrain.walkSurfaceAt(world.x, world.z, y + 0.4);
             if (Math.abs(surface - y) > 0.25) {
                 continue;
             }
-
-            return { ...candidate, y };
+            return { x: world.x, y, z: world.z };
         }
 
-        return lastResort;
+        return null;
     }
 
     private addEnemy(
@@ -1866,14 +2033,16 @@ export class EnemyRobots {
         const group = new Group();
         group.name = `enemy-${kind}`;
         group.position.set(spot.x, spot.y + ENEMY_HOVER[kind], spot.z);
-        const centreX = (tower.minX + tower.maxX) / 2;
-        const centreZ = (tower.minZ + tower.maxZ) / 2;
+        const centreX = ((tower.worldMinX ?? tower.minX) + (tower.worldMaxX ?? tower.maxX)) / 2;
+        const centreZ = ((tower.worldMinZ ?? tower.minZ) + (tower.worldMaxZ ?? tower.maxZ)) / 2;
         const spawnFacing = Math.atan2(centreX - spot.x, centreZ - spot.z);
         group.rotation.y = spawnFacing;
         group.add(model.visual);
         group.userData.enemy = true;
         group.userData.towerIndex = towerIndex;
         group.userData.level = level;
+        group.userData.height = height;
+        group.userData.radius = ENEMY_RADIUS[kind];
         this.group.add(group);
 
         const beam = new Mesh(this.laserCoreGeometry, this.laserCoreMaterial);
@@ -1895,7 +2064,10 @@ export class EnemyRobots {
 
         const crownClearance =
             level === tower.levelCount
-                ? Math.min(storey.maxX - storey.minX, storey.maxZ - storey.minZ) * CROWN_CLEARANCE
+                ? Math.min(
+                      (storey.worldMaxX ?? storey.maxX) - (storey.worldMinX ?? storey.minX),
+                      (storey.worldMaxZ ?? storey.maxZ) - (storey.worldMinZ ?? storey.minZ),
+                  ) * CROWN_CLEARANCE
                 : 0;
 
         const id = `${towerIndex}:${level}:${index}`;
@@ -1919,6 +2091,7 @@ export class EnemyRobots {
             group,
             storey,
             floorY: spot.y,
+            spawnFloorY: spot.y,
             height,
             speedFactor: ENEMY_SPEED_FACTOR,
             spawnX: spot.x,

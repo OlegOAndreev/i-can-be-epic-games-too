@@ -14,6 +14,7 @@ import {
     MeshStandardMaterial,
     PlaneGeometry,
     PointLight,
+    Quaternion,
     ShaderMaterial,
     SphereGeometry,
     Sprite,
@@ -34,6 +35,15 @@ import {
 import { smoothstep } from './math-utils';
 import { mergeParts } from './mesh-optimize';
 import { mulberry32 } from './noise';
+import {
+    composeStructureFrame,
+    createStructureFrame,
+    IDENTITY_FRAME,
+    localDirectionToWorld,
+    localToWorld,
+    worldToLocal,
+} from './structure-frame';
+import type { StructureFrame } from './structure-frame';
 import { applyMetalSurfaceShader, getSurfaceTextures } from './textures';
 import {
     applyWindowGlassShader,
@@ -44,6 +54,12 @@ import {
 import type { WindowGlassAnimation } from './window-glass';
 
 const SITE_COUNT = 6;
+// Upper storeys may twist this far from the tower's base yaw. Keeping the spread bounded is what
+// lets a straight ramp meet an axis-aligned hole in the floor above.
+const MAX_STOREY_YAW_DELTA = (20 * Math.PI) / 180;
+// One tower leans like Pisa. The lean is a tower-level rotation, so every floor stays parallel.
+const LEAN_TOWER_INDEX = 0;
+const LEAN_ANGLE = (3.5 * Math.PI) / 180;
 const SITE_ATTEMPTS = 600;
 const SITE_RADIUS = 48;
 // Towers stand in a ring around the middle of the island, away from the spawn and from each other.
@@ -55,7 +71,7 @@ const SITE_SEPARATION = 210;
 const SITE_SWEEP_STEP = 48;
 export const WALL_THICKNESS = 1.8;
 // Kept thin so the ceiling under a ramp opening leaves room for the first-person camera.
-const FLOOR_THICKNESS = 0.4;
+export const FLOOR_THICKNESS = 0.4;
 // The walk surface stays on top; this only hangs below it, so a thinner deck raises the underside
 // and gives the first-person camera more headroom when walking beneath a flight.
 export const RAMP_THICKNESS = 0.3;
@@ -106,8 +122,9 @@ const CROWN_RAMP_SEGMENTS_PER_TURN = 24;
 // the largest floor of a tower can be 2.5 times the area of the smallest. Each one is also placed at a
 // random spot inside the footprint, so the stack stays uneven and floors cantilever over the smaller
 // storeys below them. Two storeys joined by a flight have to share enough interior for its run and a
-// landing at each end, and the run has to stay under the slope the robot can climb (1.5).
-const RAMP_MAX_SLOPE = 1.35;
+// landing at each end. The run must keep the ramp at or below 45 degrees, so slope = rise / run
+// cannot exceed tan(45°) = 1.
+const RAMP_MAX_SLOPE = 1;
 // Gap kept between the crown spiral's outer edge and the inside of the top storey's walls.
 const CROWN_WALL_CLEARANCE = 0.4;
 // The crown must not overhang the top ramp's hole at head height, or the player's head would
@@ -124,15 +141,24 @@ const GLOW_GROW_FRACTION = 0.36;
 const GLOW_MIN_SCALE = 0.7;
 const GLOW_MAX_SCALE = 1.4;
 const GLOW_RING_OPACITY = 0.5;
-// Rectangular totems on a 2x3 lattice that spans each walled storey. Each one is a different
-// size and keeps a fixed gold or purple glyph pattern drawn on one face, with a wave travelling
-// through the marks.
+// Rectangular totems on a grid that spans each walled storey. Each one is a different size and
+// keeps a fixed gold or purple glyph pattern drawn on one face, with a wave travelling through
+// the marks.
 const FLOOR_PROP_GOLD = 0xffc233;
 const FLOOR_PROP_PURPLE = 0xa95cff;
-// Distance between the inside of a wall and the outer edge of the lattice.
-const FLOOR_PROP_WALL_MARGIN = 1.2;
-// A totem that would overlap a ramp is nudged within its cell, trying this many positions per axis.
-const FLOOR_PROP_NUDGE_STEPS = 6;
+// Distance between the inside of a wall and the random placement area.
+export const FLOOR_PROP_WALL_MARGIN = 1.2;
+// Edge-to-edge clearance between two totems, measured with a conservative bounding circle.
+export const FLOOR_PROP_MIN_SPACING = 2.5;
+// One totem per this much interior floor area before the 50% chance of one extra. This is the
+// coefficient in `count = floor(room area / coefficient)`.
+export const FLOOR_PROP_AREA_PER_TOTEM = 300;
+
+// Base totem count for a floor of this interior size. The caller adds the 50% extra roll.
+export function floorPropBaseCount(width: number, depth: number): number {
+    return Math.max(1, Math.floor((width * depth) / FLOOR_PROP_AREA_PER_TOTEM));
+}
+
 // Clearance kept around ramp lanes and holes when placing a totem.
 const FLOOR_PROP_RAMP_CLEARANCE = 0.9;
 // The switch sits just short of the spiral's top end. Its hit detection matches the wrench's own
@@ -216,6 +242,11 @@ export interface CrownCatwalk {
     z: number;
     directionX: number;
     directionZ: number;
+    worldX?: number;
+    worldY?: number;
+    worldZ?: number;
+    worldDirectionX?: number;
+    worldDirectionZ?: number;
     y: number;
     length: number;
     width: number;
@@ -224,6 +255,8 @@ export interface CrownCatwalk {
     parapetThickness: number;
     ledgeLength: number;
     ledgeWidth: number;
+    // Frame at the start of the walkway. Local +Z runs along the catwalk and local +X across it.
+    frame?: StructureFrame;
 }
 
 interface RampFlight {
@@ -239,29 +272,57 @@ interface RampFlight {
     maxX: number;
     minZ: number;
     maxZ: number;
+    // The lower storey's frame and centre. The flight is built in that storey, so its high end has
+    // to be transformed through this frame when the floor above cuts its opening.
+    frame: StructureFrame;
+    storeyCentreX: number;
+    storeyCentreZ: number;
+    worldMinX: number;
+    worldMaxX: number;
+    worldMinZ: number;
+    worldMaxZ: number;
 }
 
 // Objects on this layer are rendered into the world-covering megastructure shadow map.
 export const MEGASTRUCTURE_LAYER = 1;
 
 export interface StructureBox {
+    // Conservative world AABB. Useful for broadphase and for consumers that only need a region.
     minX: number;
     maxX: number;
     minZ: number;
     maxZ: number;
     baseY: number;
     topY: number;
+    // Storey-local bounds used by narrow-phase collision. Missing means the box is in world space.
+    localMinX?: number;
+    localMaxX?: number;
+    localMinZ?: number;
+    localMaxZ?: number;
+    localBaseY?: number;
+    localTopY?: number;
+    frame?: StructureFrame;
+    towerIndex?: number;
 }
 
 export interface Ramp {
+    // Conservative world AABB.
     minX: number;
     maxX: number;
     minZ: number;
     maxZ: number;
-    // Surface height at the minimum and maximum end of the ramp's axis.
     minY: number;
     maxY: number;
     axis: 'x' | 'z';
+    // Storey-local bounds used by narrow-phase collision. Missing means the ramp is in world space.
+    localMinX?: number;
+    localMaxX?: number;
+    localMinZ?: number;
+    localMaxZ?: number;
+    localMinY?: number;
+    localMaxY?: number;
+    frame?: StructureFrame;
+    towerIndex?: number;
 }
 
 // Parameters of the continuous helical ribbon wrapping a crown cone. The walk surface is the radial
@@ -269,6 +330,10 @@ export interface Ramp {
 export interface CrownSpiral {
     x: number;
     z: number;
+    // World centre of the spiral. `x/z` stay tower-local so the ribbon geometry can be built in
+    // the same space as the rest of the storey and then rotated once.
+    worldX?: number;
+    worldZ?: number;
     baseY: number;
     height: number;
     baseRadius: number;
@@ -280,6 +345,9 @@ export interface CrownSpiral {
     direction: 1 | -1;
     parapetHeight: number;
     parapetThickness: number;
+    // Frame at the spiral's base centre. Its local +Y is the storey up, so the helix stays exactly
+    // aligned with the geometry when the storey is yawed or the tower leans.
+    frame?: StructureFrame;
 }
 
 // The translucent shield left around a drained crown. Its radii follow the spiral walkway, then
@@ -304,7 +372,7 @@ interface CrownShockField {
     active: boolean;
 }
 
-// A vertical truncated cone used for crown collision (the crown itself and its spire).
+// A truncated cone used for crown collision (the crown itself and its spire).
 export interface CrownCone {
     x: number;
     z: number;
@@ -312,6 +380,8 @@ export interface CrownCone {
     topY: number;
     baseRadius: number;
     topRadius: number;
+    // Frame at the cone's base centre; local +Y runs along the cone.
+    frame?: StructureFrame;
 }
 
 // The circular landing at the top of a crown cone.
@@ -326,17 +396,30 @@ export interface MegastructureSite {
     x: number;
     z: number;
     radius: number;
+    // Base yaw shared by the tower's ground storey.
+    yaw?: number;
 }
 
 // One walled storey of a tower. Footprints vary unevenly from storey to storey instead of nesting
 // regularly, so a broad storey can overhang a narrower one beneath it.
 export interface MegastructureStorey {
+    // Tower-local footprint used by the generator.
     minX: number;
     maxX: number;
     minZ: number;
     maxZ: number;
     baseY: number;
     topY: number;
+    // Conservative world AABB, filled after the frame exists.
+    worldMinX?: number;
+    worldMaxX?: number;
+    worldMinZ?: number;
+    worldMaxZ?: number;
+    worldBaseY?: number;
+    worldTopY?: number;
+    // Transform from storey-local space to world space.
+    frame?: StructureFrame;
+    towerIndex?: number;
 }
 
 export interface MegastructureTower {
@@ -349,6 +432,17 @@ export interface MegastructureTower {
     topY: number;
     levelCount: number;
     levelHeight: number;
+    // Tower frame: world position plus the lean. Storey frames compose under it.
+    frame?: StructureFrame;
+    yaw?: number;
+    leanAngle?: number;
+    // Conservative world AABB, filled after the storeys exist.
+    worldMinX?: number;
+    worldMaxX?: number;
+    worldMinZ?: number;
+    worldMaxZ?: number;
+    worldBaseY?: number;
+    worldTopY?: number;
     // Side (0 = +Z, 1 = -Z, 2 = +X, 3 = -X) holding the ground-level entrance.
     entranceSide: number;
     // Ground storey first, then one storey per floor, ending with the open-topped crown storey.
@@ -390,6 +484,8 @@ export interface FloorProp {
     height: number;
     width: number;
     depth: number;
+    // Extra yaw within the storey, in radians. The block, its glyphs, and its collider all use it.
+    yaw: number;
     color: 'gold' | 'purple';
     signs: FloorPropSign[];
 }
@@ -622,13 +718,24 @@ export class Megastructures {
     private crownShockFields: CrownShockField[] = [];
     private shockDirection = new Vector3();
     private glowTime = 0;
+    private readonly currentTowerOrigin = new Vector3();
+    private readonly boxScratch = new Vector3();
+    private readonly holeScratchA = new Vector3();
+    private readonly holeScratchB = new Vector3();
+    private readonly rotationEnabled: boolean;
+    private currentStoreyFrame: StructureFrame = IDENTITY_FRAME;
+    private currentStoreyCenterX = 0;
+    private currentStoreyCenterZ = 0;
+    private currentTowerRamps: RampFlight[] = [];
 
     constructor(
         seed: number,
         heightAt: (x: number, z: number) => number,
         spawn: { x: number; z: number },
         worldHalfSize: number,
+        options: { rotationEnabled?: boolean } = {},
     ) {
+        this.rotationEnabled = options.rotationEnabled !== false;
         this.group.name = 'megastructures';
         const textures = getSurfaceTextures();
         applyMetalSurfaceShader(this.metalMaterial, textures);
@@ -714,12 +821,12 @@ export class Megastructures {
     isInside(x: number, y: number, z: number): boolean {
         return this.towers.some(
             (tower) =>
-                x > tower.minX &&
-                x < tower.maxX &&
-                z > tower.minZ &&
-                z < tower.maxZ &&
-                y > tower.baseY &&
-                y < tower.storeys[tower.levelCount].baseY,
+                x > (tower.worldMinX ?? tower.minX) &&
+                x < (tower.worldMaxX ?? tower.maxX) &&
+                z > (tower.worldMinZ ?? tower.minZ) &&
+                z < (tower.worldMaxZ ?? tower.maxZ) &&
+                y > (tower.worldBaseY ?? tower.baseY) &&
+                y < (tower.storeys[tower.levelCount].worldBaseY ?? tower.storeys[tower.levelCount].baseY),
         );
     }
 
@@ -1326,11 +1433,177 @@ export class Megastructures {
         return highest - lowest < 12 && highest < 85;
     }
 
+    private setCurrentTower(origin: Vector3): void {
+        this.currentTowerOrigin.copy(origin);
+        this.currentTowerRamps = [];
+    }
+
+    private setCurrentStorey(storey: MegastructureStorey): void {
+        this.currentStoreyFrame = storey.frame ?? IDENTITY_FRAME;
+        this.currentStoreyCenterX = (storey.minX + storey.maxX) / 2;
+        this.currentStoreyCenterZ = (storey.minZ + storey.maxZ) / 2;
+    }
+
+    // Geometry is generated in tower-local XZ with world-centre Y. This converts a part into the
+    // current storey's local frame, rotates it, and places it in world space.
+    private placeGeometry(geometry: BufferGeometry): BufferGeometry {
+        geometry.translate(-this.currentStoreyCenterX, -this.currentTowerOrigin.y, -this.currentStoreyCenterZ);
+        geometry.applyQuaternion(this.currentStoreyFrame.rotation);
+        geometry.translate(
+            this.currentStoreyFrame.origin.x,
+            this.currentStoreyFrame.origin.y,
+            this.currentStoreyFrame.origin.z,
+        );
+        return geometry;
+    }
+
+    // Geometry already expressed in the current storey's local XZ. Only Y still needs to move from
+    // world-centre space into the frame.
+    private placeStoreyGeometry(geometry: BufferGeometry): BufferGeometry {
+        geometry.translate(0, -this.currentTowerOrigin.y, 0);
+        geometry.applyQuaternion(this.currentStoreyFrame.rotation);
+        geometry.translate(
+            this.currentStoreyFrame.origin.x,
+            this.currentStoreyFrame.origin.y,
+            this.currentStoreyFrame.origin.z,
+        );
+        return geometry;
+    }
+
+    // Pushes a box whose local bounds are relative to an explicit frame. The prop colliders use this
+    // to carry their own yaw inside a yawed storey.
+    private pushStructureBoxInFrame(
+        frame: StructureFrame,
+        localMinX: number,
+        localMaxX: number,
+        localMinZ: number,
+        localMaxZ: number,
+        localBaseY: number,
+        localTopY: number,
+    ): void {
+        const world = this.worldAabbOfLocalBox(
+            localMinX,
+            localMaxX,
+            localMinZ,
+            localMaxZ,
+            localBaseY,
+            localTopY,
+            frame,
+        );
+        this.boxes.push({
+            ...world,
+            localMinX,
+            localMaxX,
+            localMinZ,
+            localMaxZ,
+            localBaseY,
+            localTopY,
+            frame,
+            towerIndex: this.currentTowerIndex,
+        });
+    }
+
+    private pushStructureBoxLocal(
+        localMinX: number,
+        localMaxX: number,
+        localMinZ: number,
+        localMaxZ: number,
+        baseY: number,
+        topY: number,
+    ): void {
+        this.pushStructureBoxInFrame(
+            this.currentStoreyFrame,
+            localMinX,
+            localMaxX,
+            localMinZ,
+            localMaxZ,
+            baseY - this.currentTowerOrigin.y,
+            topY - this.currentTowerOrigin.y,
+        );
+    }
+
+    private pushStructureBox(
+        minX: number,
+        maxX: number,
+        minZ: number,
+        maxZ: number,
+        baseY: number,
+        topY: number,
+    ): void {
+        this.pushStructureBoxLocal(
+            minX - this.currentStoreyCenterX,
+            maxX - this.currentStoreyCenterX,
+            minZ - this.currentStoreyCenterZ,
+            maxZ - this.currentStoreyCenterZ,
+            baseY,
+            topY,
+        );
+    }
+
+    private worldAabbOfLocalBox(
+        localMinX: number,
+        localMaxX: number,
+        localMinZ: number,
+        localMaxZ: number,
+        localBaseY: number,
+        localTopY: number,
+        frame: StructureFrame,
+    ): { minX: number; maxX: number; minZ: number; maxZ: number; baseY: number; topY: number } {
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minZ = Infinity;
+        let maxZ = -Infinity;
+        let baseY = Infinity;
+        let topY = -Infinity;
+        for (const x of [localMinX, localMaxX]) {
+            for (const y of [localBaseY, localTopY]) {
+                for (const z of [localMinZ, localMaxZ]) {
+                    const point = localToWorld(frame, x, y, z, this.boxScratch);
+                    minX = Math.min(minX, point.x);
+                    maxX = Math.max(maxX, point.x);
+                    minZ = Math.min(minZ, point.z);
+                    maxZ = Math.max(maxZ, point.z);
+                    baseY = Math.min(baseY, point.y);
+                    topY = Math.max(topY, point.y);
+                }
+            }
+        }
+        return { minX, maxX, minZ, maxZ, baseY, topY };
+    }
+
+    private storeyPointToWorld(x: number, y: number, z: number): Vector3 {
+        return localToWorld(
+            this.currentStoreyFrame,
+            x - this.currentStoreyCenterX,
+            y - this.currentTowerOrigin.y,
+            z - this.currentStoreyCenterZ,
+        );
+    }
+
+    private storeyDirectionToWorld(x: number, y: number, z: number): Vector3 {
+        return localDirectionToWorld(this.currentStoreyFrame, x, y, z);
+    }
+
     private buildSite(x: number, z: number, heightAt: (x: number, z: number) => number, rng: () => number): void {
         // The footprint is a 1.5:1 rectangle rather than a square; either axis can be the long one.
         const shortSide = 32 + Math.floor(rng() * 6);
         const longSide = shortSide * 1.5;
         const wideAlongX = rng() < 0.5;
+        const yawRng = mulberry32((Math.round(x * 131) ^ Math.round(z * 197) ^ 0xa53c9e1) >>> 0);
+        const rotationEnabled = this.rotationEnabled;
+        const baseYaw = rotationEnabled ? yawRng() * Math.PI * 2 : 0;
+        const leanAngle =
+            rotationEnabled && this.towers.length === LEAN_TOWER_INDEX
+                ? LEAN_ANGLE
+                : 0;
+        const leanDirection = yawRng() * Math.PI * 2;
+        const lean =
+            leanAngle === 0
+                ? new Quaternion()
+                : new Quaternion().setFromAxisAngle(
+                      new Vector3(Math.cos(leanDirection), 0, Math.sin(leanDirection)),
+                      leanAngle,
+                  );
         this.buildTower(
             x,
             z,
@@ -1340,39 +1613,67 @@ export class Megastructures {
             14 + rng() * 2,
             heightAt,
             rng,
+            yawRng,
             Math.floor(rng() * 4),
+            baseYaw,
+            lean,
+            leanAngle,
+            rotationEnabled,
         );
     }
 
     private buildTower(
-        centreX: number,
-        centreZ: number,
+        siteX: number,
+        siteZ: number,
         width: number,
         depth: number,
         levelCount: number,
         levelHeight: number,
         heightAt: (x: number, z: number) => number,
         rng: () => number,
+        yawRng: () => number,
         entranceSide: number,
+        baseYaw: number,
+        lean: Quaternion,
+        leanAngle: number,
+        rotationEnabled: boolean,
     ): void {
-        let lowestGround = Infinity;
-        let highestGround = -Infinity;
+        const centreX = 0;
+        const centreZ = 0;
+        const yawRotation = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), baseYaw);
+        const groundSamples: Array<{ lx: number; lz: number; terrain: number; leanY: number }> = [];
+        let baseWorldY = Infinity;
         for (let i = 0; i <= 4; i++) {
             for (let j = 0; j <= 4; j++) {
-                const x = centreX + (i / 4 - 0.5) * width;
-                const z = centreZ + (j / 4 - 0.5) * depth;
-                const height = heightAt(x, z);
-                lowestGround = Math.min(lowestGround, height);
-                highestGround = Math.max(highestGround, height);
+                const lx = (i / 4 - 0.5) * width;
+                const lz = (j / 4 - 0.5) * depth;
+                const yawed = new Vector3(lx, 0, lz).applyQuaternion(yawRotation);
+                const leaned = yawed.clone().applyQuaternion(lean);
+                const terrain = heightAt(siteX + leaned.x, siteZ + leaned.z);
+                groundSamples.push({ lx, lz, terrain, leanY: leaned.y });
+                baseWorldY = Math.min(baseWorldY, terrain - leaned.y);
             }
+        }
+        baseWorldY -= 2.5;
+        const towerOrigin = new Vector3(siteX, baseWorldY, siteZ);
+        const towerFrame = createStructureFrame(siteX, baseWorldY, siteZ, lean);
+        this.setCurrentTower(towerOrigin);
+
+        const upFactor = Math.max(1e-6, new Vector3(0, 1, 0).applyQuaternion(lean).y);
+        let floor1Local = levelHeight;
+        for (const sample of groundSamples) {
+            floor1Local = Math.max(
+                floor1Local,
+                (sample.terrain + 5 - baseWorldY - sample.leanY) / upFactor,
+            );
         }
 
         const minX = centreX - width / 2;
         const maxX = centreX + width / 2;
         const minZ = centreZ - depth / 2;
         const maxZ = centreZ + depth / 2;
-        const baseY = lowestGround - 2.5;
-        const floor1Y = Math.max(baseY + levelHeight, highestGround + 5);
+        const baseY = baseWorldY;
+        const floor1Y = baseWorldY + floor1Local;
         const floors: number[] = [];
         for (let i = 0; i < levelCount; i++) {
             floors.push(floor1Y + i * levelHeight);
@@ -1433,6 +1734,11 @@ export class Megastructures {
                       : smallestScale + rng() * (1 - smallestScale);
             const bodyX = placeStorey('x', previous, scale);
             const bodyZ = placeStorey('z', previous, scale);
+            const storeyYaw = rotationEnabled
+                ? baseYaw + (storey === 0 ? 0 : (yawRng() * 2 - 1) * MAX_STOREY_YAW_DELTA)
+                : 0;
+            const storeyCentreX = (bodyX.min + bodyX.max) / 2;
+            const storeyCentreZ = (bodyZ.min + bodyZ.max) / 2;
             storeys.push({
                 minX: bodyX.min,
                 maxX: bodyX.max,
@@ -1440,22 +1746,15 @@ export class Megastructures {
                 maxZ: bodyZ.max,
                 baseY: storey === 0 ? baseY : floors[storey - 1],
                 topY: storey === levelCount ? topY : floors[storey],
+                frame: composeStructureFrame(
+                    towerOrigin,
+                    lean,
+                    new Vector3(storeyCentreX, 0, storeyCentreZ),
+                    storeyYaw,
+                ),
             });
         }
 
-        // The floor at level i is the ceiling of storey i and the base of storey i + 1. It reaches
-        // the outer face of a larger upper storey so an overhanging room still stands on slab,
-        // while staying inside the walls of a larger lower storey.
-        const floorSlabBounds = (level: number) => {
-            const below = storeys[level];
-            const above = storeys[level + 1];
-            return {
-                minX: Math.min(below.minX + WALL_THICKNESS, above.minX),
-                maxX: Math.max(below.maxX - WALL_THICKNESS, above.maxX),
-                minZ: Math.min(below.minZ + WALL_THICKNESS, above.minZ),
-                maxZ: Math.max(below.maxZ - WALL_THICKNESS, above.maxZ),
-            };
-        };
         // The visible floor edge follows the larger of the two footprints.
         const floorEdgeBounds = (level: number) => {
             const below = storeys[level];
@@ -1468,6 +1767,39 @@ export class Megastructures {
             };
         };
 
+        const towerIndex = this.towers.length;
+        let worldMinX = Infinity;
+        let worldMaxX = -Infinity;
+        let worldMinZ = Infinity;
+        let worldMaxZ = -Infinity;
+        let worldBaseY = Infinity;
+        let worldTopY = -Infinity;
+        for (const storey of storeys) {
+            storey.towerIndex = towerIndex;
+            const centreX = (storey.minX + storey.maxX) / 2;
+            const centreZ = (storey.minZ + storey.maxZ) / 2;
+            const world = this.worldAabbOfLocalBox(
+                storey.minX - centreX,
+                storey.maxX - centreX,
+                storey.minZ - centreZ,
+                storey.maxZ - centreZ,
+                storey.baseY - baseY,
+                storey.topY - baseY,
+                storey.frame ?? towerFrame,
+            );
+            storey.worldMinX = world.minX;
+            storey.worldMaxX = world.maxX;
+            storey.worldMinZ = world.minZ;
+            storey.worldMaxZ = world.maxZ;
+            storey.worldBaseY = world.baseY;
+            storey.worldTopY = world.topY;
+            worldMinX = Math.min(worldMinX, world.minX);
+            worldMaxX = Math.max(worldMaxX, world.maxX);
+            worldMinZ = Math.min(worldMinZ, world.minZ);
+            worldMaxZ = Math.max(worldMaxZ, world.maxZ);
+            worldBaseY = Math.min(worldBaseY, world.baseY);
+            worldTopY = Math.max(worldTopY, world.topY);
+        }
         this.towers.push({
             minX,
             maxX,
@@ -1480,11 +1812,20 @@ export class Megastructures {
             levelHeight,
             entranceSide,
             storeys,
+            frame: towerFrame,
+            yaw: baseYaw,
+            leanAngle,
+            worldMinX,
+            worldMaxX,
+            worldMinZ,
+            worldMaxZ,
+            worldBaseY,
+            worldTopY,
         });
-        const towerIndex = this.towers.length - 1;
         this.currentTowerIndex = towerIndex;
         this.poweredDecorParts.push({ trim: [], glow: [], signs: [] });
         const groundStorey = storeys[0];
+        this.setCurrentStorey(groundStorey);
         const entrance = this.addTowerWalls(
             groundStorey.minX,
             groundStorey.maxX,
@@ -1500,6 +1841,7 @@ export class Megastructures {
         // side of the tower. The low rim above the top floor is just a parapet, so it stays solid.
         for (let storey = 1; storey < storeys.length; storey++) {
             const walls = storey < levelCount ? windowWallPair(entranceSide, storey) : null;
+            this.setCurrentStorey(storeys[storey]);
             this.addStoreyWalls(storeys[storey], walls, storey);
         }
 
@@ -1509,7 +1851,6 @@ export class Megastructures {
         // shares a corner with the next ramp's start.
         const groundAxis: 'x' | 'z' = entranceSide < 2 ? 'z' : 'x';
         const groundSign = entranceSide === 1 || entranceSide === 3 ? 1 : -1;
-
         const interiorRange = (storey: MegastructureStorey, axis: 'x' | 'z'): { min: number; max: number } => {
             const min = axis === 'x' ? storey.minX : storey.minZ;
             const max = axis === 'x' ? storey.maxX : storey.maxZ;
@@ -1517,70 +1858,262 @@ export class Megastructures {
         };
         const laneInset = RAMP_WIDTH / 2 + RAMP_HOLE_MARGIN + RAMP_LANE_CLEARANCE;
 
+        // The high end has to emerge inside the next storey, whose walls are yawed relative to
+        // this flight's frame. Checking the landing corners in the upper storey's own frame is the
+        // only reliable fit test: the axis-aligned tower-local overlap can leave the exit outside
+        // a rotated room even when both ranges intersect.
+        const highLandingFits = (
+            lower: MegastructureStorey,
+            upper: MegastructureStorey,
+            axis: 'x' | 'z',
+            laneCentre: number,
+            highAlong: number,
+            direction: number,
+            highY: number,
+        ): boolean => {
+            const lowerFrame = lower.frame;
+            const upperFrame = upper.frame;
+            if (!lowerFrame || !upperFrame) {
+                return true;
+            }
+            const lowerCentreX = (lower.minX + lower.maxX) / 2;
+            const lowerCentreZ = (lower.minZ + lower.maxZ) / 2;
+            const upperCentreX = (upper.minX + upper.maxX) / 2;
+            const upperCentreZ = (upper.minZ + upper.maxZ) / 2;
+            const halfWidth = RAMP_WIDTH / 2 + RAMP_HOLE_MARGIN;
+            const localY = highY - towerOrigin.y;
+            for (const along of [highAlong, highAlong + direction * RAMP_LANDING_DEPTH]) {
+                for (const transverse of [laneCentre - halfWidth, laneCentre + halfWidth]) {
+                    const localX = axis === 'x' ? along : transverse;
+                    const localZ = axis === 'x' ? transverse : along;
+                    const world = localToWorld(
+                        lowerFrame,
+                        localX - lowerCentreX,
+                        localY,
+                        localZ - lowerCentreZ,
+                    );
+                    const local = worldToLocal(upperFrame, world.x, world.y, world.z);
+                    const towerX = local.x + upperCentreX;
+                    const towerZ = local.z + upperCentreZ;
+                    if (
+                        towerX < upper.minX + WALL_THICKNESS + 0.05 ||
+                        towerX > upper.maxX - WALL_THICKNESS - 0.05 ||
+                        towerZ < upper.minZ + WALL_THICKNESS + 0.05 ||
+                        towerZ > upper.maxZ - WALL_THICKNESS - 0.05
+                    ) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        };
+
+        // Returns the farthest high-end position whose landing fits, or null when this lane cannot
+        // reach the room above. The search moves inward from the preferred wall-side exit.
+        const findFittingHigh = (
+            lower: MegastructureStorey,
+            upper: MegastructureStorey,
+            axis: 'x' | 'z',
+            laneCentre: number,
+            lowAlong: number,
+            highAlong: number,
+            direction: number,
+            highY: number,
+            minRun: number,
+        ): number | null => {
+            const run = Math.abs(highAlong - lowAlong);
+            if (run < minRun - 1e-6) {
+                return null;
+            }
+            if (highLandingFits(lower, upper, axis, laneCentre, highAlong, direction, highY)) {
+                return highAlong;
+            }
+            const maxInward = run - minRun;
+            for (let inward = 0.2; inward <= maxInward + 1e-6; inward += 0.2) {
+                const candidate = highAlong - direction * inward;
+                if (highLandingFits(lower, upper, axis, laneCentre, candidate, direction, highY)) {
+                    return candidate;
+                }
+            }
+            return null;
+        };
+
         const groundRange = interiorRange(storeys[0], groundAxis);
         const groundUpper = interiorRange(storeys[1], groundAxis);
         const groundLane = groundAxis === 'x' ? centreZ : centreX;
         const groundLow = groundSign > 0 ? groundRange.min : groundRange.max;
-        const groundHigh = groundSign > 0 ? groundUpper.max - RAMP_LANDING_DEPTH : groundUpper.min + RAMP_LANDING_DEPTH;
+        let groundHigh = groundSign > 0 ? groundUpper.max - RAMP_LANDING_DEPTH : groundUpper.min + RAMP_LANDING_DEPTH;
+        const groundMinRun = Math.abs(floors[0] - entrance.groundY) / RAMP_MAX_SLOPE;
+        groundHigh =
+            findFittingHigh(
+                storeys[0],
+                storeys[1],
+                groundAxis,
+                groundLane,
+                groundLow,
+                groundHigh,
+                groundSign,
+                floors[0],
+                groundMinRun,
+            ) ?? groundHigh;
+        this.setCurrentStorey(storeys[0]);
         let previousRamp = this.addRamp(groundAxis, groundLane, groundLow, groundHigh, entrance.groundY, floors[0]);
-        const groundFloor = floorSlabBounds(0);
+        this.setCurrentStorey(storeys[1]);
         this.addFloorWithHole(
-            groundFloor.minX,
-            groundFloor.maxX,
-            groundFloor.minZ,
-            groundFloor.maxZ,
+            storeys[1].minX,
+            storeys[1].maxX,
+            storeys[1].minZ,
+            storeys[1].maxZ,
             floors[0],
             previousRamp,
         );
+        this.addLowerCeiling(storeys[0], previousRamp, floors[0]);
         // The ground storey sits directly on the terrain, so without an enclosure the grass beside
         // the entrance ramp stays visible and walkable. Wall the ramp in on both sides, from below
         // grade up to the first-floor slab (the walls also fill the extra margin around the ramp's
         // floor opening).
+        this.setCurrentStorey(storeys[0]);
         this.addGroundRampWalls(previousRamp, groundStorey.baseY, floors[0]);
 
         // Walls are numbered like entranceSide: 0 = +Z, 1 = -Z, 2 = +X, 3 = -X. The ground ramp
         // points at the wall opposite the entrance; the flights then follow the wall loop, each
         // running from the far corner of its wall to the next corner. The loop is randomly
-        // clockwise or counter-clockwise for each tower.
+        // clockwise or counter-clockwise for each tower. A flight skips to the next wall in the
+        // loop only when the rotated storey above cannot contain its exit.
         const clockwise = rng() < 0.5;
         const wallCycle = clockwise ? [1, 3, 0, 2] : [1, 2, 0, 3];
         const firstWallIndex = wallCycle.indexOf(entranceSide ^ 1);
 
         for (let level = 0; level < levelCount - 1; level++) {
-            const wall = wallCycle[(firstWallIndex + level) % wallCycle.length];
-            const axis: 'x' | 'z' = wall < 2 ? 'x' : 'z';
-            const laneAxis: 'x' | 'z' = axis === 'x' ? 'z' : 'x';
-            const lanePositive = wall === 0 || wall === 2;
-            const positive = clockwise === lanePositive;
-            // The flight climbs through the lower storey, and its high end must also fit under
-            // the storey above, so keep the whole ramp inside the overlap of both interiors.
-            const shaft = interiorRange(storeys[level + 1], axis);
-            const room = interiorRange(storeys[level + 2], axis);
-            const span = { min: Math.max(shaft.min, room.min), max: Math.min(shaft.max, room.max) };
-            const laneShaft = interiorRange(storeys[level + 1], laneAxis);
-            const laneRoom = interiorRange(storeys[level + 2], laneAxis);
-            const laneRange = {
-                min: Math.max(laneShaft.min, laneRoom.min),
-                max: Math.min(laneShaft.max, laneRoom.max),
-            };
-            const laneCentre = lanePositive ? laneRange.max - laneInset : laneRange.min + laneInset;
-            const lowAlong = positive ? span.min + RAMP_LANDING_DEPTH : span.max - RAMP_LANDING_DEPTH;
-            const highAlong = positive ? span.max - RAMP_LANDING_DEPTH : span.min + RAMP_LANDING_DEPTH;
+            const lower = storeys[level + 1];
+            const upper = storeys[level + 2];
+            const highY = floors[level + 1];
 
-            const ramp = this.addRamp(axis, laneCentre, lowAlong, highAlong, floors[level], floors[level + 1]);
-            const floor = floorSlabBounds(level + 1);
-            this.addFloorWithHole(floor.minX, floor.maxX, floor.minZ, floor.maxZ, floors[level + 1], ramp);
+            // Plans one flight on a wall. The preferred route wall is tried first; another wall is
+            // used only when the rotated room above cannot contain this flight's exit and landing.
+            const planFlight = (wall: number) => {
+                const axis: 'x' | 'z' = wall < 2 ? 'x' : 'z';
+                const laneAxis: 'x' | 'z' = axis === 'x' ? 'z' : 'x';
+                const lanePositive = wall === 0 || wall === 2;
+                const positive = clockwise === lanePositive;
+                const shaft = interiorRange(lower, axis);
+                const room = interiorRange(upper, axis);
+                const span = { min: Math.max(shaft.min, room.min), max: Math.min(shaft.max, room.max) };
+                const laneShaft = interiorRange(lower, laneAxis);
+                const laneRoom = interiorRange(upper, laneAxis);
+                const laneRange = {
+                    min: Math.max(laneShaft.min, laneRoom.min),
+                    max: Math.min(laneShaft.max, laneRoom.max),
+                };
+                const preferredLane = lanePositive ? laneRange.max - laneInset : laneRange.min + laneInset;
+                // Only the high end has to fit inside the room above. The flight body lives in the
+                // lower room, so its low end can use the lower interior's full length. Using the
+                // overlap for both ends used to shorten the run and could force a slope over 45°.
+                const lowAlong = positive ? shaft.min + RAMP_LANDING_DEPTH : shaft.max - RAMP_LANDING_DEPTH;
+                let highAlong = positive ? span.max - RAMP_LANDING_DEPTH : span.min + RAMP_LANDING_DEPTH;
+                const direction = positive ? 1 : -1;
+                const minRun = (highY - floors[level]) / RAMP_MAX_SLOPE;
+
+                // Pull the exit inward until its landing is inside the rotated room above. If the
+                // preferred wall lane cannot fit at all, first buy run by moving the low edge toward
+                // its wall (down to a short landing), then slide the lane toward the room centre.
+                // Every candidate still has to pass the 45-degree run check.
+                let laneCentre = preferredLane;
+                let chosenLow = lowAlong;
+                let fittedHigh = findFittingHigh(
+                    lower,
+                    upper,
+                    axis,
+                    laneCentre,
+                    chosenLow,
+                    highAlong,
+                    direction,
+                    highY,
+                    minRun,
+                );
+                if (fittedHigh === null) {
+                    const maxLowShift = Math.max(0, RAMP_LANDING_DEPTH - 0.5);
+                    for (let extra = maxLowShift; extra >= 0.5 - 1e-6 && fittedHigh === null; extra -= 0.5) {
+                        const candidateLow = lowAlong - direction * extra;
+                        const candidateHigh = findFittingHigh(
+                            lower,
+                            upper,
+                            axis,
+                            laneCentre,
+                            candidateLow,
+                            highAlong,
+                            direction,
+                            highY,
+                            minRun,
+                        );
+                        if (candidateHigh !== null) {
+                            chosenLow = candidateLow;
+                            fittedHigh = candidateHigh;
+                        }
+                    }
+                }
+                if (fittedHigh === null) {
+                    const inward = lanePositive ? -1 : 1;
+                    const laneSpan = laneRange.max - laneRange.min;
+                    for (let shift = 0.3; shift <= laneSpan; shift += 0.3) {
+                        const candidateLane = preferredLane + inward * shift;
+                        if (candidateLane < laneRange.min || candidateLane > laneRange.max) {
+                            break;
+                        }
+                        const candidateHigh = findFittingHigh(
+                            lower,
+                            upper,
+                            axis,
+                            candidateLane,
+                            chosenLow,
+                            highAlong,
+                            direction,
+                            highY,
+                            minRun,
+                        );
+                        if (candidateHigh !== null) {
+                            laneCentre = candidateLane;
+                            fittedHigh = candidateHigh;
+                            break;
+                        }
+                    }
+                }
+                if (fittedHigh !== null) {
+                    highAlong = fittedHigh;
+                }
+                return { axis, laneCentre, lowAlong: chosenLow, highAlong, fitted: fittedHigh !== null };
+            };
+
+            const normalWall = wallCycle[(firstWallIndex + level) % wallCycle.length];
+            let plan = planFlight(normalWall);
+            if (!plan.fitted) {
+                for (let attempt = 1; attempt < wallCycle.length; attempt++) {
+                    const candidate = planFlight(wallCycle[(firstWallIndex + level + attempt) % wallCycle.length]);
+                    if (candidate.fitted) {
+                        plan = candidate;
+                        break;
+                    }
+                }
+            }
+
+            this.setCurrentStorey(lower);
+            const ramp = this.addRamp(plan.axis, plan.laneCentre, plan.lowAlong, plan.highAlong, floors[level], highY);
+            this.setCurrentStorey(upper);
+            this.addFloorWithHole(upper.minX, upper.maxX, upper.minZ, upper.maxZ, highY, ramp);
+            this.addLowerCeiling(lower, ramp, highY);
             previousRamp = ramp;
         }
 
-        this.addFloorProps(towerIndex, storeys, floors, levelCount, levelHeight, centreX, centreZ);
+        this.addFloorProps(towerIndex, storeys, floors, levelCount, levelHeight);
 
         for (let level = 0; level < levelCount; level++) {
             const edge = floorEdgeBounds(level);
+            this.setCurrentStorey(storeys[level + 1]);
             this.addTrim(edge.minX, edge.maxX, edge.minZ, edge.maxZ, floors[level]);
         }
 
         const topStorey = storeys[levelCount];
+        this.setCurrentStorey(topStorey);
         this.addTrim(topStorey.minX, topStorey.maxX, topStorey.minZ, topStorey.maxZ, topY - 0.6);
 
         // The cone occupies the middle of the top floor, clear of the hole where the last flight
@@ -1609,6 +2142,7 @@ export class Megastructures {
             rampClearance - CROWN_RAMP_CLEARANCE,
         );
 
+        this.setCurrentStorey(topStorey);
         this.addCrown(
             topStorey.minX,
             topStorey.maxX,
@@ -1729,30 +2263,16 @@ export class Megastructures {
         attachWindowGlassSeed(geometry, windowGlassSeed(this.currentTowerIndex, level, side));
         geometry.rotateY(rotationY);
         geometry.translate(tangentX !== 0 ? along : wallCentre, y, tangentZ !== 0 ? along : wallCentre);
-        this.windowParts.push(geometry);
+        this.windowParts.push(this.placeGeometry(geometry));
 
         // A thin collider on the glass plane keeps the pane solid without filling the whole opening,
         // so the sill on either side of it stays deep enough for the player to stand on.
         const glassMin = wallCentre - WINDOW_GLASS_THICKNESS / 2;
         const glassMax = wallCentre + WINDOW_GLASS_THICKNESS / 2;
         if (side === 0 || side === 1) {
-            this.boxes.push({
-                minX: spanMin,
-                maxX: spanMax,
-                minZ: glassMin,
-                maxZ: glassMax,
-                baseY: bottom,
-                topY: top,
-            });
+            this.pushStructureBox(spanMin, spanMax, glassMin, glassMax, bottom, top);
         } else {
-            this.boxes.push({
-                minX: glassMin,
-                maxX: glassMax,
-                minZ: spanMin,
-                maxZ: spanMax,
-                baseY: bottom,
-                topY: top,
-            });
+            this.pushStructureBox(glassMin, glassMax, spanMin, spanMax, bottom, top);
         }
     }
 
@@ -1767,6 +2287,9 @@ export class Megastructures {
     ): void {
         const centreX = (minX + maxX) / 2;
         const centreZ = (minZ + maxZ) / 2;
+        const crownWorld = this.storeyPointToWorld(centreX, topFloorY, centreZ);
+        const crownX = crownWorld.x;
+        const crownZ = crownWorld.z;
         const baseRadius = Math.min(5.5 + rng() * 2, Math.max(2.5, maxBaseRadius));
         const topRadius = baseRadius * (0.32 + rng() * 0.1);
         const height = 40 + rng() * 14;
@@ -1779,14 +2302,15 @@ export class Megastructures {
         const embeddedRadius = baseRadius + ((baseRadius - topRadius) * (baseY - embeddedY)) / height;
         const cone = new CylinderGeometry(topRadius, embeddedRadius, height + (baseY - embeddedY), 32, 1, true);
         cone.translate(centreX, (embeddedY + coneTopY) / 2, centreZ);
-        this.stoneParts.push(cone);
+        this.stoneParts.push(this.placeGeometry(cone));
         this.crownCones.push({
-            x: centreX,
-            z: centreZ,
+            x: crownX,
+            z: crownZ,
             baseY,
             topY: coneTopY,
             baseRadius,
             topRadius,
+            frame: createStructureFrame(crownWorld.x, crownWorld.y, crownWorld.z, this.currentStoreyFrame.rotation),
         });
 
         // The cap closes the top of the cone. It is deliberately not walkable: the spiral ends
@@ -1795,10 +2319,10 @@ export class Megastructures {
         const platformRadius = topRadius + 0.15;
         const platform = new CylinderGeometry(platformRadius, platformRadius, 0.3, 32);
         platform.translate(centreX, platformTopY - 0.15, centreZ);
-        this.stoneParts.push(platform);
+        this.stoneParts.push(this.placeGeometry(platform));
         this.crownPlatforms.push({
-            x: centreX,
-            z: centreZ,
+            x: crownX,
+            z: crownZ,
             topY: platformTopY,
             radius: platformRadius,
         });
@@ -1808,30 +2332,38 @@ export class Megastructures {
         const spireTopRadius = 0.35;
         const spire = new CylinderGeometry(spireTopRadius, spireBaseRadius, spireHeight, 12);
         spire.translate(centreX, platformTopY + spireHeight / 2, centreZ);
-        this.stoneParts.push(spire);
+        this.stoneParts.push(this.placeGeometry(spire));
+        const spireWorld = this.storeyPointToWorld(centreX, platformTopY, centreZ);
         this.crownCones.push({
-            x: centreX,
-            z: centreZ,
+            x: crownX,
+            z: crownZ,
             baseY: platformTopY,
             topY: platformTopY + spireHeight,
             baseRadius: spireBaseRadius,
             topRadius: spireTopRadius,
+            frame: createStructureFrame(
+                spireWorld.x,
+                spireWorld.y,
+                spireWorld.z,
+                this.currentStoreyFrame.rotation,
+            ),
         });
 
         const lampRadius = 0.9 + rng() * 0.4;
         const lampY = platformTopY + spireHeight + lampRadius * 0.7;
+        const lampWorld = this.storeyPointToWorld(centreX, lampY, centreZ);
         const lamp = new Mesh(new SphereGeometry(lampRadius, 14, 10), this.lampMaterial);
-        lamp.position.set(centreX, lampY, centreZ);
+        lamp.position.set(lampWorld.x, lampWorld.y, lampWorld.z);
         this.group.add(lamp);
 
         const glowRadius = lampRadius * 2.1;
         const glow = new Mesh(new SphereGeometry(glowRadius, 24, 16), this.lampGlowMaterial);
         glow.name = 'crown-lamp-glow';
-        glow.position.set(centreX, lampY, centreZ);
+        glow.position.set(lampWorld.x, lampWorld.y, lampWorld.z);
         this.group.add(glow);
 
         const lampGlow = new Sprite(this.lampGlowSpriteMaterial);
-        lampGlow.position.set(centreX, lampY, centreZ);
+        lampGlow.position.set(lampWorld.x, lampWorld.y, lampWorld.z);
         lampGlow.scale.setScalar(lampRadius * 4.5);
         lampGlow.layers.set(MEGASTRUCTURE_LAYER);
         this.group.add(lampGlow);
@@ -1861,7 +2393,7 @@ export class Megastructures {
             core: glow,
             sprite: lampGlow,
             ring,
-            phase: ((((centreX * 0.37 + centreZ * 0.53) / (Math.PI * 2)) % 1) + 1) % 1,
+            phase: ((((crownX * 0.37 + crownZ * 0.53) / (Math.PI * 2)) % 1) + 1) % 1,
             coreRadius: glowRadius,
             blue: false,
         });
@@ -1875,6 +2407,8 @@ export class Megastructures {
         const spiral: CrownSpiral = {
             x: centreX,
             z: centreZ,
+            worldX: crownX,
+            worldZ: crownZ,
             baseY,
             height: rampHeight,
             baseRadius,
@@ -1886,12 +2420,13 @@ export class Megastructures {
             direction: rng() < 0.5 ? 1 : -1,
             parapetHeight: CROWN_PARAPET_HEIGHT,
             parapetThickness: CROWN_PARAPET_THICKNESS,
+            frame: createStructureFrame(crownWorld.x, crownWorld.y, crownWorld.z, this.currentStoreyFrame.rotation),
         };
         this.crownSpirals.push(spiral);
         this.addSpiralRamp(spiral);
         this.addCrownShockField(towerIndex, spiral, {
-            x: centreX,
-            z: centreZ,
+            x: crownX,
+            z: crownZ,
             baseY,
             // The lamp floats just above the spire, so include it in the shell.
             topY: lampY + lampRadius,
@@ -1906,21 +2441,25 @@ export class Megastructures {
         this.addCrownSwitch(catwalk, towerIndex);
     }
 
-    // Fills every walled storey with three to five rectangular totems on a 2x3 lattice. The lattice
-    // spans almost the whole floor, so the totems are spread across it instead of clustering in one
-    // corner. A totem whose cell touches a ramp or a ramp hole is nudged within its cell to the
-    // nearest clear spot. Each totem carries two to five glyphs.
+    // Fills every walled storey with rectangular totems. The count grows with the floor area; each
+    // totem is placed at a random spot inside the interior, avoiding ramp lanes and holes and
+    // keeping a minimum clearance from the other totems. Each one carries two to five glyphs.
     private addFloorProps(
         towerIndex: number,
         storeys: MegastructureStorey[],
         floors: number[],
         levelCount: number,
         levelHeight: number,
-        centreX: number,
-        centreZ: number,
     ): void {
         // Separate RNG so the totems never shift the site and ramp layout generated before them.
-        const propRng = mulberry32((Math.round(centreX * 131) ^ Math.round(centreZ * 197) ^ 0x9e3779b9) >>> 0);
+        // Seed from the tower's world position, not its local centre: every tower builds at (0, 0)
+        // now, and reusing that would put every floor's totems in lockstep.
+        const propRng = mulberry32(
+            (Math.round(this.currentTowerOrigin.x * 131) ^
+                Math.round(this.currentTowerOrigin.z * 197) ^
+                0x9e3779b9) >>>
+                0,
+        );
         const colorKinds: Array<'gold' | 'purple'> = ['gold', 'purple'];
 
         // The topmost floor carries the crown cone and its spiral, so only the walled storeys below
@@ -1928,199 +2467,207 @@ export class Megastructures {
         for (let level = 0; level < levelCount - 1; level++) {
             const floorY = floors[level];
             const room = storeys[level + 1];
+            this.setCurrentStorey(room);
             const floorMinX = room.minX + WALL_THICKNESS + FLOOR_PROP_WALL_MARGIN;
             const floorMaxX = room.maxX - WALL_THICKNESS - FLOOR_PROP_WALL_MARGIN;
             const floorMinZ = room.minZ + WALL_THICKNESS + FLOOR_PROP_WALL_MARGIN;
             const floorMaxZ = room.maxZ - WALL_THICKNESS - FLOOR_PROP_WALL_MARGIN;
-            if (floorMaxX - floorMinX < 1 || floorMaxZ - floorMinZ < 1) {
+            const floorWidth = floorMaxX - floorMinX;
+            const floorDepth = floorMaxZ - floorMinZ;
+            if (floorWidth < 1 || floorDepth < 1) {
                 continue;
             }
 
-            // Ramps and ramp holes carve forbidden areas out of the lattice, but the lattice still
-            // spans the whole floor; the affected cells shift their totem instead of the grid
-            // shrinking away from them.
-            const blocked: Array<{ minX: number; maxX: number; minZ: number; maxZ: number }> = [];
-            for (const ramp of this.ramps) {
-                const minEndAtFloor = Math.abs(ramp.minY - floorY) < 0.1;
-                const maxEndAtFloor = Math.abs(ramp.maxY - floorY) < 0.1;
-                // A ramp whose low end meets this floor stands on it; a ramp whose high end meets
-                // it only opens a hole in the slab.
-                const risesFromFloor = Math.abs(Math.min(ramp.minY, ramp.maxY) - floorY) < 0.1;
+            // Ramps carve forbidden areas out of the lattice. Storey frames differ, so each area is
+            // kept in its own ramp's frame and the candidate totem centre is transformed into that
+            // frame. A world AABB of a long yawed flight would cover most of the floor and leave no
+            // room for totems at all.
+            const blocked: Array<{
+                frame: StructureFrame;
+                minX: number;
+                maxX: number;
+                minZ: number;
+                maxZ: number;
+            }> = [];
+            for (const ramp of this.currentTowerRamps) {
+                const localMinX = ramp.minX - ramp.storeyCentreX;
+                const localMaxX = ramp.maxX - ramp.storeyCentreX;
+                const localMinZ = ramp.minZ - ramp.storeyCentreZ;
+                const localMaxZ = ramp.maxZ - ramp.storeyCentreZ;
+                const minEndY = ramp.ascendingPositive ? ramp.lowY : ramp.highY;
+                const maxEndY = ramp.ascendingPositive ? ramp.highY : ramp.lowY;
+                const minEndAtFloor = Math.abs(minEndY - floorY) < 0.1;
+                const maxEndAtFloor = Math.abs(maxEndY - floorY) < 0.1;
+                const risesFromFloor = Math.abs(Math.min(ramp.lowY, ramp.highY) - floorY) < 0.1;
                 if (!minEndAtFloor && !maxEndAtFloor) {
                     continue;
                 }
-                if (
-                    ramp.maxX <= room.minX ||
-                    ramp.minX >= room.maxX ||
-                    ramp.maxZ <= room.minZ ||
-                    ramp.minZ >= room.maxZ
-                ) {
-                    continue;
-                }
-
                 if (risesFromFloor) {
                     blocked.push({
-                        minX: ramp.minX - FLOOR_PROP_RAMP_CLEARANCE,
-                        maxX: ramp.maxX + FLOOR_PROP_RAMP_CLEARANCE,
-                        minZ: ramp.minZ - FLOOR_PROP_RAMP_CLEARANCE,
-                        maxZ: ramp.maxZ + FLOOR_PROP_RAMP_CLEARANCE,
+                        frame: ramp.frame,
+                        minX: localMinX - FLOOR_PROP_RAMP_CLEARANCE,
+                        maxX: localMaxX + FLOOR_PROP_RAMP_CLEARANCE,
+                        minZ: localMinZ - FLOOR_PROP_RAMP_CLEARANCE,
+                        maxZ: localMaxZ + FLOOR_PROP_RAMP_CLEARANCE,
                     });
                     continue;
                 }
 
-                // The hole where the incoming flight pierces this slab, plus the landing beyond
-                // its high edge, has to stay clear so the player can always step off the ramp.
-                const run = ramp.axis === 'x' ? ramp.maxX - ramp.minX : ramp.maxZ - ramp.minZ;
-                const slope = Math.abs(ramp.maxY - ramp.minY) / Math.max(run, 0.001);
+                // A flight arriving from the storey below only needs its hole and landing kept
+                // clear here, not the length of the slope beneath this floor.
+                const run = ramp.axis === 'x' ? localMaxX - localMinX : localMaxZ - localMinZ;
+                const slope = Math.abs(ramp.highY - ramp.lowY) / Math.max(run, 0.001);
                 const holeLength = Math.max(1.5, Math.min(run - 0.5, MIN_RAMP_HEADROOM / slope + 0.8));
                 const holeHalfWidth = RAMP_WIDTH / 2 + RAMP_HOLE_MARGIN + FLOOR_PROP_RAMP_CLEARANCE;
-                // minY is the surface height at the axis-minimum end, so when it matches this
-                // floor the incoming flight's high end is at that end of the ramp.
                 const highAtMin = minEndAtFloor;
+                const minAlong = ramp.axis === 'x' ? localMinX : localMinZ;
+                const maxAlong = ramp.axis === 'x' ? localMaxX : localMaxZ;
+                const alongMin = highAtMin ? minAlong - RAMP_LANDING_DEPTH : maxAlong - holeLength;
+                const alongMax = highAtMin ? minAlong + holeLength : maxAlong + RAMP_LANDING_DEPTH;
+                const crossCentre =
+                    ramp.laneCentre - (ramp.axis === 'x' ? ramp.storeyCentreZ : ramp.storeyCentreX);
                 if (ramp.axis === 'x') {
-                    const highX = highAtMin ? ramp.minX : ramp.maxX;
                     blocked.push({
-                        minX: highAtMin ? highX - RAMP_LANDING_DEPTH : highX - holeLength,
-                        maxX: highAtMin ? highX + holeLength : highX + RAMP_LANDING_DEPTH,
-                        minZ: (ramp.minZ + ramp.maxZ) / 2 - holeHalfWidth,
-                        maxZ: (ramp.minZ + ramp.maxZ) / 2 + holeHalfWidth,
+                        frame: ramp.frame,
+                        minX: alongMin,
+                        maxX: alongMax,
+                        minZ: crossCentre - holeHalfWidth,
+                        maxZ: crossCentre + holeHalfWidth,
                     });
                 } else {
-                    const highZ = highAtMin ? ramp.minZ : ramp.maxZ;
                     blocked.push({
-                        minX: (ramp.minX + ramp.maxX) / 2 - holeHalfWidth,
-                        maxX: (ramp.minX + ramp.maxX) / 2 + holeHalfWidth,
-                        minZ: highAtMin ? highZ - RAMP_LANDING_DEPTH : highZ - holeLength,
-                        maxZ: highAtMin ? highZ + holeLength : highZ + RAMP_LANDING_DEPTH,
+                        frame: ramp.frame,
+                        minX: crossCentre - holeHalfWidth,
+                        maxX: crossCentre + holeHalfWidth,
+                        minZ: alongMin,
+                        maxZ: alongMax,
                     });
                 }
             }
 
-            // The 2x3 lattice spans the whole floor rather than shrinking into the open corner.
-            const columns = 2;
-            const rows = 3;
-            const cellWidth = (floorMaxX - floorMinX) / columns;
-            const cellDepth = (floorMaxZ - floorMinZ) / rows;
-
-            // Two to four of the six cells hold a totem.
-            const totemCount = 2 + Math.floor(propRng() * 3);
+            const totemCount = floorPropBaseCount(floorWidth, floorDepth) + (propRng() < 0.5 ? 1 : 0);
 
             // Alternate the two colors so every floor shows both kinds of glyph.
             const firstColor = propRng() < 0.5 ? 0 : 1;
-            let propIndex = 0;
-            let placedCount = 0;
+            const placed: Array<{ x: number; z: number; radius: number }> = [];
+            const minWidth = 1.5;
+            const maxWidth = 5.8;
+            const minDepth = 1.0;
+            const maxDepth = 4.4;
 
-            // The cells are picked at random, but a cell in a row or column that has no totem yet is
-            // taken before one that would double up, so the totems stay spread across the floor
-            // instead of clustering at one end. A cell whose clear space is too small is skipped.
-            const pending = Array.from({ length: rows * columns }, (_, cell) => cell);
-            const coveredRows = new Set<number>();
-            const coveredColumns = new Set<number>();
-            while (pending.length > 0 && placedCount < totemCount) {
-                let bestScore = -1;
-                const best: number[] = [];
-                for (let index = 0; index < pending.length; index++) {
-                    const cell = pending[index];
-                    const score =
-                        (coveredRows.has(Math.floor(cell / columns)) ? 0 : 2) +
-                        (coveredColumns.has(cell % columns) ? 0 : 1);
-                    if (score > bestScore) {
-                        bestScore = score;
-                        best.length = 0;
+            for (let propIndex = 0; propIndex < totemCount; propIndex++) {
+                let placement: {
+                    x: number;
+                    z: number;
+                    width: number;
+                    depth: number;
+                    height: number;
+                    yaw: number;
+                } | null = null;
+
+                // Rejection sampling: random position on the floor, then check ramp clearance and
+                // the minimum distance to every totem placed earlier on this floor. If the floor
+                // is too full for this size, retry with a smaller one.
+                for (let sizeAttempt = 0; sizeAttempt < 3 && !placement; sizeAttempt++) {
+                    const scale = 1 - sizeAttempt * 0.2;
+                    const width = Math.max(1.0, (minWidth + propRng() * (maxWidth - minWidth)) * scale);
+                    const depth = Math.max(0.7, (minDepth + propRng() * (maxDepth - minDepth)) * scale);
+                    const halfWidth = width / 2;
+                    const halfDepth = depth / 2;
+                    const radius = Math.hypot(halfWidth, halfDepth);
+                    const yaw = propRng() * Math.PI * 2;
+                    const cosYaw = Math.abs(Math.cos(yaw));
+                    const sinYaw = Math.abs(Math.sin(yaw));
+                    const extentX = halfWidth * cosYaw + halfDepth * sinYaw;
+                    const extentZ = halfWidth * sinYaw + halfDepth * cosYaw;
+                    const minX = floorMinX + extentX;
+                    const maxX = floorMaxX - extentX;
+                    const minZ = floorMinZ + extentZ;
+                    const maxZ = floorMaxZ - extentZ;
+                    if (minX > maxX || minZ > maxZ) {
+                        continue;
                     }
-                    if (score === bestScore) {
-                        best.push(index);
-                    }
-                }
-                const cellIndex = pending.splice(best[Math.floor(propRng() * best.length)], 1)[0];
-                const row = Math.floor(cellIndex / columns);
-                const column = cellIndex % columns;
-                const cellMinX = floorMinX + column * cellWidth;
-                const cellMaxX = cellMinX + cellWidth;
-                const cellMinZ = floorMinZ + row * cellDepth;
-                const cellMaxZ = cellMinZ + cellDepth;
-                const maxWidth = Math.min(5.8, Math.max(1.0, cellWidth - 0.6));
-                const minWidth = Math.max(1.0, Math.min(2.4, maxWidth * 0.72));
-                const maxDepth = Math.min(4.4, Math.max(0.7, cellDepth - 0.6));
-                const minDepth = Math.max(0.7, Math.min(1.8, maxDepth * 0.7));
-                const centreX = (cellMinX + cellMaxX) / 2;
-                const centreZ = (cellMinZ + cellMaxZ) / 2;
 
-                // Try the chosen size first, then three smaller ones, so a cell narrowed by a
-                // ramp still gets a totem instead of dropping out of the lattice.
-                let width = minWidth;
-                let depth = minDepth;
-                let halfWidth = width / 2;
-                let halfDepth = depth / 2;
-                let x = centreX;
-                let z = centreZ;
-                let found = false;
-                for (let attempt = 0; attempt < 4 && !found; attempt++) {
-                    const scale = 1 - attempt * 0.2;
-                    width = Math.max(1.0, (minWidth + propRng() * (maxWidth - minWidth)) * scale);
-                    depth = Math.max(0.7, (minDepth + propRng() * (maxDepth - minDepth)) * scale);
-                    halfWidth = width / 2;
-                    halfDepth = depth / 2;
-
-                    // Keep the totem inside its cell and pick the clear spot nearest the cell
-                    // centre. A cell crossed by a ramp therefore keeps its totem but shifts it
-                    // aside instead of leaving a hole in the lattice.
-                    const minX = cellMinX + halfWidth;
-                    const maxX = cellMaxX - halfWidth;
-                    const minZ = cellMinZ + halfDepth;
-                    const maxZ = cellMaxZ - halfDepth;
-                    let bestDistance = Infinity;
-                    for (let stepX = 0; stepX <= FLOOR_PROP_NUDGE_STEPS; stepX++) {
-                        const candidateX = minX + ((maxX - minX) * stepX) / FLOOR_PROP_NUDGE_STEPS;
-                        for (let stepZ = 0; stepZ <= FLOOR_PROP_NUDGE_STEPS; stepZ++) {
-                            const candidateZ = minZ + ((maxZ - minZ) * stepZ) / FLOOR_PROP_NUDGE_STEPS;
-                            const distance = (candidateX - centreX) ** 2 + (candidateZ - centreZ) ** 2;
-                            if (distance >= bestDistance) {
-                                continue;
-                            }
-                            const overlaps = blocked.some(
-                                (area) =>
-                                    candidateX - halfWidth < area.maxX &&
-                                    candidateX + halfWidth > area.minX &&
-                                    candidateZ - halfDepth < area.maxZ &&
-                                    candidateZ + halfDepth > area.minZ,
-                            );
-                            if (overlaps) {
-                                continue;
-                            }
-                            bestDistance = distance;
-                            x = candidateX;
-                            z = candidateZ;
+                    for (let attempt = 0; attempt < 120; attempt++) {
+                        const x = minX + propRng() * (maxX - minX);
+                        const z = minZ + propRng() * (maxZ - minZ);
+                        const tooClose = placed.some(
+                            (other) =>
+                                Math.hypot(x - other.x, z - other.z) <
+                                radius + other.radius + FLOOR_PROP_MIN_SPACING,
+                        );
+                        if (tooClose) {
+                            continue;
                         }
+
+                        const propWorld = this.storeyPointToWorld(x, floorY, z);
+                        const propRadius = radius * 1.05;
+                        const overlaps = blocked.some((area) => {
+                            const local = worldToLocal(
+                                area.frame,
+                                propWorld.x,
+                                propWorld.y,
+                                propWorld.z,
+                                this.boxScratch,
+                            );
+                            const nearestX = Math.max(area.minX, Math.min(local.x, area.maxX));
+                            const nearestZ = Math.max(area.minZ, Math.min(local.z, area.maxZ));
+                            return Math.hypot(local.x - nearestX, local.z - nearestZ) < propRadius;
+                        });
+                        if (overlaps) {
+                            continue;
+                        }
+
+                        const widthFraction =
+                            maxWidth > minWidth
+                                ? Math.min(1, Math.max(0, (width - minWidth) / (maxWidth - minWidth)))
+                                : 0;
+                        placement = {
+                            x,
+                            z,
+                            width,
+                            depth,
+                            height: levelHeight * (0.85 - widthFraction * 0.5),
+                            yaw,
+                        };
+                        break;
                     }
-                    found = bestDistance < Infinity;
-                }
-                if (!found) {
-                    continue;
                 }
 
-                // Within a cell, wider totems are shorter. Heights still span 35%-85% of the
-                // storey height; the footprint stays well below the cell size so the grid, not
-                // the totems, is what covers the floor.
-                const widthFraction =
-                    maxWidth > minWidth ? Math.min(1, Math.max(0, (width - minWidth) / (maxWidth - minWidth))) : 0;
-                const height = levelHeight * (0.85 - widthFraction * 0.5);
+                if (!placement) {
+                    break;
+                }
+
+                const { x, z, width, depth, height, yaw } = placement;
+                const halfWidth = width / 2;
+                const halfDepth = depth / 2;
+                placed.push({ x, z, radius: Math.hypot(halfWidth, halfDepth) });
                 const kind = colorKinds[(firstColor + propIndex) % colorKinds.length];
                 const color = new Color(kind === 'gold' ? FLOOR_PROP_GOLD : FLOOR_PROP_PURPLE);
                 color.offsetHSL((propRng() - 0.5) * 0.04, (propRng() - 0.5) * 0.14, (propRng() - 0.5) * 0.08);
 
-                // The block itself is solid, dark, and shadow-casting; only its glyphs glow.
+                // The block itself is solid, dark, and shadow-casting; only its glyphs glow. It is
+                // turned about its own centre in the storey plane before being placed.
                 const core = new BoxGeometry(width, height + 0.08, depth);
+                core.rotateY(yaw);
                 core.translate(x, floorY - 0.04 + (height + 0.08) / 2, z);
-                this.floorPropCoreParts.push(core);
-                this.boxes.push({
-                    minX: x - halfWidth,
-                    maxX: x + halfWidth,
-                    minZ: z - halfDepth,
-                    maxZ: z + halfDepth,
-                    baseY: floorY,
-                    topY: floorY + height,
-                });
+                this.floorPropCoreParts.push(this.placeGeometry(core));
+
+                // The collider gets the same yaw as the visual, so a corner that is drawn is also
+                // solid and the axis-aligned hull is only used for broadphase.
+                const propOrigin = this.storeyPointToWorld(x, floorY, z);
+                const propRotation = this.currentStoreyFrame.rotation
+                    .clone()
+                    .multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), yaw));
+                this.pushStructureBoxInFrame(
+                    createStructureFrame(propOrigin.x, propOrigin.y, propOrigin.z, propRotation),
+                    -halfWidth,
+                    halfWidth,
+                    -halfDepth,
+                    halfDepth,
+                    0,
+                    height,
+                );
 
                 // Spread two to five glyphs across the four faces, cycling through a shuffled
                 // side order so only the fifth glyph has to share a face with another.
@@ -2204,26 +2751,28 @@ export class Megastructures {
                     const glyph = new PlaneGeometry(signWidth, signHeight);
                     glyph.rotateY(Math.atan2(normalX, normalZ));
                     glyph.translate(glyphX, centreY, glyphZ);
+                    // Turn the whole face, position and all, around the totem's centre.
+                    glyph.translate(-x, 0, -z);
+                    glyph.rotateY(yaw);
+                    glyph.translate(x, 0, z);
                     this.applySignAttributes(glyph, color, signLayer, animation);
-                    this.floorPropGlowParts.push(glyph);
+                    this.floorPropGlowParts.push(this.placeGeometry(glyph));
                 }
 
+                const propWorld = this.storeyPointToWorld(x, floorY, z);
                 this.floorProps.push({
                     towerIndex,
                     level,
-                    x,
-                    z,
-                    baseY: floorY,
+                    x: propWorld.x,
+                    z: propWorld.z,
+                    baseY: propWorld.y,
                     height,
                     width,
                     depth,
+                    yaw,
                     color: kind,
                     signs,
                 });
-                propIndex++;
-                placedCount++;
-                coveredRows.add(row);
-                coveredColumns.add(column);
             }
         }
     }
@@ -2277,7 +2826,7 @@ export class Megastructures {
             geometry.translate(localX, localY, localZ);
             geometry.rotateY(rotationY);
             geometry.translate(startX, y, startZ);
-            this.stoneParts.push(geometry);
+            this.stoneParts.push(this.placeGeometry(geometry));
         };
 
         addPart(
@@ -2311,11 +2860,21 @@ export class Megastructures {
             );
         }
 
+        const worldStart = this.storeyPointToWorld(startX, y, startZ);
+        const worldDirection = this.storeyDirectionToWorld(directionX, 0, directionZ);
+        const catwalkRotation = this.currentStoreyFrame.rotation
+            .clone()
+            .multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), rotationY));
         const catwalk: CrownCatwalk = {
             x: startX,
             z: startZ,
             directionX,
             directionZ,
+            worldX: worldStart.x,
+            worldY: worldStart.y,
+            worldZ: worldStart.z,
+            worldDirectionX: worldDirection.x,
+            worldDirectionZ: worldDirection.z,
             y,
             length: CROWN_CATWALK_LENGTH,
             width: spiral.width,
@@ -2324,6 +2883,7 @@ export class Megastructures {
             parapetThickness: spiral.parapetThickness,
             ledgeLength: CROWN_CATWALK_LEDGE_LENGTH,
             ledgeWidth: CROWN_CATWALK_LEDGE_WIDTH,
+            frame: createStructureFrame(worldStart.x, worldStart.y, worldStart.z, catwalkRotation),
         };
         this.crownCatwalks.push(catwalk);
         return catwalk;
@@ -2333,15 +2893,24 @@ export class Megastructures {
     // extending behind it so the player has somewhere to stand after reaching the switch.
     private addCrownSwitch(catwalk: CrownCatwalk, towerIndex: number): void {
         const along = catwalk.length + 1.1;
-        const x = catwalk.x + catwalk.directionX * along;
-        const z = catwalk.z + catwalk.directionZ * along;
-        const y = catwalk.y;
+        const directionX = catwalk.worldDirectionX ?? catwalk.directionX;
+        const directionZ = catwalk.worldDirectionZ ?? catwalk.directionZ;
+        const world = catwalk.frame
+            ? localToWorld(catwalk.frame, 0, 0, along)
+            : new Vector3(
+                  (catwalk.worldX ?? catwalk.x) + directionX * along,
+                  catwalk.worldY ?? catwalk.y,
+                  (catwalk.worldZ ?? catwalk.z) + directionZ * along,
+              );
+        const x = world.x;
+        const z = world.z;
+        const y = world.y;
 
         const mount = new Group();
         mount.name = `megastructure-switch-${towerIndex}`;
         mount.position.set(x, y, z);
         // Local +Z points away down the catwalk, so local -Z faces the approaching player.
-        mount.rotation.y = Math.atan2(catwalk.directionX, catwalk.directionZ);
+        mount.rotation.y = Math.atan2(directionX, directionZ);
         this.group.add(mount);
 
         const base = new Mesh(new CylinderGeometry(0.3, 0.38, 0.16, 10), this.switchBodyMaterial);
@@ -2540,7 +3109,7 @@ export class Megastructures {
         geometry.setAttribute('uv', new Float32BufferAttribute(uvs, 2));
         geometry.setIndex(indices);
         geometry.computeVertexNormals();
-        this.stoneParts.push(geometry);
+        this.stoneParts.push(this.placeGeometry(geometry));
     }
 
     private addTowerSigns(
@@ -2563,6 +3132,7 @@ export class Megastructures {
                 level = 1 + (level % maxLevel);
             }
             const storey = storeys[level];
+            this.setCurrentStorey(storey);
             const centre = side < 2 ? (storey.minX + storey.maxX) / 2 : (storey.minZ + storey.maxZ) / 2;
             const plane = side === 0 ? storey.maxZ : side === 1 ? storey.minZ : side === 2 ? storey.maxX : storey.minX;
             const tangentLength = side < 2 ? storey.maxX - storey.minX : storey.maxZ - storey.minZ - 2 * WALL_THICKNESS;
@@ -2595,6 +3165,7 @@ export class Megastructures {
 
         // A smaller sign at eye level marks the way in without blocking the doorway.
         const ground = storeys[0];
+        this.setCurrentStorey(ground);
         const centreX = (ground.minX + ground.maxX) / 2;
         const centreZ = (ground.minZ + ground.maxZ) / 2;
         const { normalX, normalZ } = sideBasis(entranceSide);
@@ -2649,7 +3220,7 @@ export class Megastructures {
         geometry.rotateY(Math.atan2(normalX, normalZ));
         geometry.translate(baseX, centreY, baseZ);
         this.applySignAttributes(geometry, color, signLayer, animation);
-        this.poweredDecorParts[this.currentTowerIndex].signs.push(geometry);
+        this.poweredDecorParts[this.currentTowerIndex].signs.push(this.placeGeometry(geometry));
     }
 
     private addTowerWalls(
@@ -2671,14 +3242,20 @@ export class Megastructures {
         const doorMin = doorCentre - doorWidth / 2;
         const doorMax = doorCentre + doorWidth / 2;
 
+        const sampleGround = (localX: number, localZ: number): number => {
+            const world = this.storeyPointToWorld(localX, this.currentTowerOrigin.y, localZ);
+            return heightAt(world.x, world.z);
+        };
+        const doorLow = doorMin;
+        const doorHigh = doorMax;
         const groundY =
             entranceSide === 0
-                ? heightAt(centreX, maxZ - t / 2)
+                ? Math.max(sampleGround(doorLow, maxZ - t / 2), sampleGround(doorHigh, maxZ - t / 2))
                 : entranceSide === 1
-                  ? heightAt(centreX, minZ + t / 2)
+                  ? Math.max(sampleGround(doorLow, minZ + t / 2), sampleGround(doorHigh, minZ + t / 2))
                   : entranceSide === 2
-                    ? heightAt(maxX - t / 2, centreZ)
-                    : heightAt(minX + t / 2, centreZ);
+                    ? Math.max(sampleGround(maxX - t / 2, doorLow), sampleGround(maxX - t / 2, doorHigh))
+                    : Math.max(sampleGround(minX + t / 2, doorLow), sampleGround(minX + t / 2, doorHigh));
         const doorTop = groundY + ENTRANCE_HEIGHT;
 
         // North and south walls span the full width; east and west fill the gap between them.
@@ -2765,7 +3342,7 @@ export class Megastructures {
                     ? new BoxGeometry(along, height, ENTRANCE_FRAME_DEPTH)
                     : new BoxGeometry(ENTRANCE_FRAME_DEPTH, height, along);
             geometry.translate(x, y, z);
-            this.entranceFrameParts.push(geometry);
+            this.entranceFrameParts.push(this.placeGeometry(geometry));
         };
 
         // The jambs run a little below the sampled ground height so uneven terrain never leaves
@@ -2799,7 +3376,7 @@ export class Megastructures {
             groundY + doorHeight / 2,
             wallZ + normalZ * (ENTRANCE_FRAME_DEPTH + 0.06),
         );
-        this.entranceGlowParts.push(halo);
+        this.entranceGlowParts.push(this.placeGeometry(halo));
     }
 
     // Adds a full wall, or a wall split around a ground-level doorway on the entrance side.
@@ -2861,10 +3438,7 @@ export class Megastructures {
         const minY = ascendingPositive ? lowY : highY;
         const maxY = ascendingPositive ? highY : lowY;
 
-        this.ramps.push({ ...bounds, minY, maxY, axis });
-        this.addRampSegment(bounds.minX, bounds.maxX, bounds.minZ, bounds.maxZ, minY, maxY, axis);
-
-        return {
+        const flight: RampFlight = {
             axis,
             laneCentre,
             lowAlong,
@@ -2874,7 +3448,70 @@ export class Megastructures {
             ascendingPositive,
             holeLength,
             ...bounds,
+            frame: this.currentStoreyFrame,
+            storeyCentreX: this.currentStoreyCenterX,
+            storeyCentreZ: this.currentStoreyCenterZ,
+            worldMinX: 0,
+            worldMaxX: 0,
+            worldMinZ: 0,
+            worldMaxZ: 0,
         };
+        this.currentTowerRamps.push(flight);
+        const localMinX = bounds.minX - this.currentStoreyCenterX;
+        const localMaxX = bounds.maxX - this.currentStoreyCenterX;
+        const localMinZ = bounds.minZ - this.currentStoreyCenterZ;
+        const localMaxZ = bounds.maxZ - this.currentStoreyCenterZ;
+        const localMinY = minY - this.currentTowerOrigin.y;
+        const localMaxY = maxY - this.currentTowerOrigin.y;
+        const world = this.worldAabbOfLocalBox(
+            localMinX,
+            localMaxX,
+            localMinZ,
+            localMaxZ,
+            localMinY,
+            localMaxY,
+            this.currentStoreyFrame,
+        );
+        const axisMid = axis === 'x' ? (localMinZ + localMaxZ) / 2 : (localMinX + localMaxX) / 2;
+        const minEnd = localToWorld(
+            this.currentStoreyFrame,
+            axis === 'x' ? localMinX : axisMid,
+            localMinY,
+            axis === 'x' ? axisMid : localMinZ,
+            this.boxScratch,
+        );
+        const minEndY = minEnd.y;
+        const maxEnd = localToWorld(
+            this.currentStoreyFrame,
+            axis === 'x' ? localMaxX : axisMid,
+            localMaxY,
+            axis === 'x' ? axisMid : localMaxZ,
+            this.boxScratch,
+        );
+        flight.worldMinX = world.minX;
+        flight.worldMaxX = world.maxX;
+        flight.worldMinZ = world.minZ;
+        flight.worldMaxZ = world.maxZ;
+        this.ramps.push({
+            minX: world.minX,
+            maxX: world.maxX,
+            minZ: world.minZ,
+            maxZ: world.maxZ,
+            minY: minEndY,
+            maxY: maxEnd.y,
+            localMinX,
+            localMaxX,
+            localMinZ,
+            localMaxZ,
+            localMinY,
+            localMaxY,
+            axis,
+            frame: this.currentStoreyFrame,
+            towerIndex: this.currentTowerIndex,
+        });
+        this.addRampSegment(bounds.minX, bounds.maxX, bounds.minZ, bounds.maxZ, minY, maxY, axis);
+
+        return flight;
     }
 
     // Builds a full rectangular floor and cuts an opening where the incoming ramp passes
@@ -2890,29 +3527,56 @@ export class Megastructures {
         ramp: RampFlight,
     ): void {
         const bottom = floorY - FLOOR_THICKNESS;
-        const floorMinX = minX;
-        const floorMaxX = maxX;
-        const floorMinZ = minZ;
-        const floorMaxZ = maxZ;
+        // The flight is generated in the storey below, which may have a different yaw. Transform its
+        // high-end footprint into this slab's frame and cut the AABB of that footprint. The opening
+        // is slightly larger than the ramp at the corners, but it always contains the high end.
+        const floorMinX = minX - this.currentStoreyCenterX;
+        const floorMaxX = maxX - this.currentStoreyCenterX;
+        const floorMinZ = minZ - this.currentStoreyCenterZ;
+        const floorMaxZ = maxZ - this.currentStoreyCenterZ;
         const halfHole = RAMP_WIDTH / 2 + RAMP_HOLE_MARGIN;
         const direction = ramp.ascendingPositive ? 1 : -1;
         const holeStart = ramp.highAlong - direction * ramp.holeLength;
         const holeEnd = ramp.highAlong;
+        const rampLocalY = ramp.highY - this.currentTowerOrigin.y;
+        const corners =
+            ramp.axis === 'x'
+                ? [
+                      { x: holeStart, z: ramp.laneCentre - halfHole },
+                      { x: holeStart, z: ramp.laneCentre + halfHole },
+                      { x: holeEnd, z: ramp.laneCentre - halfHole },
+                      { x: holeEnd, z: ramp.laneCentre + halfHole },
+                  ]
+                : [
+                      { x: ramp.laneCentre - halfHole, z: holeStart },
+                      { x: ramp.laneCentre + halfHole, z: holeStart },
+                      { x: ramp.laneCentre - halfHole, z: holeEnd },
+                      { x: ramp.laneCentre + halfHole, z: holeEnd },
+                  ];
 
-        let holeMinX: number;
-        let holeMaxX: number;
-        let holeMinZ: number;
-        let holeMaxZ: number;
-        if (ramp.axis === 'x') {
-            holeMinX = Math.min(holeStart, holeEnd);
-            holeMaxX = Math.max(holeStart, holeEnd);
-            holeMinZ = ramp.laneCentre - halfHole;
-            holeMaxZ = ramp.laneCentre + halfHole;
-        } else {
-            holeMinZ = Math.min(holeStart, holeEnd);
-            holeMaxZ = Math.max(holeStart, holeEnd);
-            holeMinX = ramp.laneCentre - halfHole;
-            holeMaxX = ramp.laneCentre + halfHole;
+        let holeMinX = Infinity;
+        let holeMaxX = -Infinity;
+        let holeMinZ = Infinity;
+        let holeMaxZ = -Infinity;
+        for (const corner of corners) {
+            const world = localToWorld(
+                ramp.frame,
+                corner.x - ramp.storeyCentreX,
+                rampLocalY,
+                corner.z - ramp.storeyCentreZ,
+                this.holeScratchA,
+            );
+            const upperLocal = worldToLocal(
+                this.currentStoreyFrame,
+                world.x,
+                world.y,
+                world.z,
+                this.holeScratchB,
+            );
+            holeMinX = Math.min(holeMinX, upperLocal.x);
+            holeMaxX = Math.max(holeMaxX, upperLocal.x);
+            holeMinZ = Math.min(holeMinZ, upperLocal.z);
+            holeMaxZ = Math.max(holeMaxZ, upperLocal.z);
         }
 
         holeMinX = Math.max(floorMinX, holeMinX);
@@ -2921,17 +3585,166 @@ export class Megastructures {
         holeMaxZ = Math.min(floorMaxZ, holeMaxZ);
 
         if (holeMinX > floorMinX + 0.01) {
-            this.addStoneBox(floorMinX, holeMinX, floorMinZ, floorMaxZ, bottom, floorY);
+            this.addStoneBoxLocal(floorMinX, holeMinX, floorMinZ, floorMaxZ, bottom, floorY);
         }
         if (holeMaxX < floorMaxX - 0.01) {
-            this.addStoneBox(holeMaxX, floorMaxX, floorMinZ, floorMaxZ, bottom, floorY);
+            this.addStoneBoxLocal(holeMaxX, floorMaxX, floorMinZ, floorMaxZ, bottom, floorY);
         }
         if (holeMinZ > floorMinZ + 0.01) {
-            this.addStoneBox(holeMinX, holeMaxX, floorMinZ, holeMinZ, bottom, floorY);
+            this.addStoneBoxLocal(holeMinX, holeMaxX, floorMinZ, holeMinZ, bottom, floorY);
         }
         if (holeMaxZ < floorMaxZ - 0.01) {
-            this.addStoneBox(holeMinX, holeMaxX, holeMaxZ, floorMaxZ, bottom, floorY);
+            this.addStoneBoxLocal(holeMinX, holeMaxX, holeMaxZ, floorMaxZ, bottom, floorY);
         }
+
+        this.addRampFloorCollar(ramp, floorY, holeMinX, holeMaxX, holeMinZ, holeMaxZ);
+    }
+
+    // The floor above is built in the upper room's frame, so a lower room that is larger or offset
+    // would lose part of its ceiling. Build that ceiling in the lower room's own frame as a second
+    // slab, 2 cm below the upper one so the overlapping volumes never share a visible face. Each
+    // piece follows its real rotated footprint instead of the AABB union of both rooms, which used
+    // to leave roof-like corners sticking out where neither room exists.
+    private addLowerCeiling(lower: MegastructureStorey, ramp: RampFlight, floorY: number): void {
+        const frame = lower.frame;
+        if (!frame) {
+            return;
+        }
+        const centreX = (lower.minX + lower.maxX) / 2;
+        const centreZ = (lower.minZ + lower.maxZ) / 2;
+        const localFloorY = floorY - this.currentTowerOrigin.y;
+        const topY = localFloorY - 0.02;
+        const bottomY = topY - FLOOR_THICKNESS;
+        const minX = lower.minX + WALL_THICKNESS - centreX;
+        const maxX = lower.maxX - WALL_THICKNESS - centreX;
+        const minZ = lower.minZ + WALL_THICKNESS - centreZ;
+        const maxZ = lower.maxZ - WALL_THICKNESS - centreZ;
+        if (minX >= maxX - 0.01 || minZ >= maxZ - 0.01) {
+            return;
+        }
+
+        // The ramp is built in this same frame, so its opening is an exact rectangle here.
+        const halfHole = RAMP_WIDTH / 2 + RAMP_HOLE_MARGIN;
+        const direction = ramp.ascendingPositive ? 1 : -1;
+        const holeStart = ramp.highAlong - direction * ramp.holeLength;
+        const holeEnd = ramp.highAlong;
+        const alongMin = Math.min(holeStart, holeEnd);
+        const alongMax = Math.max(holeStart, holeEnd);
+        let holeMinX: number;
+        let holeMaxX: number;
+        let holeMinZ: number;
+        let holeMaxZ: number;
+        if (ramp.axis === 'x') {
+            holeMinX = alongMin - centreX;
+            holeMaxX = alongMax - centreX;
+            holeMinZ = ramp.laneCentre - halfHole - centreZ;
+            holeMaxZ = ramp.laneCentre + halfHole - centreZ;
+        } else {
+            holeMinX = ramp.laneCentre - halfHole - centreX;
+            holeMaxX = ramp.laneCentre + halfHole - centreX;
+            holeMinZ = alongMin - centreZ;
+            holeMaxZ = alongMax - centreZ;
+        }
+        holeMinX = Math.max(minX, holeMinX);
+        holeMaxX = Math.min(maxX, holeMaxX);
+        holeMinZ = Math.max(minZ, holeMinZ);
+        holeMaxZ = Math.min(maxZ, holeMaxZ);
+
+        if (holeMinX >= holeMaxX || holeMinZ >= holeMaxZ) {
+            this.addStoneBoxInFrame(frame, minX, maxX, minZ, maxZ, bottomY, topY);
+            return;
+        }
+        if (holeMinX > minX + 0.01) {
+            this.addStoneBoxInFrame(frame, minX, holeMinX, minZ, maxZ, bottomY, topY);
+        }
+        if (holeMaxX < maxX - 0.01) {
+            this.addStoneBoxInFrame(frame, holeMaxX, maxX, minZ, maxZ, bottomY, topY);
+        }
+        if (holeMinZ > minZ + 0.01) {
+            this.addStoneBoxInFrame(frame, holeMinX, holeMaxX, minZ, holeMinZ, bottomY, topY);
+        }
+        if (holeMaxZ < maxZ - 0.01) {
+            this.addStoneBoxInFrame(frame, holeMinX, holeMaxX, holeMaxZ, maxZ, bottomY, topY);
+        }
+    }
+
+    // The hole above is the axis-aligned AABB of the ramp's footprint in this storey's frame. When
+    // the storey is yawed relative to the ramp, that AABB is larger than the ramp and leaves
+    // unsupported triangles around its edges. Fill them with a floor patch built in the ramp's own
+    // frame, where the opening is exactly rectangular. The patch sits 1 cm below the main slab, so
+    // it is hidden wherever it overlaps solid floor and only appears in the gap.
+    private addRampFloorCollar(
+        ramp: RampFlight,
+        floorY: number,
+        holeMinX: number,
+        holeMaxX: number,
+        holeMinZ: number,
+        holeMaxZ: number,
+    ): void {
+        const halfWidth = RAMP_WIDTH / 2;
+        const direction = ramp.ascendingPositive ? 1 : -1;
+        const holeStart = ramp.highAlong - direction * ramp.holeLength;
+        const holeEnd = ramp.highAlong;
+        const localFloorY = floorY - this.currentTowerOrigin.y;
+        const patchTopY = localFloorY - 0.01;
+        const patchBottomY = patchTopY - FLOOR_THICKNESS;
+        // The ramp surface is leaned with the tower, so the world-vertical line through the floor
+        // plane shifts slightly in the ramp's local frame as it drops through the opening. Inset the
+        // collar's inner edge by that shift so the wedge stays supported too. The opening always
+        // keeps at least 1.2 m of width for the player.
+        const up = ramp.frame.worldUpLocal;
+        const upSlope = Math.hypot(up.x, up.z) / Math.max(0.001, Math.abs(up.y));
+        const run = Math.abs(ramp.highAlong - ramp.lowAlong);
+        const rise = Math.abs(ramp.highY - ramp.lowY);
+        const drop = run > 1e-6 ? ramp.holeLength * (rise / run) : 0;
+        const collarInset = Math.min(halfWidth - 0.6, Math.max(0.05, ramp.holeLength - 0.8), drop * upSlope + 0.05);
+
+        let innerMinX: number;
+        let innerMaxX: number;
+        let innerMinZ: number;
+        let innerMaxZ: number;
+        // Inset the sides and the low end only. The high end must stay open: the capsule needs to
+        // walk straight off the ramp onto the floor, and its radius would hit a lip there.
+        const alongMin = Math.min(holeStart, holeEnd);
+        const alongMax = Math.max(holeStart, holeEnd);
+        const lowAtMin = holeStart < holeEnd;
+        const innerAlongMin = lowAtMin ? alongMin + collarInset : alongMin;
+        const innerAlongMax = lowAtMin ? alongMax : alongMax - collarInset;
+        if (ramp.axis === 'x') {
+            innerMinX = innerAlongMin - ramp.storeyCentreX;
+            innerMaxX = innerAlongMax - ramp.storeyCentreX;
+            innerMinZ = ramp.laneCentre - halfWidth + collarInset - ramp.storeyCentreZ;
+            innerMaxZ = ramp.laneCentre + halfWidth - collarInset - ramp.storeyCentreZ;
+        } else {
+            innerMinX = ramp.laneCentre - halfWidth + collarInset - ramp.storeyCentreX;
+            innerMaxX = ramp.laneCentre + halfWidth - collarInset - ramp.storeyCentreX;
+            innerMinZ = innerAlongMin - ramp.storeyCentreZ;
+            innerMaxZ = innerAlongMax - ramp.storeyCentreZ;
+        }
+
+        // Cover the whole upper-storey hole, not just the ramp footprint.
+        let outerMinX = innerMinX;
+        let outerMaxX = innerMaxX;
+        let outerMinZ = innerMinZ;
+        let outerMaxZ = innerMaxZ;
+        for (const x of [holeMinX, holeMaxX]) {
+            for (const z of [holeMinZ, holeMaxZ]) {
+                const world = localToWorld(this.currentStoreyFrame, x, localFloorY, z, this.holeScratchA);
+                const lower = worldToLocal(ramp.frame, world.x, world.y, world.z, this.holeScratchB);
+                outerMinX = Math.min(outerMinX, lower.x);
+                outerMaxX = Math.max(outerMaxX, lower.x);
+                outerMinZ = Math.min(outerMinZ, lower.z);
+                outerMaxZ = Math.max(outerMaxZ, lower.z);
+            }
+        }
+
+        const addPatch = (minX: number, maxX: number, minZ: number, maxZ: number): void => {
+            this.addStoneBoxInFrame(ramp.frame, minX, maxX, minZ, maxZ, patchBottomY, patchTopY);
+        };
+        addPatch(outerMinX, innerMinX, outerMinZ, outerMaxZ);
+        addPatch(innerMaxX, outerMaxX, outerMinZ, outerMaxZ);
+        addPatch(innerMinX, innerMaxX, outerMinZ, innerMinZ);
+        addPatch(innerMinX, innerMaxX, innerMaxZ, outerMaxZ);
     }
 
     // Turns the ground-floor ramp into a sealed corridor. Each wall sits just outside the ramp's
@@ -2987,7 +3800,7 @@ export class Megastructures {
         } else {
             geometry.translate(centreX, centreY - topOffsetY, centreZ - topOffsetAxis);
         }
-        this.stoneParts.push(geometry);
+        this.stoneParts.push(this.placeGeometry(geometry));
 
         // Add low side rails so the player cannot step off the open edges of the ramp.
         const railOffsetY = Math.cos(angle) * RAMP_PARAPET_HEIGHT * 0.5;
@@ -3004,7 +3817,7 @@ export class Megastructures {
             } else {
                 rail.translate(sideX, centreY + railOffsetY, centreZ + railOffsetAxis);
             }
-            this.stoneParts.push(rail);
+            this.stoneParts.push(this.placeGeometry(rail));
         };
         if (axis === 'x') {
             addSideRail(0, minZ + railInset);
@@ -3032,7 +3845,7 @@ export class Megastructures {
         for (const [partWidth, partHeight, partDepth, x, partY, z] of parts) {
             const geometry = new BoxGeometry(partWidth, partHeight, partDepth);
             geometry.translate(x, partY, z);
-            decor.trim.push(geometry);
+            decor.trim.push(this.placeGeometry(geometry));
         }
 
         // Soft additive bands on the outer faces of all four trim strips. They are merged with the
@@ -3042,7 +3855,7 @@ export class Megastructures {
             const geometry = new PlaneGeometry(glowWidth, glowHeight);
             geometry.rotateY(rotationY);
             geometry.translate(x, y, z);
-            decor.glow.push(geometry);
+            decor.glow.push(this.placeGeometry(geometry));
         };
         addGlow(width + 0.6, centreX, maxZ + 0.13, 0);
         addGlow(width + 0.6, centreX, minZ - 0.13, Math.PI);
@@ -3051,17 +3864,65 @@ export class Megastructures {
     }
 
     private addStoneBox(minX: number, maxX: number, minZ: number, maxZ: number, baseY: number, topY: number): void {
-        const width = maxX - minX;
-        const depth = maxZ - minZ;
+        this.addStoneBoxLocal(
+            minX - this.currentStoreyCenterX,
+            maxX - this.currentStoreyCenterX,
+            minZ - this.currentStoreyCenterZ,
+            maxZ - this.currentStoreyCenterZ,
+            baseY,
+            topY,
+        );
+    }
+
+    private addStoneBoxLocal(
+        localMinX: number,
+        localMaxX: number,
+        localMinZ: number,
+        localMaxZ: number,
+        baseY: number,
+        topY: number,
+    ): void {
+        const width = localMaxX - localMinX;
+        const depth = localMaxZ - localMinZ;
         const height = topY - baseY;
         if (width <= 0.01 || depth <= 0.01 || height <= 0.01) {
             return;
         }
 
         const geometry = new BoxGeometry(width, height, depth);
-        geometry.translate((minX + maxX) / 2, (baseY + topY) / 2, (minZ + maxZ) / 2);
+        geometry.translate((localMinX + localMaxX) / 2, (baseY + topY) / 2, (localMinZ + localMaxZ) / 2);
+        this.stoneParts.push(this.placeStoreyGeometry(geometry));
+        this.pushStructureBoxLocal(localMinX, localMaxX, localMinZ, localMaxZ, baseY, topY);
+    }
+
+    // Adds a stone box in an explicit frame. Used by the ramp floor collar, which has to be built
+    // in the lower storey's frame even though it belongs to the slab above.
+    private addStoneBoxInFrame(
+        frame: StructureFrame,
+        localMinX: number,
+        localMaxX: number,
+        localMinZ: number,
+        localMaxZ: number,
+        localBaseY: number,
+        localTopY: number,
+    ): void {
+        const width = localMaxX - localMinX;
+        const depth = localMaxZ - localMinZ;
+        const height = localTopY - localBaseY;
+        if (width <= 0.01 || depth <= 0.01 || height <= 0.01) {
+            return;
+        }
+
+        const geometry = new BoxGeometry(width, height, depth);
+        geometry.translate(
+            (localMinX + localMaxX) / 2,
+            (localBaseY + localTopY) / 2,
+            (localMinZ + localMaxZ) / 2,
+        );
+        geometry.applyQuaternion(frame.rotation);
+        geometry.translate(frame.origin.x, frame.origin.y, frame.origin.z);
         this.stoneParts.push(geometry);
-        this.boxes.push({ minX, maxX, minZ, maxZ, baseY, topY });
+        this.pushStructureBoxInFrame(frame, localMinX, localMaxX, localMinZ, localMaxZ, localBaseY, localTopY);
     }
 
     private finishFloorProps(): void {

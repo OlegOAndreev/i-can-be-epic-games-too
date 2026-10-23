@@ -944,18 +944,22 @@ describe('enemy robots', () => {
             const key = `${towerIndex}:${level}`;
             counts.set(key, (counts.get(key) ?? 0) + 1);
 
-            expect(child.position.x).toBeGreaterThanOrEqual(storey.minX);
-            expect(child.position.x).toBeLessThanOrEqual(storey.maxX);
-            expect(child.position.z).toBeGreaterThanOrEqual(storey.minZ);
-            expect(child.position.z).toBeLessThanOrEqual(storey.maxZ);
+            const storeyMinX = storey.worldMinX ?? storey.minX;
+            const storeyMaxX = storey.worldMaxX ?? storey.maxX;
+            const storeyMinZ = storey.worldMinZ ?? storey.minZ;
+            const storeyMaxZ = storey.worldMaxZ ?? storey.maxZ;
+            expect(child.position.x).toBeGreaterThanOrEqual(storeyMinX);
+            expect(child.position.x).toBeLessThanOrEqual(storeyMaxX);
+            expect(child.position.z).toBeGreaterThanOrEqual(storeyMinZ);
+            expect(child.position.z).toBeLessThanOrEqual(storeyMaxZ);
 
-            const insetX = Math.min(3, (storey.maxX - storey.minX) * 0.35);
-            const insetZ = Math.min(3, (storey.maxZ - storey.minZ) * 0.35);
+            const insetX = Math.min(3, (storeyMaxX - storeyMinX) * 0.35);
+            const insetZ = Math.min(3, (storeyMaxZ - storeyMinZ) * 0.35);
             const corners = [
-                { x: storey.minX + insetX, z: storey.minZ + insetZ },
-                { x: storey.maxX - insetX, z: storey.minZ + insetZ },
-                { x: storey.minX + insetX, z: storey.maxZ - insetZ },
-                { x: storey.maxX - insetX, z: storey.maxZ - insetZ },
+                { x: storeyMinX + insetX, z: storeyMinZ + insetZ },
+                { x: storeyMaxX - insetX, z: storeyMinZ + insetZ },
+                { x: storeyMinX + insetX, z: storeyMaxZ - insetZ },
+                { x: storeyMaxX - insetX, z: storeyMaxZ - insetZ },
             ];
             expect(
                 corners.some((corner) => Math.hypot(corner.x - child.position.x, corner.z - child.position.z) < 0.01),
@@ -980,10 +984,12 @@ describe('enemy robots', () => {
             expect(counts.get(`${towerIndex}:${tower.levelCount}`)).toBeUndefined();
             const towerRamps = terrain.megastructures.ramps.filter(
                 (ramp) =>
-                    ramp.maxX >= tower.minX - 1 &&
-                    ramp.minX <= tower.maxX + 1 &&
-                    ramp.maxZ >= tower.minZ - 1 &&
-                    ramp.minZ <= tower.maxZ + 1,
+                    (ramp.towerIndex !== undefined
+                        ? ramp.towerIndex === towerIndex
+                        : ramp.maxX >= (tower.worldMinX ?? tower.minX) - 1 &&
+                          ramp.minX <= (tower.worldMaxX ?? tower.maxX) + 1 &&
+                          ramp.maxZ >= (tower.worldMinZ ?? tower.minZ) - 1 &&
+                          ramp.minZ <= (tower.worldMaxZ ?? tower.maxZ) + 1),
             );
             for (let level = 1; level < tower.levelCount; level++) {
                 const count = counts.get(`${towerIndex}:${level}`) ?? 0;

@@ -10,7 +10,9 @@ import { Terrain } from '../src/terrain';
 import type { TerrainOptions } from '../src/terrain';
 import { getSurfaceTextures } from '../src/textures';
 
-export const FAST_TERRAIN = { meshes: false, decorations: false } as const;
+// Axis-aligned fixture for the long-standing geometry tests. Rotation has its own fixture below.
+export const FAST_TERRAIN = { meshes: false, decorations: false, rotateStructures: false } as const;
+export const ROTATED_TERRAIN = { ...FAST_TERRAIN, rotateStructures: true } as const;
 
 export const PLAYER_SETTINGS: PlayerSettings = {
     moveSpeed: 10.5,
@@ -26,6 +28,10 @@ export function testTerrain(seed = 1234, options: TerrainOptions = FAST_TERRAIN)
     const terrain = new Terrain(seed, options);
     onTestFinished(() => terrain.dispose());
     return terrain;
+}
+
+export function testRotatedTerrain(seed = 1234): Terrain {
+    return testTerrain(seed, ROTATED_TERRAIN);
 }
 
 export function testPlayer(terrain: Terrain = testTerrain(), settings: PlayerSettings = PLAYER_SETTINGS): Player {

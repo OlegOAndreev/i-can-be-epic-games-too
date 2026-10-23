@@ -25,14 +25,39 @@ import {
 import { DecalGeometry } from 'three/addons/geometries/DecalGeometry.js';
 
 import { getRadialGlowTexture, getSparkleTexture, glowSpriteMaterial } from './glow';
-import { clamp, hash32, smoothstep } from './math-utils';
+import { clamp, hash32, smoothstep, wrapAngle } from './math-utils';
 import { mergeParts } from './mesh-optimize';
 import { Noise2D, mulberry32 } from './noise';
 import { Megastructures, RAMP_PARAPET_HEIGHT, RAMP_PARAPET_THICKNESS, RAMP_THICKNESS } from './megastructures';
 import type { CrownCatwalk, CrownSpiral, Ramp } from './megastructures';
-import { rampRun } from './ramp-collision';
+import {
+    boxBaseY,
+    boxMaxX,
+    boxMaxZ,
+    boxMinX,
+    boxMinZ,
+    boxNearPoint,
+    boxTopY,
+    rampHighY,
+    rampLowY,
+    rampMaxX,
+    rampMaxZ,
+    rampMinX,
+    rampMinZ,
+    rampNearPoint,
+    rampRun,
+} from './ramp-collision';
 import { RockEffects } from './rock-effects';
 import { ROCK_COLLIDER_RADIUS_FACTOR, createRockGeometry } from './rock-shapes';
+import {
+    createStructureFrame,
+    IDENTITY_FRAME,
+    intersectWorldVerticalWithLocalPlane,
+    intersectWorldVerticalWithLocalSlope,
+    localToWorld,
+    worldToLocal,
+} from './structure-frame';
+import type { StructureFrame } from './structure-frame';
 import { SPACESHIP_CLEARING_RADIUS, Spaceship, findSpaceshipSite, shipFootprintClearance } from './spaceship';
 import type { SpaceshipSite } from './spaceship';
 import { applyTerrainSurfaceShader, applyWaterSurfaceShader, getSurfaceTextures } from './textures';
@@ -351,6 +376,10 @@ interface DecorationCell {
 interface CrownSpiralSurface {
     y: number;
     centerRadius: number;
+    // Intersection of the world vertical line with the ribbon, in the spiral's own frame. The
+    // parapet and line-of-sight checks use these instead of world radii, which a lean would skew.
+    localX: number;
+    localZ: number;
 }
 
 interface TreeCell {
@@ -369,6 +398,9 @@ export interface TerrainOptions {
     meshes?: boolean;
     // Trees, rocks, spires, cacti, and their colliders are the slowest part of world construction.
     decorations?: boolean;
+    // Turn structure yaw and the leaning tower off for the axis-aligned test fixtures. The game
+    // itself leaves this unset, which keeps the rotated layout.
+    rotateStructures?: boolean;
 }
 
 // A summit of the mountain rim, placed along one side of the map: `t` runs from -1 to 1 along the
@@ -440,6 +472,8 @@ export class Terrain {
     private readonly sandCornerX: number;
     private readonly sandCornerZ: number;
     private scratchColor = new Color();
+    private readonly structureLocalPoint = new Vector3();
+    private readonly structureScratch = new Vector3();
     private disposables: Array<{ dispose: () => void }> = [];
     private waterAnimation: WaterAnimation | null = null;
     private water: Mesh | null = null;
@@ -514,7 +548,9 @@ export class Terrain {
         this.startPoints = this.findStartPoints(scenicSpawn, this.spaceshipSite);
         this.spawn = this.lowestStartPoint(this.startPoints);
         this.spawnFacing = this.startFacing(this.spawn, this.startPoints);
-        this.megastructures = new Megastructures(seed, (x, z) => this.heightAt(x, z), this.spawn, WORLD_HALF_SIZE);
+        this.megastructures = new Megastructures(seed, (x, z) => this.heightAt(x, z), this.spawn, WORLD_HALF_SIZE, {
+            rotationEnabled: options.rotateStructures !== false,
+        });
         this.group.add(this.megastructures.group);
         this.disposables.push(...this.megastructures.materials);
         this.spaceship = new Spaceship(this.spaceshipSite, (x, z) => this.heightAt(x, z));
@@ -1001,21 +1037,39 @@ export class Terrain {
         const maxRampStepHeight = Math.max(STEP_HEIGHT, rampStepHeight);
 
         for (const box of this.megastructures.boxes) {
-            if (x < box.minX || x > box.maxX || z < box.minZ || z > box.maxZ) {
+            if (!boxNearPoint(box, x, z)) {
                 continue;
             }
-            if (box.topY > feetY + STEP_HEIGHT) {
+            const boxY = intersectWorldVerticalWithLocalPlane(
+                box.frame ?? IDENTITY_FRAME,
+                x,
+                z,
+                boxTopY(box),
+                this.structureLocalPoint,
+            );
+            if (boxY === Number.NEGATIVE_INFINITY) {
                 continue;
             }
-            surface = Math.max(surface, box.topY);
+            if (
+                this.structureLocalPoint.x < boxMinX(box) ||
+                this.structureLocalPoint.x > boxMaxX(box) ||
+                this.structureLocalPoint.z < boxMinZ(box) ||
+                this.structureLocalPoint.z > boxMaxZ(box)
+            ) {
+                continue;
+            }
+            if (boxY > feetY + STEP_HEIGHT) {
+                continue;
+            }
+            surface = Math.max(surface, boxY);
         }
 
         for (const ramp of this.megastructures.ramps) {
-            if (x < ramp.minX || x > ramp.maxX || z < ramp.minZ || z > ramp.maxZ) {
+            if (!rampNearPoint(ramp, x, z)) {
                 continue;
             }
-            const rampY = this.rampHeightAt(ramp, x, z);
-            if (rampY > feetY + maxRampStepHeight) {
+            const rampY = this.sampleRampHeight(ramp, x, z);
+            if (rampY === null || rampY > feetY + maxRampStepHeight) {
                 continue;
             }
             surface = Math.max(surface, rampY);
@@ -1025,7 +1079,7 @@ export class Terrain {
             const count = this.crownSpiralSurfaces(spiral, x, z, 0);
             for (let i = 0; i < count; i++) {
                 const crownSurface = this.crownSurfaceScratch[i];
-                if (crownSurface.y > feetY + STEP_HEIGHT) {
+                if (crownSurface.y > feetY + maxRampStepHeight) {
                     continue;
                 }
                 surface = Math.max(surface, crownSurface.y);
@@ -1033,12 +1087,11 @@ export class Terrain {
         }
 
         for (const catwalk of this.megastructures.crownCatwalks) {
-            if (catwalk.y > feetY + STEP_HEIGHT) {
+            const catwalkY = this.crownCatwalkSurface(catwalk, x, z, 0);
+            if (catwalkY === Number.NEGATIVE_INFINITY || catwalkY > feetY + STEP_HEIGHT) {
                 continue;
             }
-            if (this.isOnCrownCatwalk(catwalk, x, z)) {
-                surface = Math.max(surface, catwalk.y);
-            }
+            surface = Math.max(surface, catwalkY);
         }
 
         return surface;
@@ -1059,22 +1112,41 @@ export class Terrain {
         }
 
         for (const box of this.megastructures.boxes) {
-            if (box.baseY + 1e-4 < headY) {
+            if (!boxNearPoint(box, x, z)) {
                 continue;
             }
-            if (x < box.minX - radius || x > box.maxX + radius || z < box.minZ - radius || z > box.maxZ + radius) {
+            const boxY = intersectWorldVerticalWithLocalPlane(
+                box.frame ?? IDENTITY_FRAME,
+                x,
+                z,
+                boxBaseY(box),
+                this.structureLocalPoint,
+            );
+            if (boxY === Number.NEGATIVE_INFINITY || boxY + 1e-4 < headY) {
                 continue;
             }
-            ceiling = Math.min(ceiling, box.baseY);
+            if (
+                this.structureLocalPoint.x < boxMinX(box) - radius ||
+                this.structureLocalPoint.x > boxMaxX(box) + radius ||
+                this.structureLocalPoint.z < boxMinZ(box) - radius ||
+                this.structureLocalPoint.z > boxMaxZ(box) + radius
+            ) {
+                continue;
+            }
+            ceiling = Math.min(ceiling, boxY);
         }
 
         for (const ramp of this.megastructures.ramps) {
-            // The radius widens the broadphase, but a ramp can only be overhead when the sample
-            // point itself is inside its footprint; do not extrapolate the slope past the edge.
-            if (x < ramp.minX || x > ramp.maxX || z < ramp.minZ || z > ramp.maxZ) {
+            if (!rampNearPoint(ramp, x, z)) {
                 continue;
             }
-            const underside = this.rampHeightAt(ramp, x, z) - RAMP_THICKNESS;
+            // The radius widens the broadphase, but a ramp can only be overhead when the sample
+            // point itself is inside its footprint; do not extrapolate the slope past the edge.
+            const rampY = this.sampleRampHeight(ramp, x, z);
+            if (rampY === null) {
+                continue;
+            }
+            const underside = rampY - RAMP_THICKNESS;
             if (underside + 1e-4 >= headY) {
                 ceiling = Math.min(ceiling, underside);
             }
@@ -1091,10 +1163,11 @@ export class Terrain {
         }
 
         for (const catwalk of this.megastructures.crownCatwalks) {
-            if (!this.isOnCrownCatwalk(catwalk, x, z, radius)) {
+            const catwalkY = this.crownCatwalkSurface(catwalk, x, z, radius);
+            if (catwalkY === Number.NEGATIVE_INFINITY) {
                 continue;
             }
-            const underside = catwalk.y - catwalk.thickness;
+            const underside = catwalkY - catwalk.thickness;
             if (underside + 1e-4 >= headY) {
                 ceiling = Math.min(ceiling, underside);
             }
@@ -1109,29 +1182,74 @@ export class Terrain {
     private rampStepHeight(position: Vector3, radius: number): number {
         let stepHeight = 0;
         for (const ramp of this.megastructures.ramps) {
-            if (position.x < ramp.minX || position.x > ramp.maxX || position.z < ramp.minZ || position.z > ramp.maxZ) {
+            if (!rampNearPoint(ramp, position.x, position.z, radius)) {
                 continue;
             }
-            const rampY = this.rampHeightAt(ramp, position.x, position.z);
-            if (Math.abs(position.y - rampY) > 0.5) {
+            const rampY = this.sampleRampHeight(ramp, position.x, position.z);
+            if (rampY === null || Math.abs(position.y - rampY) > 0.5) {
                 continue;
             }
             const run = rampRun(ramp);
-            const slope = Math.abs(ramp.maxY - ramp.minY) / Math.max(run, 0.001);
+            const slope = Math.abs(rampHighY(ramp) - rampLowY(ramp)) / Math.max(run, 0.001);
             stepHeight = Math.max(stepHeight, slope * radius);
         }
         return stepHeight;
     }
 
-    private rampHeightAt(ramp: Ramp, x: number, z: number): number {
-        const run = rampRun(ramp);
-        if (!(run > 1e-6)) {
-            // A degenerate ramp has no slope; use its low edge instead of dividing by zero.
-            return ramp.minY;
+    // World height of a ramp surface at a world XZ, or null when the point is outside the ramp's
+    // local footprint. The frame transform makes this work for yawed and leaned storeys.
+    private sampleRampHeight(ramp: Ramp, x: number, z: number): number | null {
+        const frame = ramp.frame ?? IDENTITY_FRAME;
+        const localMinX = rampMinX(ramp);
+        const localMaxX = rampMaxX(ramp);
+        const localMinZ = rampMinZ(ramp);
+        const localMaxZ = rampMaxZ(ramp);
+        const minAlong = ramp.axis === 'x' ? localMinX : localMinZ;
+        const maxAlong = ramp.axis === 'x' ? localMaxX : localMaxZ;
+        const height = intersectWorldVerticalWithLocalSlope(
+            frame,
+            x,
+            z,
+            ramp.axis,
+            minAlong,
+            maxAlong,
+            rampLowY(ramp),
+            rampHighY(ramp),
+            this.structureLocalPoint,
+        );
+        if (height === Number.NEGATIVE_INFINITY) {
+            return null;
         }
-        const along = ramp.axis === 'x' ? x - ramp.minX : z - ramp.minZ;
-        const t = clamp(along / run, 0, 1);
-        return ramp.minY + (ramp.maxY - ramp.minY) * t;
+        const local = this.structureLocalPoint;
+        const edgeEpsilon = 1e-4;
+        if (
+            local.x < localMinX - edgeEpsilon ||
+            local.x > localMaxX + edgeEpsilon ||
+            local.z < localMinZ - edgeEpsilon ||
+            local.z > localMaxZ + edgeEpsilon
+        ) {
+            return null;
+        }
+        return height;
+    }
+
+    private rampHeightAt(ramp: Ramp, x: number, z: number): number {
+        return this.sampleRampHeight(ramp, x, z) ?? ramp.minY;
+    }
+
+    // Pushes the world position by a correction expressed in a storey's local XZ plane.
+    private applyLocalCorrection(
+        frame: StructureFrame,
+        deltaX: number,
+        deltaZ: number,
+        position: Vector3,
+    ): void {
+        if (deltaX === 0 && deltaZ === 0) {
+            return;
+        }
+        this.structureLocalPoint.set(deltaX, 0, deltaZ).applyQuaternion(frame.rotation);
+        position.x += this.structureLocalPoint.x;
+        position.z += this.structureLocalPoint.z;
     }
 
     // True when a point is enclosed by a tower or resting on any of its floors, ramps, or crown.
@@ -1149,10 +1267,28 @@ export class Terrain {
         }
 
         for (const box of this.megastructures.boxes) {
-            if (x < box.minX || x > box.maxX || z < box.minZ || z > box.maxZ) {
+            if (!boxNearPoint(box, x, z)) {
                 continue;
             }
-            if (Math.abs(box.topY - feetY) <= tolerance) {
+            const boxY = intersectWorldVerticalWithLocalPlane(
+                box.frame ?? IDENTITY_FRAME,
+                x,
+                z,
+                boxTopY(box),
+                this.structureLocalPoint,
+            );
+            if (boxY === Number.NEGATIVE_INFINITY) {
+                continue;
+            }
+            if (
+                this.structureLocalPoint.x < boxMinX(box) ||
+                this.structureLocalPoint.x > boxMaxX(box) ||
+                this.structureLocalPoint.z < boxMinZ(box) ||
+                this.structureLocalPoint.z > boxMaxZ(box)
+            ) {
+                continue;
+            }
+            if (Math.abs(boxY - feetY) <= tolerance) {
                 return true;
             }
         }
@@ -1171,10 +1307,8 @@ export class Terrain {
         }
 
         for (const catwalk of this.megastructures.crownCatwalks) {
-            if (Math.abs(catwalk.y - feetY) > tolerance) {
-                continue;
-            }
-            if (this.isOnCrownCatwalk(catwalk, x, z)) {
+            const catwalkY = this.crownCatwalkSurface(catwalk, x, z, 0);
+            if (catwalkY !== Number.NEGATIVE_INFINITY && Math.abs(catwalkY - feetY) <= tolerance) {
                 return true;
             }
         }
@@ -1195,10 +1329,11 @@ export class Terrain {
     // the next step is onto a ramp, which is allowed a taller step than a floor.
     isOnRamp(x: number, z: number, feetY: number, tolerance = 0.35): boolean {
         for (const ramp of this.megastructures.ramps) {
-            if (x < ramp.minX || x > ramp.maxX || z < ramp.minZ || z > ramp.maxZ) {
+            if (!rampNearPoint(ramp, x, z)) {
                 continue;
             }
-            if (Math.abs(this.rampHeightAt(ramp, x, z) - feetY) <= tolerance) {
+            const rampY = this.sampleRampHeight(ramp, x, z);
+            if (rampY !== null && Math.abs(rampY - feetY) <= tolerance) {
                 return true;
             }
         }
@@ -1211,38 +1346,75 @@ export class Terrain {
     // them immediately; reusing the list keeps the player, camera, and animal queries allocation-free.
     private crownSpiralSurfaces(spiral: CrownSpiral, x: number, z: number, margin: number): number {
         this.crownSurfaceCount = 0;
-        const dx = x - spiral.x;
-        const dz = z - spiral.z;
-        const pointRadius = Math.hypot(dx, dz);
-        if (pointRadius < 1e-4) {
+        const baseX = spiral.worldX ?? spiral.x;
+        const baseZ = spiral.worldZ ?? spiral.z;
+        const frame =
+            spiral.frame ?? createStructureFrame(baseX, spiral.baseY, baseZ, IDENTITY_FRAME.rotation);
+
+        // The ribbon is a ring around the frame's local Y axis. When the tower leans, that axis is
+        // not world-vertical: the top of the spiral is shifted away from the base centre. Include
+        // that shift in the reject radius so the per-turn loop still sees every reachable point.
+        const top = localToWorld(frame, 0, spiral.height, 0, this.structureScratch);
+        const shift = Math.hypot(top.x - baseX, top.z - baseZ);
+        const pointRadius = Math.hypot(x - baseX, z - baseZ);
+        const minRadius = Math.min(spiral.baseRadius, spiral.topRadius) + spiral.gap - shift - margin;
+        const maxRadius =
+            Math.max(spiral.baseRadius, spiral.topRadius) + spiral.width + spiral.gap + shift + margin;
+        if (pointRadius < minRadius - 1e-6 || pointRadius > maxRadius + 1e-6) {
+            return 0;
+        }
+
+        const local = worldToLocal(frame, x, 0, z, this.structureScratch);
+        const up = frame.worldUpLocal;
+        if (Math.abs(up.y) < 1e-9) {
             return 0;
         }
 
         const halfWidth = spiral.width / 2 + margin;
-        const minCenterRadius = Math.min(spiral.baseRadius, spiral.topRadius) + spiral.width / 2 + spiral.gap;
-        const maxCenterRadius = Math.max(spiral.baseRadius, spiral.topRadius) + spiral.width / 2 + spiral.gap;
-        // Most queries are far outside the ribbon's ring, so reject before the per-turn loop.
-        if (pointRadius < minCenterRadius - halfWidth - 1e-6 || pointRadius > maxCenterRadius + halfWidth + 1e-6) {
-            return 0;
-        }
+        const baseAngle = positiveAngle(Math.atan2(local.z, local.x) * spiral.direction);
+        const maxTurn = Math.ceil(spiral.totalAngle / (Math.PI * 2)) + 1;
 
-        let angle = Math.atan2(dz, dx) * spiral.direction;
-        angle = ((angle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+        // Turn -1 covers the flat start face: a point whose angle rounds just below zero lands on
+        // the beginning of the ribbon rather than being dropped for having a negative parameter.
+        for (let turn = -1; turn <= maxTurn; turn++) {
+            // Solve `s = baseAngle + 2π·turn + angleDrift(s)` for the ribbon parameter. The world
+            // vertical line is not local-vertical on a leaned tower, so the local angle drifts with
+            // height. `angleDrift` is the unwrapped drift, which keeps the solve on one revolution
+            // instead of jumping across the 0/2π seam.
+            let s = baseAngle + turn * Math.PI * 2;
+            for (let iteration = 0; iteration < 3; iteration++) {
+                const localY = spiral.height * (s / spiral.totalAngle);
+                const worldY = (localY - local.y) / up.y;
+                const pointX = local.x + up.x * worldY;
+                const pointZ = local.z + up.z * worldY;
+                const drift = wrapAngle(Math.atan2(pointZ, pointX) * spiral.direction - baseAngle);
+                s = baseAngle + turn * Math.PI * 2 + drift;
+            }
 
-        for (let s = angle; s <= spiral.totalAngle + 1e-9; s += Math.PI * 2) {
-            const climb = s / spiral.totalAngle;
+            if (s < -1e-4 || s > spiral.totalAngle + 1e-6) {
+                continue;
+            }
+            const climb = Math.min(1, Math.max(0, s / spiral.totalAngle));
+            const localY = spiral.height * climb;
+            const worldY = (localY - local.y) / up.y;
+            const localX = local.x + up.x * worldY;
+            const localZ = local.z + up.z * worldY;
             const centerRadius =
                 spiral.baseRadius + (spiral.topRadius - spiral.baseRadius) * climb + spiral.width / 2 + spiral.gap;
-            if (Math.abs(pointRadius - centerRadius) <= halfWidth + 1e-6) {
-                let surface = this.crownSurfaceScratch[this.crownSurfaceCount];
-                if (!surface) {
-                    surface = { y: 0, centerRadius: 0 };
-                    this.crownSurfaceScratch.push(surface);
-                }
-                surface.y = spiral.baseY + spiral.height * climb;
-                surface.centerRadius = centerRadius;
-                this.crownSurfaceCount++;
+            if (Math.abs(Math.hypot(localX, localZ) - centerRadius) > halfWidth + 1e-6) {
+                continue;
             }
+
+            let surface = this.crownSurfaceScratch[this.crownSurfaceCount];
+            if (!surface) {
+                surface = { y: 0, centerRadius: 0, localX: 0, localZ: 0 };
+                this.crownSurfaceScratch.push(surface);
+            }
+            surface.y = worldY;
+            surface.centerRadius = centerRadius;
+            surface.localX = localX;
+            surface.localZ = localZ;
+            this.crownSurfaceCount++;
         }
 
         return this.crownSurfaceCount;
@@ -1262,24 +1434,44 @@ export class Terrain {
         }
 
         for (const box of this.megastructures.boxes) {
-            if (x < box.minX - radius || x > box.maxX + radius || z < box.minZ - radius || z > box.maxZ + radius) {
+            if (!boxNearPoint(box, x, z, radius)) {
                 continue;
             }
-            if (y > box.baseY - radius && y < box.topY + radius) {
+            const local = worldToLocal(box.frame ?? IDENTITY_FRAME, x, y, z, this.structureScratch);
+            if (
+                local.x < boxMinX(box) - radius ||
+                local.x > boxMaxX(box) + radius ||
+                local.z < boxMinZ(box) - radius ||
+                local.z > boxMaxZ(box) + radius
+            ) {
+                continue;
+            }
+            if (local.y > boxBaseY(box) - radius && local.y < boxTopY(box) + radius) {
                 return true;
             }
         }
         for (const ramp of this.megastructures.ramps) {
-            if (x < ramp.minX - radius || x > ramp.maxX + radius || z < ramp.minZ - radius || z > ramp.maxZ + radius) {
+            if (!rampNearPoint(ramp, x, z, radius)) {
                 continue;
             }
-            const rampY = this.rampHeightAt(ramp, x, z);
-            if (y > rampY - RAMP_THICKNESS - radius && y < rampY + radius) {
+            const local = worldToLocal(ramp.frame ?? IDENTITY_FRAME, x, y, z, this.structureScratch);
+            if (
+                local.x < rampMinX(ramp) - radius ||
+                local.x > rampMaxX(ramp) + radius ||
+                local.z < rampMinZ(ramp) - radius ||
+                local.z > rampMaxZ(ramp) + radius
+            ) {
+                continue;
+            }
+            const run = rampRun(ramp);
+            const along = ramp.axis === 'x' ? local.x - rampMinX(ramp) : local.z - rampMinZ(ramp);
+            const rampY =
+                rampLowY(ramp) + (rampHighY(ramp) - rampLowY(ramp)) * clamp(along / Math.max(run, 0.001), 0, 1);
+            if (local.y > rampY - RAMP_THICKNESS - radius && local.y < rampY + radius) {
                 return true;
             }
         }
         for (const spiral of this.megastructures.crownSpirals) {
-            const pointRadius = Math.hypot(x - spiral.x, z - spiral.z);
             const count = this.crownSpiralSurfaces(spiral, x, z, radius);
             for (let i = 0; i < count; i++) {
                 const crownSurface = this.crownSurfaceScratch[i];
@@ -1287,6 +1479,7 @@ export class Terrain {
                     return true;
                 }
 
+                const pointRadius = Math.hypot(crownSurface.localX, crownSurface.localZ);
                 const outerEdge = crownSurface.centerRadius + spiral.width / 2;
                 const wallCentre = outerEdge - spiral.parapetThickness / 2;
                 if (
@@ -1299,30 +1492,49 @@ export class Terrain {
             }
         }
         for (const catwalk of this.megastructures.crownCatwalks) {
-            const local = this.crownCatwalkLocal(catwalk, x, z);
-            if (this.isOnCrownCatwalk(catwalk, x, z, radius)) {
-                if (y > catwalk.y - catwalk.thickness - radius && y < catwalk.y + radius) {
-                    return true;
-                }
-                const railDistance =
-                    (local.along > catwalk.length ? catwalk.ledgeWidth : catwalk.width) / 2 -
-                    catwalk.parapetThickness / 2;
-                if (
-                    y > catwalk.y - 0.1 &&
-                    y < catwalk.y + catwalk.parapetHeight + 0.05 + radius &&
-                    Math.abs(Math.abs(local.across) - railDistance) <= catwalk.parapetThickness / 2 + radius
-                ) {
-                    return true;
-                }
+            const catwalkY = this.crownCatwalkSurface(catwalk, x, z, radius);
+            if (catwalkY === Number.NEGATIVE_INFINITY) {
+                continue;
+            }
+            const along = this.structureLocalPoint.z;
+            const across = this.structureLocalPoint.x;
+            if (y > catwalkY - catwalk.thickness - radius && y < catwalkY + radius) {
+                return true;
+            }
+            const railDistance =
+                (along > catwalk.length ? catwalk.ledgeWidth : catwalk.width) / 2 - catwalk.parapetThickness / 2;
+            if (
+                y > catwalkY - 0.1 &&
+                y < catwalkY + catwalk.parapetHeight + 0.05 + radius &&
+                Math.abs(Math.abs(across) - railDistance) <= catwalk.parapetThickness / 2 + radius
+            ) {
+                return true;
             }
         }
         for (const cone of this.megastructures.crownCones) {
-            if (y < cone.baseY - 0.1 || y > cone.topY + 0.05) {
+            const coneHeight = cone.topY - cone.baseY;
+            if (coneHeight <= 0) {
                 continue;
             }
-            const t = Math.min(1, Math.max(0, (y - cone.baseY) / (cone.topY - cone.baseY)));
+            if (!cone.frame) {
+                if (y < cone.baseY - 0.1 || y > cone.topY + 0.05) {
+                    continue;
+                }
+                const t = Math.min(1, Math.max(0, (y - cone.baseY) / coneHeight));
+                const coneRadius = cone.baseRadius + (cone.topRadius - cone.baseRadius) * t;
+                if (Math.hypot(x - cone.x, z - cone.z) < coneRadius + radius) {
+                    return true;
+                }
+                continue;
+            }
+
+            const local = worldToLocal(cone.frame, x, y, z, this.structureScratch);
+            if (local.y < -0.1 || local.y > coneHeight + 0.05) {
+                continue;
+            }
+            const t = Math.min(1, Math.max(0, local.y / coneHeight));
             const coneRadius = cone.baseRadius + (cone.topRadius - cone.baseRadius) * t;
-            if (Math.hypot(x - cone.x, z - cone.z) < coneRadius + radius) {
+            if (Math.hypot(local.x, local.z) < coneRadius + radius) {
                 return true;
             }
         }
@@ -1383,29 +1595,42 @@ export class Terrain {
             minY = Math.min(minY, ramp.minY - RAMP_THICKNESS);
             maxY = Math.max(maxY, ramp.maxY);
         }
+        // A leaned crown is shifted horizontally and vertically away from its base centre. Add that
+        // shift to the conservative bounds so broadphase never rejects a query near the crown.
+        const frameTilt = (frame: StructureFrame | undefined): number =>
+            frame ? Math.hypot(frame.worldUpLocal.x, frame.worldUpLocal.z) : 0;
         for (const spiral of structures.crownSpirals) {
             const reach =
                 Math.max(spiral.baseRadius, spiral.topRadius) + spiral.width + spiral.gap + spiral.parapetThickness;
+            const shift = (spiral.height + reach) * frameTilt(spiral.frame);
             expand(
-                spiral.x,
-                spiral.z,
-                reach,
-                spiral.baseY - spiral.thickness,
-                spiral.baseY + spiral.height + spiral.parapetHeight + 0.05,
+                spiral.worldX ?? spiral.x,
+                spiral.worldZ ?? spiral.z,
+                reach + shift,
+                spiral.baseY - spiral.thickness - shift,
+                spiral.baseY + spiral.height + spiral.parapetHeight + 0.05 + shift,
             );
         }
         for (const catwalk of structures.crownCatwalks) {
             const reach = catwalk.length + catwalk.ledgeLength + Math.max(catwalk.width, catwalk.ledgeWidth) / 2;
+            const shift = reach * frameTilt(catwalk.frame);
             expand(
-                catwalk.x,
-                catwalk.z,
-                reach,
-                catwalk.y - catwalk.thickness,
-                catwalk.y + catwalk.parapetHeight + 0.05,
+                catwalk.worldX ?? catwalk.x,
+                catwalk.worldZ ?? catwalk.z,
+                reach + shift,
+                (catwalk.worldY ?? catwalk.y) - catwalk.thickness - shift,
+                (catwalk.worldY ?? catwalk.y) + catwalk.parapetHeight + 0.05 + shift,
             );
         }
         for (const cone of structures.crownCones) {
-            expand(cone.x, cone.z, Math.max(cone.baseRadius, cone.topRadius), cone.baseY - 0.1, cone.topY + 0.05);
+            const shift = (cone.topY - cone.baseY) * frameTilt(cone.frame);
+            expand(
+                cone.x,
+                cone.z,
+                Math.max(cone.baseRadius, cone.topRadius) + shift,
+                cone.baseY - 0.1 - shift,
+                cone.topY + 0.05 + shift,
+            );
         }
         for (const platform of structures.crownPlatforms) {
             expand(platform.x, platform.z, platform.radius, platform.topY - 0.3, platform.topY + 0.05);
@@ -1451,14 +1676,23 @@ export class Terrain {
             const rampStep = this.rampStepHeight(position, radius);
             const boxStep = Math.max(0.3, rampStep + 1e-3);
             for (const box of this.megastructures.boxes) {
-                if (position.y >= box.topY - boxStep || headY <= box.baseY) {
+                if (!boxNearPoint(box, position.x, position.z, radius)) {
+                    continue;
+                }
+                const frame = box.frame ?? IDENTITY_FRAME;
+                const local = worldToLocal(frame, position.x, position.y, position.z, this.structureScratch);
+                const localHead = local.y + frame.worldUpLocal.y * playerHeight;
+                if (local.y >= boxTopY(box) - boxStep || localHead <= boxBaseY(box)) {
                     continue;
                 }
 
-                if (!pushOutOfBox(position, radius, box.minX, box.maxX, box.minZ, box.maxZ)) {
+                const beforeX = local.x;
+                const beforeZ = local.z;
+                if (!pushOutOfBox(local, radius, boxMinX(box), boxMaxX(box), boxMinZ(box), boxMaxZ(box))) {
                     continue;
                 }
 
+                this.applyLocalCorrection(frame, local.x - beforeX, local.z - beforeZ, position);
                 hitThisPass = true;
                 collided = true;
             }
@@ -1466,20 +1700,35 @@ export class Terrain {
             // Ramps are solid slabs, not just walkable slopes: block the body from walking into
             // their sides from below while still letting it step onto the low end and stand on top.
             for (const ramp of this.megastructures.ramps) {
-                const rampY = this.rampHeightAt(ramp, position.x, position.z);
+                if (!rampNearPoint(ramp, position.x, position.z, radius)) {
+                    continue;
+                }
+                const frame = ramp.frame ?? IDENTITY_FRAME;
+                const local = worldToLocal(frame, position.x, position.y, position.z, this.structureScratch);
+                const localHead = local.y + frame.worldUpLocal.y * playerHeight;
+                const run = rampRun(ramp);
+                const localMinX = rampMinX(ramp);
+                const localMaxX = rampMaxX(ramp);
+                const localMinZ = rampMinZ(ramp);
+                const localMaxZ = rampMaxZ(ramp);
+                const localLowY = rampLowY(ramp);
+                const localHighY = rampHighY(ramp);
+                const along = ramp.axis === 'x' ? local.x - localMinX : local.z - localMinZ;
+                const rampY =
+                    localLowY + (localHighY - localLowY) * clamp(along / Math.max(run, 0.001), 0, 1);
 
                 // While on the walkway, the side rails keep the robot from stepping off the edge.
                 // The taller allowance treats a robot standing just below the low edge as being on
                 // the walkway, so it can step up instead of being pushed out of the ramp's side.
-                if (position.y >= rampY - RAMP_STEP_HEIGHT) {
-                    if (position.y <= rampY + RAMP_PARAPET_HEIGHT) {
-                        const along = ramp.axis === 'x' ? position.x : position.z;
-                        const alongMin = ramp.axis === 'x' ? ramp.minX : ramp.minZ;
-                        const alongMax = ramp.axis === 'x' ? ramp.maxX : ramp.maxZ;
-                        if (along > alongMin && along < alongMax) {
-                            const minSide = ramp.axis === 'x' ? ramp.minZ : ramp.minX;
-                            const maxSide = ramp.axis === 'x' ? ramp.maxZ : ramp.maxX;
-                            const transverse = ramp.axis === 'x' ? position.z : position.x;
+                if (local.y >= rampY - RAMP_STEP_HEIGHT) {
+                    if (local.y <= rampY + RAMP_PARAPET_HEIGHT) {
+                        const localAlong = ramp.axis === 'x' ? local.x : local.z;
+                        const alongMin = ramp.axis === 'x' ? localMinX : localMinZ;
+                        const alongMax = ramp.axis === 'x' ? localMaxX : localMaxZ;
+                        if (localAlong > alongMin && localAlong < alongMax) {
+                            const minSide = ramp.axis === 'x' ? localMinZ : localMinX;
+                            const maxSide = ramp.axis === 'x' ? localMaxZ : localMaxX;
+                            const transverse = ramp.axis === 'x' ? local.z : local.x;
                             const minLimit = minSide + RAMP_PARAPET_THICKNESS + radius;
                             const maxLimit = maxSide - RAMP_PARAPET_THICKNESS - radius;
 
@@ -1499,11 +1748,13 @@ export class Terrain {
                             }
 
                             if (clamped !== null) {
-                                if (ramp.axis === 'x') {
-                                    position.z = clamped;
-                                } else {
-                                    position.x = clamped;
-                                }
+                                const delta = clamped - transverse;
+                                this.applyLocalCorrection(
+                                    frame,
+                                    ramp.axis === 'x' ? 0 : delta,
+                                    ramp.axis === 'x' ? delta : 0,
+                                    position,
+                                );
                                 hitThisPass = true;
                                 collided = true;
                             }
@@ -1512,27 +1763,62 @@ export class Terrain {
                     continue;
                 }
 
-                if (headY <= rampY - RAMP_THICKNESS) {
+                if (localHead <= rampY - RAMP_THICKNESS) {
                     continue;
                 }
 
-                if (!pushOutOfBox(position, radius, ramp.minX, ramp.maxX, ramp.minZ, ramp.maxZ)) {
+                const beforeX = local.x;
+                const beforeZ = local.z;
+                if (!pushOutOfBox(local, radius, localMinX, localMaxX, localMinZ, localMaxZ)) {
                     continue;
                 }
 
+                this.applyLocalCorrection(frame, local.x - beforeX, local.z - beforeZ, position);
                 hitThisPass = true;
                 collided = true;
             }
 
             for (const cone of this.megastructures.crownCones) {
-                if (headY <= cone.baseY || position.y >= cone.topY) {
+                const coneHeight = cone.topY - cone.baseY;
+                if (coneHeight <= 0) {
+                    continue;
+                }
+                if (!cone.frame) {
+                    if (headY <= cone.baseY || position.y >= cone.topY) {
+                        continue;
+                    }
+                    const t = Math.min(1, Math.max(0, (position.y - cone.baseY) / coneHeight));
+                    const coneRadius = cone.baseRadius + (cone.topRadius - cone.baseRadius) * t;
+                    if (pushOutOfCircle(position, cone.x, cone.z, radius + coneRadius)) {
+                        hitThisPass = true;
+                        collided = true;
+                    }
                     continue;
                 }
 
-                const t = Math.min(1, Math.max(0, (position.y - cone.baseY) / (cone.topY - cone.baseY)));
-                const coneRadius = cone.baseRadius + (cone.topRadius - cone.baseRadius) * t;
-                if (!pushOutOfCircle(position, cone.x, cone.z, radius + coneRadius)) {
+                const local = worldToLocal(cone.frame, position.x, position.y, position.z, this.structureScratch);
+                const headLocalY = local.y + cone.frame.worldUpLocal.y * playerHeight;
+                if (headLocalY <= 0 || local.y >= coneHeight) {
                     continue;
+                }
+
+                const t = Math.min(1, Math.max(0, local.y / coneHeight));
+                const coneRadius = cone.baseRadius + (cone.topRadius - cone.baseRadius) * t;
+                const pointRadius = Math.hypot(local.x, local.z);
+                const minimumRadius = radius + coneRadius;
+                if (pointRadius >= minimumRadius) {
+                    continue;
+                }
+                if (pointRadius < 1e-5) {
+                    this.applyLocalCorrection(cone.frame, minimumRadius, 0, position);
+                } else {
+                    const push = minimumRadius / pointRadius;
+                    this.applyLocalCorrection(
+                        cone.frame,
+                        local.x * push - local.x,
+                        local.z * push - local.z,
+                        position,
+                    );
                 }
 
                 hitThisPass = true;
@@ -1540,11 +1826,13 @@ export class Terrain {
             }
 
             // Keep the player inside the crown ramp's outer parapet instead of letting them walk
-            // through it and off the slab.
+            // through it and off the slab. The clamp runs in the spiral's own frame so it follows
+            // the leaned, yawed ribbon instead of a world-horizontal ring.
             for (const spiral of this.megastructures.crownSpirals) {
-                const dx = position.x - spiral.x;
-                const dz = position.z - spiral.z;
-                const pointRadius = Math.hypot(dx, dz);
+                const frame = spiral.frame;
+                if (!frame) {
+                    continue;
+                }
                 const surfaceCount = this.crownSpiralSurfaces(spiral, position.x, position.z, 0);
                 for (let surfaceIndex = 0; surfaceIndex < surfaceCount; surfaceIndex++) {
                     const crownSurface = this.crownSurfaceScratch[surfaceIndex];
@@ -1552,6 +1840,7 @@ export class Terrain {
                         continue;
                     }
 
+                    const pointRadius = Math.hypot(crownSurface.localX, crownSurface.localZ);
                     const outerEdge = crownSurface.centerRadius + spiral.width / 2;
                     const maximumRadius = outerEdge - spiral.parapetThickness - radius;
                     if (pointRadius <= maximumRadius || pointRadius > outerEdge) {
@@ -1559,11 +1848,15 @@ export class Terrain {
                     }
 
                     if (pointRadius < 1e-5) {
-                        position.x = spiral.x + maximumRadius;
+                        this.applyLocalCorrection(frame, maximumRadius, 0, position);
                     } else {
                         const push = maximumRadius / pointRadius;
-                        position.x = spiral.x + dx * push;
-                        position.z = spiral.z + dz * push;
+                        this.applyLocalCorrection(
+                            frame,
+                            crownSurface.localX * push - crownSurface.localX,
+                            crownSurface.localZ * push - crownSurface.localZ,
+                            position,
+                        );
                     }
 
                     hitThisPass = true;
@@ -1573,27 +1866,33 @@ export class Terrain {
 
             // Keep the player inside the hanging catwalk's side rails. Its far end is open.
             for (const catwalk of this.megastructures.crownCatwalks) {
-                if (Math.abs(position.y - catwalk.y) > 1) {
+                const catwalkY = this.crownCatwalkPlane(catwalk, position.x, position.z);
+                if (catwalkY === Number.NEGATIVE_INFINITY || Math.abs(position.y - catwalkY) > 1) {
                     continue;
                 }
-                const local = this.crownCatwalkLocal(catwalk, position.x, position.z);
-                if (local.along < 0 || local.along > catwalk.length + catwalk.ledgeLength) {
+                const along = this.structureLocalPoint.z;
+                const across = this.structureLocalPoint.x;
+                if (along < 0 || along > catwalk.length + catwalk.ledgeLength) {
                     continue;
                 }
 
-                const width = local.along > catwalk.length ? catwalk.ledgeWidth : catwalk.width;
+                const width = along > catwalk.length ? catwalk.ledgeWidth : catwalk.width;
                 const minLimit = -width / 2 + catwalk.parapetThickness + radius;
                 const maxLimit = width / 2 - catwalk.parapetThickness - radius;
-                if (local.across >= minLimit && local.across <= maxLimit) {
+                if (across >= minLimit && across <= maxLimit) {
                     continue;
                 }
-                if (Math.abs(local.across) > width / 2 + radius) {
+                if (Math.abs(across) > width / 2 + radius) {
                     continue;
                 }
 
-                const delta = Math.min(maxLimit, Math.max(minLimit, local.across)) - local.across;
-                position.x += -catwalk.directionZ * delta;
-                position.z += catwalk.directionX * delta;
+                const delta = Math.min(maxLimit, Math.max(minLimit, across)) - across;
+                if (catwalk.frame) {
+                    this.applyLocalCorrection(catwalk.frame, delta, 0, position);
+                } else {
+                    position.x += -(catwalk.worldDirectionZ ?? catwalk.directionZ) * delta;
+                    position.z += (catwalk.worldDirectionX ?? catwalk.directionX) * delta;
+                }
                 hitThisPass = true;
                 collided = true;
             }
@@ -1691,25 +1990,44 @@ export class Terrain {
     }
 
     private crownCatwalkLocal(catwalk: CrownCatwalk, x: number, z: number): { along: number; across: number } {
-        const dx = x - catwalk.x;
-        const dz = z - catwalk.z;
+        const dx = x - (catwalk.worldX ?? catwalk.x);
+        const dz = z - (catwalk.worldZ ?? catwalk.z);
+        const directionX = catwalk.worldDirectionX ?? catwalk.directionX;
+        const directionZ = catwalk.worldDirectionZ ?? catwalk.directionZ;
         return {
-            along: dx * catwalk.directionX + dz * catwalk.directionZ,
-            across: -dx * catwalk.directionZ + dz * catwalk.directionX,
+            along: dx * directionX + dz * directionZ,
+            across: -dx * directionZ + dz * directionX,
         };
     }
 
-    private isOnCrownCatwalk(catwalk: CrownCatwalk, x: number, z: number, margin = 0): boolean {
-        const local = this.crownCatwalkLocal(catwalk, x, z);
+    // World height where the vertical line through (x, z) meets the catwalk's local walkway plane.
+    // Fills `structureLocalPoint` with local X (across) and Z (along). Returns -Infinity when the
+    // plane is edge-on.
+    private crownCatwalkPlane(catwalk: CrownCatwalk, x: number, z: number): number {
+        if (!catwalk.frame) {
+            const local = this.crownCatwalkLocal(catwalk, x, z);
+            this.structureLocalPoint.set(local.across, 0, local.along);
+            return catwalk.worldY ?? catwalk.y;
+        }
+        return intersectWorldVerticalWithLocalPlane(catwalk.frame, x, z, 0, this.structureLocalPoint);
+    }
+
+    private crownCatwalkSurface(catwalk: CrownCatwalk, x: number, z: number, margin: number): number {
+        const surfaceY = this.crownCatwalkPlane(catwalk, x, z);
+        if (surfaceY === Number.NEGATIVE_INFINITY) {
+            return surfaceY;
+        }
+        const along = this.structureLocalPoint.z;
+        const across = this.structureLocalPoint.x;
         const inWalkway =
-            local.along >= -margin &&
-            local.along <= catwalk.length + margin &&
-            Math.abs(local.across) <= catwalk.width / 2 + margin;
+            along >= -margin &&
+            along <= catwalk.length + margin &&
+            Math.abs(across) <= catwalk.width / 2 + margin;
         const inLedge =
-            local.along >= catwalk.length - margin &&
-            local.along <= catwalk.length + catwalk.ledgeLength + margin &&
-            Math.abs(local.across) <= catwalk.ledgeWidth / 2 + margin;
-        return inWalkway || inLedge;
+            along >= catwalk.length - margin &&
+            along <= catwalk.length + catwalk.ledgeLength + margin &&
+            Math.abs(across) <= catwalk.ledgeWidth / 2 + margin;
+        return inWalkway || inLedge ? surfaceY : Number.NEGATIVE_INFINITY;
     }
 
     setWaterVisible(visible: boolean): void {
@@ -3514,6 +3832,13 @@ function pushOutOfBox(
 }
 
 // Pushes the player horizontally out of a circular obstacle. Returns true if the position moved.
+// Maps an angle into [0, 2π), the range used by the crown helix's turn index.
+function positiveAngle(angle: number): number {
+    const twoPi = Math.PI * 2;
+    const wrapped = angle % twoPi;
+    return wrapped < 0 ? wrapped + twoPi : wrapped;
+}
+
 function pushOutOfCircle(position: Vector3, centerX: number, centerZ: number, minimumDistance: number): boolean {
     const dx = position.x - centerX;
     const dz = position.z - centerZ;

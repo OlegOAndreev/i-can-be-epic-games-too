@@ -5,6 +5,7 @@ import {
     Mesh,
     MeshBasicMaterial,
     MeshStandardMaterial,
+    Quaternion,
     Raycaster,
     ShaderMaterial,
     Sprite,
@@ -13,6 +14,8 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import {
+    FLOOR_PROP_MIN_SPACING,
+    FLOOR_PROP_WALL_MARGIN,
     MEGASTRUCTURE_LAYER,
     RAMP_LANDING_DEPTH,
     SWITCH_CHARGE_SECONDS,
@@ -20,6 +23,7 @@ import {
     WINDOW_BAND_HEIGHT,
     WINDOW_END_MARGIN,
     WINDOW_SILL_HEIGHT,
+    floorPropBaseCount,
     windowWallPair,
 } from '../src/megastructures';
 import type { CrownSpiral, MegastructureStorey } from '../src/megastructures';
@@ -27,18 +31,44 @@ import { FIRST_PERSON_CEILING_CLEARANCE, PLAYER_HEIGHT } from '../src/player';
 import { FIRST_PERSON_EYE_HEIGHT } from '../src/player-camera';
 import { findStructureBlockingPoint } from '../src/ramp-collision';
 import { SMOKE_RENDER_ORDER } from '../src/spaceship';
-import { testPlayer, testTerrain } from './test-helpers';
+import { localToWorld, worldToLocal } from '../src/structure-frame';
+import { testPlayer, testRotatedTerrain, testTerrain } from './test-helpers';
 import { getSurfaceTextures } from '../src/textures';
 import { WINDOW_GLASS_RENDER_ORDER } from '../src/window-glass';
+
+function storeyMinX(storey: MegastructureStorey): number {
+    return storey.worldMinX ?? storey.minX;
+}
+function storeyMaxX(storey: MegastructureStorey): number {
+    return storey.worldMaxX ?? storey.maxX;
+}
+function storeyMinZ(storey: MegastructureStorey): number {
+    return storey.worldMinZ ?? storey.minZ;
+}
+function storeyMaxZ(storey: MegastructureStorey): number {
+    return storey.worldMaxZ ?? storey.maxZ;
+}
+function storeyBaseY(storey: MegastructureStorey): number {
+    return storey.worldBaseY ?? storey.baseY;
+}
+function storeyTopY(storey: MegastructureStorey): number {
+    return storey.worldTopY ?? storey.topY;
+}
+function spiralX(spiral: CrownSpiral): number {
+    return spiral.worldX ?? spiral.x;
+}
+function spiralZ(spiral: CrownSpiral): number {
+    return spiral.worldZ ?? spiral.z;
+}
 
 function spiralPoint(spiral: CrownSpiral, fraction: number, radialOffset: number): { x: number; y: number; z: number } {
     const angle = fraction * spiral.totalAngle * spiral.direction;
     const climb = fraction;
     const radius = spiral.baseRadius + (spiral.topRadius - spiral.baseRadius) * climb + spiral.width / 2 + spiral.gap;
     return {
-        x: spiral.x + Math.cos(angle) * (radius + radialOffset),
+        x: spiralX(spiral) + Math.cos(angle) * (radius + radialOffset),
         y: spiral.baseY + spiral.height * climb,
-        z: spiral.z + Math.sin(angle) * (radius + radialOffset),
+        z: spiralZ(spiral) + Math.sin(angle) * (radius + radialOffset),
     };
 }
 
@@ -82,10 +112,10 @@ describe('megastructures', () => {
             for (let level = 0; level < tower.levelCount; level++) {
                 const floorY = tower.firstFloorY + level * tower.levelHeight;
                 const room = tower.storeys[level + 1];
-                const minX = room.minX + WALL_THICKNESS;
-                const maxX = room.maxX - WALL_THICKNESS;
-                const minZ = room.minZ + WALL_THICKNESS;
-                const maxZ = room.maxZ - WALL_THICKNESS;
+                const minX = storeyMinX(room) + WALL_THICKNESS;
+                const maxX = storeyMaxX(room) - WALL_THICKNESS;
+                const minZ = storeyMinZ(room) + WALL_THICKNESS;
+                const maxZ = storeyMaxZ(room) - WALL_THICKNESS;
                 let onFloor = 0;
                 for (let stepX = 0; stepX <= steps; stepX++) {
                     for (let stepZ = 0; stepZ <= steps; stepZ++) {
@@ -163,22 +193,32 @@ describe('megastructures', () => {
                 const props = structures.floorProps.filter(
                     (prop) => prop.towerIndex === towerIndex && prop.level === level,
                 );
-                expect(props.length).toBeGreaterThanOrEqual(2);
-                expect(props.length).toBeLessThanOrEqual(4);
-
-                // The 2x3 lattice spans the floor instead of clustering in the corner away from
-                // the ramps: every row and column gets a totem before any cell takes a second one.
-                // A totem can still be nudged inside its cell to clear a ramp, and a ramp lane can
-                // cover a whole row or column, so the floor is checked for spread across its
-                // diagonal rather than against exact lattice positions on both axes.
                 const storey = tower.storeys[level + 1];
                 const interiorWidth = storey.maxX - storey.minX - 2 * WALL_THICKNESS;
                 const interiorDepth = storey.maxZ - storey.minZ - 2 * WALL_THICKNESS;
-                const xSpread = Math.max(...props.map((prop) => prop.x)) - Math.min(...props.map((prop) => prop.x));
-                const zSpread = Math.max(...props.map((prop) => prop.z)) - Math.min(...props.map((prop) => prop.z));
-                expect(Math.hypot(xSpread / interiorWidth, zSpread / interiorDepth)).toBeGreaterThan(0.4);
+                const floorWidth = interiorWidth - 2 * FLOOR_PROP_WALL_MARGIN;
+                const floorDepth = interiorDepth - 2 * FLOOR_PROP_WALL_MARGIN;
+                const baseCount = floorPropBaseCount(floorWidth, floorDepth);
+                expect(props.length, `tower ${towerIndex} level ${level}`).toBeGreaterThanOrEqual(baseCount);
+                expect(props.length, `tower ${towerIndex} level ${level}`).toBeLessThanOrEqual(baseCount + 1);
 
-                // Six small totems cannot fill the floor; only the lattice spans it.
+                // Every pair keeps the footprint-aware minimum clearance.
+                for (let first = 0; first < props.length; first++) {
+                    for (let second = first + 1; second < props.length; second++) {
+                        const a = props[first];
+                        const b = props[second];
+                        const minimum =
+                            Math.hypot(a.width, a.depth) / 2 +
+                            Math.hypot(b.width, b.depth) / 2 +
+                            FLOOR_PROP_MIN_SPACING;
+                        expect(
+                            Math.hypot(a.x - b.x, a.z - b.z),
+                            `tower ${towerIndex} level ${level} pair ${first}/${second}`,
+                        ).toBeGreaterThanOrEqual(minimum - 1e-6);
+                    }
+                }
+
+                // The totems stay sparse relative to the floor they stand on.
                 const footprint = props.reduce((sum, prop) => sum + prop.width * prop.depth, 0);
                 expect(footprint).toBeLessThan(interiorWidth * interiorDepth * 0.25);
 
@@ -199,6 +239,8 @@ describe('megastructures', () => {
                     expect(prop.width).toBeLessThanOrEqual(5.8);
                     expect(prop.depth).toBeGreaterThanOrEqual(0.7);
                     expect(prop.depth).toBeLessThanOrEqual(4.4);
+                    expect(prop.yaw).toBeGreaterThanOrEqual(0);
+                    expect(prop.yaw).toBeLessThan(Math.PI * 2);
                     expect(prop.signs.length).toBeGreaterThanOrEqual(2);
                     expect(prop.signs.length).toBeLessThanOrEqual(5);
 
@@ -217,17 +259,29 @@ describe('megastructures', () => {
                         expect(sign.signLayer).toBeLessThan(signLayers);
                     }
 
-                    // Every totem is solid for movement and line-of-sight checks.
+                    // Every totem is solid for movement and line-of-sight checks. Its collider is
+                    // an oriented box in its own frame, so the stored dimensions are local.
                     const box = structures.boxes.find(
                         (candidate) =>
-                            Math.abs(candidate.minX - (prop.x - prop.width / 2)) < 1e-6 &&
-                            Math.abs(candidate.maxX - (prop.x + prop.width / 2)) < 1e-6 &&
-                            Math.abs(candidate.minZ - (prop.z - prop.depth / 2)) < 1e-6 &&
-                            Math.abs(candidate.maxZ - (prop.z + prop.depth / 2)) < 1e-6 &&
-                            Math.abs(candidate.baseY - prop.baseY) < 1e-6 &&
-                            Math.abs(candidate.topY - (prop.baseY + prop.height)) < 1e-6,
+                            candidate.frame !== undefined &&
+                            Math.abs(candidate.frame.origin.x - prop.x) < 1e-6 &&
+                            Math.abs(candidate.frame.origin.y - prop.baseY) < 1e-6 &&
+                            Math.abs(candidate.frame.origin.z - prop.z) < 1e-6 &&
+                            Math.abs((candidate.localMinX ?? 0) + prop.width / 2) < 1e-6 &&
+                            Math.abs((candidate.localMaxX ?? 0) - prop.width / 2) < 1e-6 &&
+                            Math.abs((candidate.localMinZ ?? 0) + prop.depth / 2) < 1e-6 &&
+                            Math.abs((candidate.localMaxZ ?? 0) - prop.depth / 2) < 1e-6 &&
+                            Math.abs(candidate.localBaseY ?? 0) < 1e-6 &&
+                            Math.abs((candidate.localTopY ?? 0) - prop.height) < 1e-6,
                     );
                     expect(box).toBeDefined();
+                    if (box?.frame && storey.frame) {
+                        // The collider carries the totem's own yaw on top of the storey's frame.
+                        const expected = storey.frame.rotation
+                            .clone()
+                            .multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), prop.yaw));
+                        expect(Math.abs(box.frame.rotation.dot(expected))).toBeCloseTo(1, 6);
+                    }
                 }
             }
         }
@@ -239,6 +293,8 @@ describe('megastructures', () => {
             structures.floorProps.reduce((sum, prop) => sum + prop.depth, 0) / structures.floorProps.length;
         expect(averageWidth).toBeGreaterThan(2.4);
         expect(averageDepth).toBeGreaterThan(1.9);
+        // The totems stand at varied angles instead of all facing the storey axes.
+        expect(structures.floorProps.some((prop) => Math.abs(Math.sin(2 * prop.yaw)) > 0.1)).toBe(true);
         const signs = structures.floorProps.flatMap((prop) => prop.signs);
         expect(new Set(signs.map((sign) => sign.signLayer)).size).toBeGreaterThan(1);
 
@@ -278,6 +334,30 @@ describe('megastructures', () => {
         expect(material.uniforms.uTime.value).toBeCloseTo(0.5);
     });
 
+    it('scales the turned totem count with the floor area of a rotated tower', () => {
+        const terrain = testRotatedTerrain(9876);
+        const structures = terrain.megastructures;
+
+        for (let towerIndex = 0; towerIndex < structures.towers.length; towerIndex++) {
+            const tower = structures.towers[towerIndex];
+            for (let level = 0; level < tower.levelCount - 1; level++) {
+                const props = structures.floorProps.filter(
+                    (prop) => prop.towerIndex === towerIndex && prop.level === level,
+                );
+                const storey = tower.storeys[level + 1];
+                const floorWidth =
+                    storey.maxX - storey.minX - 2 * WALL_THICKNESS - 2 * FLOOR_PROP_WALL_MARGIN;
+                const floorDepth =
+                    storey.maxZ - storey.minZ - 2 * WALL_THICKNESS - 2 * FLOOR_PROP_WALL_MARGIN;
+                const baseCount = floorPropBaseCount(floorWidth, floorDepth);
+                expect(props.length, `tower ${towerIndex} level ${level}`).toBeGreaterThanOrEqual(baseCount);
+                expect(props.length, `tower ${towerIndex} level ${level}`).toBeLessThanOrEqual(baseCount + 1);
+            }
+        }
+
+        expect(structures.floorProps.some((prop) => Math.abs(Math.sin(2 * prop.yaw)) > 0.1)).toBe(true);
+    });
+
     it('builds each tower with a 1.5:1 rectangular footprint', () => {
         const terrain = testTerrain();
 
@@ -294,15 +374,15 @@ describe('megastructures', () => {
         for (const tower of terrain.megastructures.towers) {
             // Probe the first storey above the entrance, which has no doorway.
             const storey = tower.storeys[1];
-            const centreX = (storey.minX + storey.maxX) / 2;
-            const centreZ = (storey.minZ + storey.maxZ) / 2;
+            const centreX = (storeyMinX(storey) + storeyMaxX(storey)) / 2;
+            const centreZ = (storeyMinZ(storey) + storeyMaxZ(storey)) / 2;
             // Probe below the window band, where all four walls are solid.
-            const probeY = storey.baseY + WINDOW_SILL_HEIGHT / 2;
+            const probeY = storeyBaseY(storey) + WINDOW_SILL_HEIGHT / 2;
             const probes = [
-                { side: 0, x: centreX, z: storey.maxZ - 0.5 },
-                { side: 1, x: centreX, z: storey.minZ + 0.5 },
-                { side: 2, x: storey.maxX - 0.5, z: centreZ },
-                { side: 3, x: storey.minX + 0.5, z: centreZ },
+                { side: 0, x: centreX, z: storeyMaxZ(storey) - 0.5 },
+                { side: 1, x: centreX, z: storeyMinZ(storey) + 0.5 },
+                { side: 2, x: storeyMaxX(storey) - 0.5, z: centreZ },
+                { side: 3, x: storeyMinX(storey) + 0.5, z: centreZ },
             ];
 
             for (const probe of probes) {
@@ -339,10 +419,26 @@ describe('megastructures', () => {
                 // Probe the middle of whichever side of the upper storey extends furthest past
                 // the storey below it.
                 const sides = [
-                    { amount: below.minX - above.minX, x: above.minX + 0.3, z: (above.minZ + above.maxZ) / 2 },
-                    { amount: above.maxX - below.maxX, x: above.maxX - 0.3, z: (above.minZ + above.maxZ) / 2 },
-                    { amount: below.minZ - above.minZ, x: (above.minX + above.maxX) / 2, z: above.minZ + 0.3 },
-                    { amount: above.maxZ - below.maxZ, x: (above.minX + above.maxX) / 2, z: above.maxZ - 0.3 },
+                    {
+                        amount: below.minX - above.minX,
+                        x: storeyMinX(above) + 0.3,
+                        z: (storeyMinZ(above) + storeyMaxZ(above)) / 2,
+                    },
+                    {
+                        amount: above.maxX - below.maxX,
+                        x: storeyMaxX(above) - 0.3,
+                        z: (storeyMinZ(above) + storeyMaxZ(above)) / 2,
+                    },
+                    {
+                        amount: below.minZ - above.minZ,
+                        x: (storeyMinX(above) + storeyMaxX(above)) / 2,
+                        z: storeyMinZ(above) + 0.3,
+                    },
+                    {
+                        amount: above.maxZ - below.maxZ,
+                        x: (storeyMinX(above) + storeyMaxX(above)) / 2,
+                        z: storeyMaxZ(above) - 0.3,
+                    },
                 ];
                 const side = sides.reduce((left, right) => (right.amount > left.amount ? right : left));
                 if (side.amount < 0.5) {
@@ -364,6 +460,75 @@ describe('megastructures', () => {
         }
 
         expect(overhangs).toBeGreaterThan(0);
+    });
+
+    it('builds each floor plate from the real room footprints, not their AABB', () => {
+        for (const seed of [1234, 1, 2, 5]) {
+            for (const terrain of [testTerrain(seed), testRotatedTerrain(seed)]) {
+                const structures = terrain.megastructures;
+                let plates = 0;
+                let outside = 0;
+
+                for (let towerIndex = 0; towerIndex < structures.towers.length; towerIndex++) {
+                    const tower = structures.towers[towerIndex];
+                    for (let level = 0; level < tower.levelCount; level++) {
+                        const lower = tower.storeys[level];
+                        const upper = tower.storeys[level + 1];
+                        const floorY = upper.baseY;
+                        for (const box of structures.boxes) {
+                            if (
+                                box.towerIndex !== towerIndex ||
+                                !box.frame ||
+                                box.localTopY === undefined ||
+                                box.localBaseY === undefined ||
+                                box.localMinX === undefined ||
+                                box.localMaxX === undefined ||
+                                box.localMinZ === undefined ||
+                                box.localMaxZ === undefined
+                            ) {
+                                continue;
+                            }
+                            const topOffset = box.localTopY + tower.frame!.origin.y - floorY;
+                            const thickness = box.localTopY - box.localBaseY;
+                            // Upper floor slab at the floor level, lower ceiling 2 cm below it.
+                            // The collar sits 1 cm below and is confined to the ramp opening.
+                            const isPlate =
+                                thickness < 1 &&
+                                (Math.abs(topOffset) < 0.005 || Math.abs(topOffset + 0.02) < 0.005);
+                            if (!isPlate) {
+                                continue;
+                            }
+                            plates++;
+                            for (const localX of [box.localMinX, box.localMaxX]) {
+                                for (const localZ of [box.localMinZ, box.localMaxZ]) {
+                                    const world = localToWorld(box.frame, localX, box.localTopY, localZ);
+                                    const inside = (storey: MegastructureStorey): boolean => {
+                                        if (!storey.frame) {
+                                            return false;
+                                        }
+                                        const local = worldToLocal(storey.frame, world.x, world.y, world.z);
+                                        const towerX = local.x + (storey.minX + storey.maxX) / 2;
+                                        const towerZ = local.z + (storey.minZ + storey.maxZ) / 2;
+                                        return (
+                                            towerX >= storey.minX - 1e-4 &&
+                                            towerX <= storey.maxX + 1e-4 &&
+                                            towerZ >= storey.minZ - 1e-4 &&
+                                            towerZ <= storey.maxZ + 1e-4
+                                        );
+                                    };
+                                    if (!inside(lower) && !inside(upper)) {
+                                        outside++;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                expect(plates, `seed ${seed}`).toBeGreaterThan(0);
+                expect(outside, `seed ${seed}`).toBe(0);
+            }
+        }
     });
 
     it('turns the face of every window outward', () => {
@@ -398,14 +563,16 @@ describe('megastructures', () => {
                 .multiplyScalar(1 / 3);
             const tower = structures.towers.find(
                 (candidate) =>
-                    centre.x > candidate.minX - 2 &&
-                    centre.x < candidate.maxX + 2 &&
-                    centre.z > candidate.minZ - 2 &&
-                    centre.z < candidate.maxZ + 2,
+                    centre.x > (candidate.worldMinX ?? candidate.minX) - 2 &&
+                    centre.x < (candidate.worldMaxX ?? candidate.maxX) + 2 &&
+                    centre.z > (candidate.worldMinZ ?? candidate.minZ) - 2 &&
+                    centre.z < (candidate.worldMaxZ ?? candidate.maxZ) + 2,
             );
             expect(tower).toBeDefined();
-            const outwardX = centre.x - (tower!.minX + tower!.maxX) / 2;
-            const outwardZ = centre.z - (tower!.minZ + tower!.maxZ) / 2;
+            const outwardX =
+                centre.x - ((tower!.worldMinX ?? tower!.minX) + (tower!.worldMaxX ?? tower!.maxX)) / 2;
+            const outwardZ =
+                centre.z - ((tower!.worldMinZ ?? tower!.minZ) + (tower!.worldMaxZ ?? tower!.maxZ)) / 2;
             // The shader keys the inside-only sheen off this normal, so a window facing inward would
             // show its sheen to the street.
             expect(normal.x * outwardX + normal.z * outwardZ).toBeGreaterThan(0);
@@ -465,10 +632,15 @@ describe('megastructures', () => {
                 const x = position.getX(vertex);
                 const y = position.getY(vertex);
                 const z = position.getZ(vertex);
-                if (y < storey.baseY - 0.3 || y > storey.topY + 0.3 || x < storey.minX - 2 || x > storey.maxX + 2) {
+                if (
+                    y < storeyBaseY(storey) - 0.3 ||
+                    y > storeyTopY(storey) + 0.3 ||
+                    x < storeyMinX(storey) - 2 ||
+                    x > storeyMaxX(storey) + 2
+                ) {
                     continue;
                 }
-                if (z < storey.minZ - 2 || z > storey.maxZ + 2) {
+                if (z < storeyMinZ(storey) - 2 || z > storeyMaxZ(storey) + 2) {
                     continue;
                 }
                 const normalX = normals.getX(vertex);
@@ -512,19 +684,28 @@ describe('megastructures', () => {
                     const band = bandExtent(storey, side);
                     const range =
                         side < 2
-                            ? { min: storey.minX, max: storey.maxX }
-                            : { min: storey.minZ + WALL_THICKNESS, max: storey.maxZ - WALL_THICKNESS };
+                            ? { min: storeyMinX(storey), max: storeyMaxX(storey) }
+                            : {
+                                  min: storeyMinZ(storey) + WALL_THICKNESS,
+                                  max: storeyMaxZ(storey) - WALL_THICKNESS,
+                              };
                     const wallLength = range.max - range.min;
 
                     expect(band.minAlong).toBeLessThan(Infinity);
                     expect(band.maxY - band.minY).toBeCloseTo(WINDOW_BAND_HEIGHT, 2);
-                    expect(band.minY - storey.baseY).toBeCloseTo(WINDOW_SILL_HEIGHT, 2);
+                    expect(band.minY - storeyBaseY(storey)).toBeCloseTo(WINDOW_SILL_HEIGHT, 2);
                     expect(band.maxAlong - band.minAlong).toBeGreaterThan(wallLength * 0.8);
                     // The pane sits in the middle of the wall, and it stops on the corner's mid-point:
                     // the line where the neighbouring pane's plane crosses its own, so the two panes
                     // meet edge to edge instead of crossing behind one another.
                     const outerPlane =
-                        side === 0 ? storey.maxZ : side === 1 ? storey.minZ : side === 2 ? storey.maxX : storey.minX;
+                        side === 0
+                            ? storeyMaxZ(storey)
+                            : side === 1
+                              ? storeyMinZ(storey)
+                              : side === 2
+                                ? storeyMaxX(storey)
+                                : storeyMinX(storey);
                     const inwardPlane = side === 0 || side === 2 ? -1 : 1;
                     expect(Math.abs(band.plane - (outerPlane + inwardPlane * (WALL_THICKNESS / 2)))).toBeLessThan(0.01);
                     // The glazing runs to the corner's mid-point and stops at the pier of wall that
@@ -532,11 +713,11 @@ describe('megastructures', () => {
                     const cornerAtMax = neighbour === 0 || neighbour === 2;
                     const outerAlong = cornerAtMax
                         ? side < 2
-                            ? storey.maxX
-                            : storey.maxZ
+                            ? storeyMaxX(storey)
+                            : storeyMaxZ(storey)
                         : side < 2
-                          ? storey.minX
-                          : storey.minZ;
+                          ? storeyMinX(storey)
+                          : storeyMinZ(storey);
                     const miterAlong = outerAlong + (cornerAtMax ? -1 : 1) * (WALL_THICKNESS / 2);
                     const pierAlong =
                         (cornerAtMax ? range.min : range.max) + (cornerAtMax ? WINDOW_END_MARGIN : -WINDOW_END_MARGIN);
@@ -610,12 +791,14 @@ describe('megastructures', () => {
                 const [first, second] = windowWallPair(tower.entranceSide, level);
                 // The shared corner: the two walls of a pair are perpendicular, so each one fixes one
                 // coordinate of the corner.
-                const cornerX = first === 2 || second === 2 ? storey.maxX : storey.minX;
-                const cornerZ = first === 0 || second === 0 ? storey.maxZ : storey.minZ;
+                const cornerX =
+                    first === 2 || second === 2 ? storeyMaxX(storey) : storeyMinX(storey);
+                const cornerZ =
+                    first === 0 || second === 0 ? storeyMaxZ(storey) : storeyMinZ(storey);
                 // Inward from the corner, clear of both panes, at the middle of the window band.
-                const inwardX = cornerX === storey.maxX ? -1 : 1;
-                const inwardZ = cornerZ === storey.maxZ ? -1 : 1;
-                const bandY = storey.baseY + WINDOW_SILL_HEIGHT + WINDOW_BAND_HEIGHT / 2;
+                const inwardX = cornerX === storeyMaxX(storey) ? -1 : 1;
+                const inwardZ = cornerZ === storeyMaxZ(storey) ? -1 : 1;
+                const bandY = storeyBaseY(storey) + WINDOW_SILL_HEIGHT + WINDOW_BAND_HEIGHT / 2;
                 // Where the two panes' planes cross: the corner's mid-point.
                 const miterX = cornerX + inwardX * (t / 2);
                 const miterZ = cornerZ + inwardZ * (t / 2);
@@ -634,7 +817,7 @@ describe('megastructures', () => {
                 ).toBe(false);
                 // The sill and the lintel carry around the corner, so the join is framed above and
                 // below rather than left as a hole in the facade.
-                const sillY = storey.baseY + WINDOW_SILL_HEIGHT / 2;
+                const sillY = storeyBaseY(storey) + WINDOW_SILL_HEIGHT / 2;
                 expect(
                     terrain.intersectsStructure(miterX - inwardX * (t * 0.4), sillY, miterZ - inwardZ * (t * 0.4)),
                     `corner sill of level ${level}`,
@@ -642,7 +825,7 @@ describe('megastructures', () => {
                 expect(
                     terrain.intersectsStructure(
                         miterX - inwardX * (t * 0.4),
-                        storey.baseY + WINDOW_SILL_HEIGHT + WINDOW_BAND_HEIGHT + 0.3,
+                        storeyBaseY(storey) + WINDOW_SILL_HEIGHT + WINDOW_BAND_HEIGHT + 0.3,
                         miterZ - inwardZ * (t * 0.4),
                     ),
                     `corner lintel of level ${level}`,
@@ -656,18 +839,18 @@ describe('megastructures', () => {
                 ] as Array<[number, number]>) {
                     const range =
                         side < 2
-                            ? { min: storey.minX, max: storey.maxX }
-                            : { min: storey.minZ + t, max: storey.maxZ - t };
+                            ? { min: storeyMinX(storey), max: storeyMaxX(storey) }
+                            : { min: storeyMinZ(storey) + t, max: storeyMaxZ(storey) - t };
                     const cornerAtMax = neighbour === 0 || neighbour === 2;
                     const along = cornerAtMax ? range.min + WINDOW_END_MARGIN / 2 : range.max - WINDOW_END_MARGIN / 2;
                     const probe =
                         side === 0
-                            ? { x: along, z: storey.maxZ - t / 2 }
+                            ? { x: along, z: storeyMaxZ(storey) - t / 2 }
                             : side === 1
-                              ? { x: along, z: storey.minZ + t / 2 }
+                              ? { x: along, z: storeyMinZ(storey) + t / 2 }
                               : side === 2
-                                ? { x: storey.maxX - t / 2, z: along }
-                                : { x: storey.minX + t / 2, z: along };
+                                ? { x: storeyMaxX(storey) - t / 2, z: along }
+                                : { x: storeyMinX(storey) + t / 2, z: along };
                     expect(terrain.intersectsStructure(probe.x, bandY, probe.z), `pier of level ${level}`).toBe(true);
 
                     // A sight line that would slip through the corner if either pane stopped short:
@@ -676,7 +859,9 @@ describe('megastructures', () => {
                     const outwardX = side === 2 ? 1 : side === 3 ? -1 : 0;
                     const outwardZ = side === 0 ? 1 : side === 1 ? -1 : 0;
                     const inwardAlong =
-                        (side < 2 ? cornerX : cornerZ) === (side < 2 ? storey.maxX : storey.maxZ) ? -1 : 1;
+                        (side < 2 ? cornerX : cornerZ) === (side < 2 ? storeyMaxX(storey) : storeyMaxZ(storey))
+                            ? -1
+                            : 1;
                     const origin = new Vector3();
                     if (outwardX !== 0) {
                         origin.set(cornerX - outwardX * (t + 1), bandY, cornerZ + inwardAlong * t * 0.7);
@@ -696,13 +881,17 @@ describe('megastructures', () => {
         const terrain = testTerrain();
 
         for (const tower of terrain.megastructures.towers) {
-            const centreX = (tower.minX + tower.maxX) / 2;
-            const centreZ = (tower.minZ + tower.maxZ) / 2;
+            const towerMinX = tower.worldMinX ?? tower.minX;
+            const towerMaxX = tower.worldMaxX ?? tower.maxX;
+            const towerMinZ = tower.worldMinZ ?? tower.minZ;
+            const towerMaxZ = tower.worldMaxZ ?? tower.maxZ;
+            const centreX = (towerMinX + towerMaxX) / 2;
+            const centreZ = (towerMinZ + towerMaxZ) / 2;
             const probes = [
-                { x: centreX, z: tower.maxZ - 0.5 },
-                { x: centreX, z: tower.minZ + 0.5 },
-                { x: tower.maxX - 0.5, z: centreZ },
-                { x: tower.minX + 0.5, z: centreZ },
+                { x: centreX, z: towerMaxZ - 0.5 },
+                { x: centreX, z: towerMinZ + 0.5 },
+                { x: towerMaxX - 0.5, z: centreZ },
+                { x: towerMinX + 0.5, z: centreZ },
             ];
             const probe = probes[tower.entranceSide];
             const groundY = terrain.heightAt(probe.x, probe.z);
@@ -923,13 +1112,13 @@ describe('megastructures', () => {
             const angle = climb * spiral.totalAngle * spiral.direction;
             const radius =
                 spiral.baseRadius + (spiral.topRadius - spiral.baseRadius) * climb + spiral.width / 2 + spiral.gap;
-            const x = spiral.x + Math.cos(angle) * radius;
-            const z = spiral.z + Math.sin(angle) * radius;
+            const x = spiralX(spiral) + Math.cos(angle) * radius;
+            const z = spiralZ(spiral) + Math.sin(angle) * radius;
             const topY = spiral.baseY + spiral.height * climb;
 
             raycaster.set(origin.set(x, topY + 30, z), down);
             const hit = raycaster.intersectObject(stone, false)[0];
-            expect(hit, `no walkway hit at tower ${spiral.x},${spiral.z}`).toBeDefined();
+            expect(hit, `no walkway hit at tower ${spiralX(spiral)},${spiralZ(spiral)}`).toBeDefined();
             if (!hit) {
                 continue;
             }
@@ -954,6 +1143,113 @@ describe('megastructures', () => {
 
         const player = testPlayer(terrain, { moveSpeed: 5, jumpSpeed: 12, gravity: 26 });
         player.group.position.set(waypoints[0].x, waypoints[0].y, waypoints[0].z);
+
+        let targetIndex = 1;
+        let highest = waypoints[0].y;
+        let frames = 0;
+        for (; frames < 5000 && targetIndex < waypoints.length; frames++) {
+            const target = waypoints[targetIndex];
+            const dx = target.x - player.group.position.x;
+            const dz = target.z - player.group.position.z;
+            if (Math.hypot(dx, dz) < 0.9) {
+                targetIndex++;
+                continue;
+            }
+
+            player.update(1 / 60, { forward: 1, right: 0, jump: false }, Math.atan2(-dx, -dz), terrain);
+            highest = Math.max(highest, player.group.position.y);
+            if (player.group.position.y < waypoints[0].y - 5) {
+                break;
+            }
+        }
+
+        expect(targetIndex).toBe(waypoints.length);
+        expect(highest).toBeGreaterThan(spiral.baseY + spiral.height - 1);
+    });
+
+    it('keeps crown physics on the rendered ribbon when towers are rotated or leaned', () => {
+        // Seed 8 puts a ribbon start exactly on the helix's 0/2π seam, which used to drop the
+        // start face; keep it in the sweep so the boundary case stays covered.
+        for (const seed of [1234, 8, 1]) {
+            const terrain = testRotatedTerrain(seed);
+            const structures = terrain.megastructures;
+
+            for (const spiral of structures.crownSpirals) {
+                const frame = spiral.frame;
+                expect(frame).toBeDefined();
+                if (!frame) {
+                    continue;
+                }
+                for (let step = 0; step <= 40; step++) {
+                    const fraction = step / 40;
+                    const angle = fraction * spiral.totalAngle * spiral.direction;
+                    const radius =
+                        spiral.baseRadius +
+                        (spiral.topRadius - spiral.baseRadius) * fraction +
+                        spiral.width / 2 +
+                        spiral.gap;
+                    for (const offset of [-(spiral.width / 2 - 0.2), 0, spiral.width / 2 - 0.2]) {
+                        const world = localToWorld(
+                            frame,
+                            Math.cos(angle) * (radius + offset),
+                            spiral.height * fraction,
+                            Math.sin(angle) * (radius + offset),
+                        );
+                        const surface = terrain.walkSurfaceAt(world.x, world.z, world.y + 0.1);
+                        expect(Math.abs(surface - world.y), `spiral ${seed} at ${fraction}`).toBeLessThan(0.05);
+                    }
+                }
+            }
+
+            for (const catwalk of structures.crownCatwalks) {
+                const frame = catwalk.frame;
+                expect(frame).toBeDefined();
+                if (!frame) {
+                    continue;
+                }
+                for (let step = 0; step <= 20; step++) {
+                    const along = (catwalk.length + catwalk.ledgeLength - 0.2) * (step / 20);
+                    const halfWidth = (along > catwalk.length ? catwalk.ledgeWidth : catwalk.width) / 2 - 0.2;
+                    for (const across of [-halfWidth, 0, halfWidth]) {
+                        const world = localToWorld(frame, across, 0, along);
+                        const surface = terrain.walkSurfaceAt(world.x, world.z, world.y + 0.1);
+                        expect(Math.abs(surface - world.y), `catwalk ${seed} at ${along}`).toBeLessThan(0.05);
+                    }
+                }
+            }
+        }
+    });
+
+    it('walks the leaning tower crown spiral to the top', () => {
+        const terrain = testRotatedTerrain(1234);
+        const structures = terrain.megastructures;
+        const towerIndex = structures.towers.findIndex((tower) => (tower.leanAngle ?? 0) > 0.001);
+        expect(towerIndex).toBeGreaterThanOrEqual(0);
+        const spiral = structures.crownSpirals[towerIndex];
+        expect(spiral.frame).toBeDefined();
+        if (!spiral.frame) {
+            return;
+        }
+
+        const segments = Math.ceil((spiral.totalAngle / (Math.PI * 2)) * 24);
+        const waypoints = Array.from({ length: segments + 1 }, (_, index) => {
+            const fraction = index / segments;
+            const angle = fraction * spiral.totalAngle * spiral.direction;
+            const radius =
+                spiral.baseRadius +
+                (spiral.topRadius - spiral.baseRadius) * fraction +
+                spiral.width / 2 +
+                spiral.gap;
+            return localToWorld(
+                spiral.frame!,
+                Math.cos(angle) * radius,
+                spiral.height * fraction,
+                Math.sin(angle) * radius,
+            );
+        });
+
+        const player = testPlayer(terrain, { moveSpeed: 5, jumpSpeed: 12, gravity: 26 });
+        player.group.position.copy(waypoints[0]);
 
         let targetIndex = 1;
         let highest = waypoints[0].y;
@@ -1152,7 +1448,9 @@ describe('megastructures', () => {
         const x = (slab.minX + slab.maxX) / 2;
         const z = (slab.minZ + slab.maxZ) / 2;
 
-        expect(terrain.ceilingAt(x, z, slab.baseY - 0.5, 0.34)).toBeCloseTo(slab.baseY, 6);
+        // The lower room's ceiling is a second slab 2 cm below the upper floor to avoid coplanar
+        // faces where the two rotated footprints overlap.
+        expect(Math.abs(terrain.ceilingAt(x, z, slab.baseY - 0.5, 0.34) - slab.baseY)).toBeLessThan(0.05);
         expect(terrain.ceilingAt(x, z, slab.baseY + 0.5, 0.34)).toBeGreaterThan(slab.baseY + 0.5);
 
         const player = testPlayer(terrain, { moveSpeed: 5, jumpSpeed: 12, gravity: 26 });
@@ -1237,27 +1535,34 @@ describe('megastructures', () => {
 
         // The catwalk continues past the spiral, then widens into a ledge with the switch near its
         // front edge and walkable floor behind it.
-        const along = (target.x - catwalk.x) * catwalk.directionX + (target.z - catwalk.z) * catwalk.directionZ;
-        const across = -(target.x - catwalk.x) * catwalk.directionZ + (target.z - catwalk.z) * catwalk.directionX;
+        const catwalkX = catwalk.worldX ?? catwalk.x;
+        const catwalkZ = catwalk.worldZ ?? catwalk.z;
+        const catwalkDirectionX = catwalk.worldDirectionX ?? catwalk.directionX;
+        const catwalkDirectionZ = catwalk.worldDirectionZ ?? catwalk.directionZ;
+        const catwalkY = catwalk.worldY ?? catwalk.y;
+        const along =
+            (target.x - catwalkX) * catwalkDirectionX + (target.z - catwalkZ) * catwalkDirectionZ;
+        const across =
+            -(target.x - catwalkX) * catwalkDirectionZ + (target.z - catwalkZ) * catwalkDirectionX;
         expect(along).toBeGreaterThan(catwalk.length);
         expect(along).toBeLessThan(catwalk.length + catwalk.ledgeLength);
         expect(Math.abs(across)).toBeLessThan(1e-6);
 
         // The whole overhang is walkable.
         for (const fraction of [0.25, 0.5, 0.75, 0.95]) {
-            const x = catwalk.x + catwalk.directionX * catwalk.length * fraction;
-            const z = catwalk.z + catwalk.directionZ * catwalk.length * fraction;
-            expect(terrain.walkSurfaceAt(x, z, catwalk.y)).toBeCloseTo(catwalk.y, 5);
+            const x = catwalkX + catwalkDirectionX * catwalk.length * fraction;
+            const z = catwalkZ + catwalkDirectionZ * catwalk.length * fraction;
+            expect(terrain.walkSurfaceAt(x, z, catwalkY)).toBeCloseTo(catwalkY, 5);
         }
 
         // The widened ledge is walkable across its full width, including behind the switch.
-        const acrossX = -catwalk.directionZ;
-        const acrossZ = catwalk.directionX;
+        const acrossX = -catwalkDirectionZ;
+        const acrossZ = catwalkDirectionX;
         const behindAlong = catwalk.length + catwalk.ledgeLength - 0.3;
         for (const offset of [-catwalk.ledgeWidth / 2 + 0.2, 0, catwalk.ledgeWidth / 2 - 0.2]) {
-            const x = catwalk.x + catwalk.directionX * behindAlong + acrossX * offset;
-            const z = catwalk.z + catwalk.directionZ * behindAlong + acrossZ * offset;
-            expect(terrain.walkSurfaceAt(x, z, catwalk.y)).toBeCloseTo(catwalk.y, 5);
+            const x = catwalkX + catwalkDirectionX * behindAlong + acrossX * offset;
+            const z = catwalkZ + catwalkDirectionZ * behindAlong + acrossZ * offset;
+            expect(terrain.walkSurfaceAt(x, z, catwalkY)).toBeCloseTo(catwalkY, 5);
         }
         expect(behindAlong).toBeGreaterThan(along + 1);
 
@@ -1272,9 +1577,9 @@ describe('megastructures', () => {
 
         // Walking up to the switch no longer flips it; only a wrench swing does.
         const approach = new Vector3(
-            target.x - catwalk.directionX * 1.8,
+            target.x - catwalkDirectionX * 1.8,
             target.y,
-            target.z - catwalk.directionZ * 1.8,
+            target.z - catwalkDirectionZ * 1.8,
         );
         structures.update(1 / 60, approach);
         expect(flipped).toBe(-1);
@@ -1348,13 +1653,13 @@ describe('megastructures', () => {
         expect(cage.geometry).toBeInstanceOf(LatheGeometry);
         const material = cage.material as MeshBasicMaterial;
 
-        structures.update(1 / 60, new Vector3(spiral.x + 50, spiral.baseY, spiral.z));
+        structures.update(1 / 60, new Vector3(spiralX(spiral) + 50, spiral.baseY, spiralZ(spiral)));
         const nearOpacity = material.opacity;
 
-        structures.update(1 / 60, new Vector3(spiral.x + 200, spiral.baseY, spiral.z));
+        structures.update(1 / 60, new Vector3(spiralX(spiral) + 200, spiral.baseY, spiralZ(spiral)));
         const midOpacity = material.opacity;
 
-        structures.update(1 / 60, new Vector3(spiral.x + 500, spiral.baseY, spiral.z));
+        structures.update(1 / 60, new Vector3(spiralX(spiral) + 500, spiral.baseY, spiralZ(spiral)));
         const farOpacity = material.opacity;
 
         expect(cage.visible).toBe(true);
@@ -1374,7 +1679,7 @@ describe('megastructures', () => {
         structures.onShockPlayer = (direction) => shoves.push(direction);
 
         // Standing on the top floor just inside the spiral's outer edge.
-        const intruder = new Vector3(spiral.x + 1, spiral.baseY, spiral.z);
+        const intruder = new Vector3(spiralX(spiral) + 1, spiral.baseY, spiralZ(spiral));
         structures.update(1 / 60, intruder);
         expect(shoves).toHaveLength(1);
         expect(shoves[0].x).toBeGreaterThan(0.9);
@@ -1387,7 +1692,7 @@ describe('megastructures', () => {
         expect(shoves).toHaveLength(2);
 
         // One storey down the crown is out of reach even directly under it.
-        structures.update(2, new Vector3(spiral.x, spiral.baseY - 5, spiral.z));
+        structures.update(2, new Vector3(spiralX(spiral), spiral.baseY - 5, spiralZ(spiral)));
         expect(shoves).toHaveLength(2);
     });
 

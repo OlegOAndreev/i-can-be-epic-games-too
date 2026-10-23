@@ -189,10 +189,14 @@ export class WreckMap {
         context.lineJoin = 'round';
 
         for (const [towerIndex, tower] of this.terrain.megastructures.towers.entries()) {
-            const minX = this.toCanvasX(tower.minX);
-            const maxX = this.toCanvasX(tower.maxX);
-            const minZ = this.toCanvasZ(tower.minZ);
-            const maxZ = this.toCanvasZ(tower.maxZ);
+            const towerMinX = tower.worldMinX ?? tower.minX;
+            const towerMaxX = tower.worldMaxX ?? tower.maxX;
+            const towerMinZ = tower.worldMinZ ?? tower.minZ;
+            const towerMaxZ = tower.worldMaxZ ?? tower.maxZ;
+            const minX = this.toCanvasX(towerMinX);
+            const maxX = this.toCanvasX(towerMaxX);
+            const minZ = this.toCanvasZ(towerMinZ);
+            const maxZ = this.toCanvasZ(towerMaxZ);
             // An unpowered tower reads as the standard orange; once its switch has charged it
             // turns cyan like the live energy running through the structure.
             const powered = this.terrain.megastructures.isTowerPowered(towerIndex);
@@ -211,16 +215,20 @@ export class WreckMap {
                       ? 'rgba(255, 178, 102, 0.95)'
                       : 'rgba(226, 138, 71, 0.48)';
                 context.lineWidth = topStorey ? 2 : 1;
+                const storeyMinX = storey.worldMinX ?? storey.minX;
+                const storeyMaxX = storey.worldMaxX ?? storey.maxX;
+                const storeyMinZ = storey.worldMinZ ?? storey.minZ;
+                const storeyMaxZ = storey.worldMaxZ ?? storey.maxZ;
                 context.strokeRect(
-                    this.toCanvasX(storey.minX),
-                    this.toCanvasZ(storey.minZ),
-                    this.toCanvasX(storey.maxX) - this.toCanvasX(storey.minX),
-                    this.toCanvasZ(storey.maxZ) - this.toCanvasZ(storey.minZ),
+                    this.toCanvasX(storeyMinX),
+                    this.toCanvasZ(storeyMinZ),
+                    this.toCanvasX(storeyMaxX) - this.toCanvasX(storeyMinX),
+                    this.toCanvasZ(storeyMaxZ) - this.toCanvasZ(storeyMinZ),
                 );
             }
 
-            const centreX = this.toCanvasX((tower.minX + tower.maxX) / 2);
-            const centreZ = this.toCanvasZ((tower.minZ + tower.maxZ) / 2);
+            const centreX = this.toCanvasX((towerMinX + towerMaxX) / 2);
+            const centreZ = this.toCanvasZ((towerMinZ + towerMaxZ) / 2);
             context.fillStyle = powered ? 'rgba(160, 250, 255, 0.95)' : 'rgba(255, 196, 128, 0.95)';
             context.beginPath();
             context.arc(centreX, centreZ, 2.6, 0, Math.PI * 2);

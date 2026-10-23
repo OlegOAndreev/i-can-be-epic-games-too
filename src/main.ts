@@ -60,6 +60,7 @@ import { Input } from './input';
 import { angleDelta, clamp, damp } from './math-utils';
 import { MEGASTRUCTURE_LAYER } from './megastructures';
 import type { MegastructureTower } from './megastructures';
+import { localDirectionToWorld, localToWorld } from './structure-frame';
 import { NightSky } from './night-sky';
 import { NpcRobots, parseRobotDialogue } from './npc-robots';
 import type { DialogueLine, DialoguePresenter, RobotDialogue } from './npc-robots';
@@ -2005,7 +2006,7 @@ function startMegastructureHum(towerIndex: number): void {
         towerIndex,
         // Mid-spiral is the middle of the crown shield, so the hum is anchored inside the field
         // rather than at the tower foot.
-        new Vector3(spiral.x, spiral.baseY + spiral.height / 2, spiral.z),
+        new Vector3(spiral.worldX ?? spiral.x, spiral.baseY + spiral.height / 2, spiral.worldZ ?? spiral.z),
     );
 }
 
@@ -2023,7 +2024,7 @@ function updateStructureHumDistances(): void {
         }
         gameAudio.setStructureHumDistance(
             structureSwitch.towerIndex,
-            Math.hypot(position.x - spiral.x, position.z - spiral.z),
+            Math.hypot(position.x - (spiral.worldX ?? spiral.x), position.z - (spiral.worldZ ?? spiral.z)),
         );
     }
 }
@@ -3287,17 +3288,41 @@ function megastructureEntrance(tower: MegastructureTower): { x: number; z: numbe
     const centreX = (tower.minX + tower.maxX) / 2;
     const centreZ = (tower.minZ + tower.maxZ) / 2;
     const standOff = 5;
+    let localX = centreX;
+    let localZ = centreZ;
+    let normalX = 0;
+    let normalZ = 0;
 
     switch (tower.entranceSide) {
         case 0:
-            return { x: centreX, z: tower.maxZ + standOff, facing: Math.PI };
+            localZ = tower.maxZ + standOff;
+            normalZ = 1;
+            break;
         case 1:
-            return { x: centreX, z: tower.minZ - standOff, facing: 0 };
+            localZ = tower.minZ - standOff;
+            normalZ = -1;
+            break;
         case 2:
-            return { x: tower.maxX + standOff, z: centreZ, facing: -Math.PI / 2 };
+            localX = tower.maxX + standOff;
+            normalX = 1;
+            break;
         default:
-            return { x: tower.minX - standOff, z: centreZ, facing: Math.PI / 2 };
+            localX = tower.minX - standOff;
+            normalX = -1;
+            break;
     }
+
+    const groundStorey = tower.storeys[0];
+    const frame = groundStorey?.frame;
+    if (!frame) {
+        return { x: localX, z: localZ, facing: Math.atan2(-normalX, -normalZ) };
+    }
+
+    const storeyCentreX = (groundStorey.minX + groundStorey.maxX) / 2;
+    const storeyCentreZ = (groundStorey.minZ + groundStorey.maxZ) / 2;
+    const world = localToWorld(frame, localX - storeyCentreX, 0, localZ - storeyCentreZ);
+    const normal = localDirectionToWorld(frame, normalX, 0, normalZ);
+    return { x: world.x, z: world.z, facing: Math.atan2(-normal.x, -normal.z) };
 }
 
 // Debug shortcut: jump to a random megastructure entrance whose crown switch is still idle. The

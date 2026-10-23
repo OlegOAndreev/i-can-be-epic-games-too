@@ -23,6 +23,7 @@ import type { CrownCatwalk, MegastructureStorey, MegastructureTower, Ramp } from
 import { mulberry32 } from './noise';
 import { SpeechLabel, createCaretakerModel, dimRobotModel } from './npc-robots';
 import type { RobotKind, RobotModel } from './npc-robots';
+import { localDirectionToWorld, localToWorld } from './structure-frame';
 import { WATER_LEVEL } from './terrain';
 import type { CylinderCollider, Terrain } from './terrain';
 
@@ -434,8 +435,7 @@ export class RobotRemains {
         }
 
         const tower = selection.tower;
-        const centreX = (tower.minX + tower.maxX) / 2;
-        const centreZ = (tower.minZ + tower.maxZ) / 2;
+        const bounds = worldBounds(tower);
 
         // The first one never made it through the door.
         const entrance = entranceAnchor(tower, -2.8);
@@ -471,7 +471,9 @@ export class RobotRemains {
         // One fell from the crown before the switch could be reached. The crater is the only
         // permanent mark left in the structure's dust.
         const fallAngle = this.rng() * Math.PI * 2;
-        const fallRadius = Math.max(tower.maxX - tower.minX, tower.maxZ - tower.minZ) * 0.55;
+        const fallRadius = Math.max(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ) * 0.55;
+        const centreX = (bounds.minX + bounds.maxX) / 2;
+        const centreZ = (bounds.minZ + bounds.maxZ) / 2;
         const fallX = centreX + Math.cos(fallAngle) * fallRadius;
         const fallZ = centreZ + Math.sin(fallAngle) * fallRadius;
         const fallY = this.terrain.heightAt(fallX, fallZ);
@@ -495,15 +497,25 @@ export class RobotRemains {
             : null;
         if (structureSwitch && catwalk) {
             const clearance = 2.4;
-            const x = structureSwitch.x - catwalk.directionX * clearance;
-            const z = structureSwitch.z - catwalk.directionZ * clearance;
+            const directionX = catwalk.worldDirectionX ?? catwalk.directionX;
+            const directionZ = catwalk.worldDirectionZ ?? catwalk.directionZ;
+            // Mirror the switch placement one step back down the walkway so the body sits on the
+            // tilted ledge instead of a horizontal projection of it.
+            const along = catwalk.length + 1.1 - clearance;
+            const point = catwalk.frame
+                ? localToWorld(catwalk.frame, 0, 0, along)
+                : new Vector3(
+                      (catwalk.worldX ?? catwalk.x) + directionX * along,
+                      catwalk.worldY ?? catwalk.y,
+                      (catwalk.worldZ ?? catwalk.z) + directionZ * along,
+                  );
             const group = new Group();
-            group.position.set(x, structureSwitch.y + 0.02, z);
-            group.rotation.y = Math.atan2(structureSwitch.x - x, structureSwitch.z - z);
+            group.position.set(point.x, point.y + 0.02, point.z);
+            group.rotation.y = Math.atan2(structureSwitch.x - point.x, structureSwitch.z - point.z);
             this.addBody(group, 'matron', 0, 0, 0, 0, 'slump', { weather: true });
             mergeStaticGeometry(group);
             this.group.add(group);
-            this.addSite('pilgrim-crown', x, structureSwitch.y, z);
+            this.addSite('pilgrim-crown', point.x, point.y, point.z);
         }
     }
 
@@ -519,11 +531,15 @@ export class RobotRemains {
         }
 
         const floorY = storey.baseY;
-        const centreX = (storey.minX + storey.maxX) / 2;
-        const centreZ = (storey.minZ + storey.maxZ) / 2;
+        // Generated storeys carry a frame; synth fixtures without one behave as axis-aligned.
+        const centre = storey.frame
+            ? localToWorld(storey.frame, 0, floorY - (tower.frame?.origin.y ?? 0), 0)
+            : new Vector3((storey.minX + storey.maxX) / 2, floorY, (storey.minZ + storey.maxZ) / 2);
+        const centreX = centre.x;
+        const centreZ = centre.z;
         const origin = new Group();
         origin.name = 'remains-ossuary';
-        origin.position.set(centreX, floorY, centreZ);
+        origin.position.copy(centre);
         this.group.add(origin);
 
         const kindCycle: RobotKind[] = ['matron', 'walle', 'probe'];
@@ -608,15 +624,15 @@ export class RobotRemains {
             x: centreX,
             z: centreZ,
             radius: 2.5,
-            base: floorY,
-            top: floorY + 1.2,
+            base: centre.y,
+            top: centre.y + 1.2,
         });
 
-        this.addSite('ossuary', centreX, floorY, centreZ);
+        this.addSite('ossuary', centreX, centre.y, centreZ);
         this.interactables.push({
             id: 'ossuary-cache',
             kind: 'cache',
-            position: new Vector3(centreX, floorY + 0.45, centreZ),
+            position: new Vector3(centreX, centre.y + 0.45, centreZ),
             // The pile itself is a 2.5m collider, so the wrench reach must clear the player's
             // radius on top of that.
             radius: 4.4,
@@ -995,11 +1011,17 @@ export class RobotRemains {
     private towersByDistance(): TowerSelection[] {
         const spawn = this.terrain.spawn;
         return this.terrain.megastructures.towers
-            .map((tower, index) => ({
-                tower,
-                index,
-                distance: Math.hypot((tower.minX + tower.maxX) / 2 - spawn.x, (tower.minZ + tower.maxZ) / 2 - spawn.z),
-            }))
+            .map((tower, index) => {
+                const bounds = worldBounds(tower);
+                return {
+                    tower,
+                    index,
+                    distance: Math.hypot(
+                        (bounds.minX + bounds.maxX) / 2 - spawn.x,
+                        (bounds.minZ + bounds.maxZ) / 2 - spawn.z,
+                    ),
+                };
+            })
             .sort((a, b) => a.distance - b.distance);
     }
 
@@ -1007,9 +1029,11 @@ export class RobotRemains {
         let best: CrownCatwalk | null = null;
         let bestDistance = 1;
         for (const catwalk of this.terrain.megastructures.crownCatwalks) {
-            const endX = catwalk.x + catwalk.directionX * (catwalk.length + 1.1);
-            const endZ = catwalk.z + catwalk.directionZ * (catwalk.length + 1.1);
-            const distance = Math.hypot(endX - x, endZ - z) + Math.abs(catwalk.y - y);
+            const directionX = catwalk.worldDirectionX ?? catwalk.directionX;
+            const directionZ = catwalk.worldDirectionZ ?? catwalk.directionZ;
+            const endX = (catwalk.worldX ?? catwalk.x) + directionX * (catwalk.length + 1.1);
+            const endZ = (catwalk.worldZ ?? catwalk.z) + directionZ * (catwalk.length + 1.1);
+            const distance = Math.hypot(endX - x, endZ - z) + Math.abs((catwalk.worldY ?? catwalk.y) - y);
             if (distance < bestDistance) {
                 best = catwalk;
                 bestDistance = distance;
@@ -1019,12 +1043,15 @@ export class RobotRemains {
     }
 
     private towerRamps(selection: TowerSelection): Ramp[] {
-        const tower = selection.tower;
+        const bounds = worldBounds(selection.tower);
         return this.terrain.megastructures.ramps
             .filter((ramp) => {
+                if (ramp.towerIndex !== undefined) {
+                    return ramp.towerIndex === selection.index;
+                }
                 const x = (ramp.minX + ramp.maxX) / 2;
                 const z = (ramp.minZ + ramp.maxZ) / 2;
-                return x > tower.minX && x < tower.maxX && z > tower.minZ && z < tower.maxZ;
+                return x > bounds.minX && x < bounds.maxX && z > bounds.minZ && z < bounds.maxZ;
             })
             .sort((a, b) => a.minY + a.maxY - (b.minY + b.maxY));
     }
@@ -1132,53 +1159,122 @@ function setGlow(tracks: EmissiveTrack[], scale: number): void {
     }
 }
 
+function worldBounds(source: {
+    minX: number;
+    maxX: number;
+    minZ: number;
+    maxZ: number;
+    worldMinX?: number;
+    worldMaxX?: number;
+    worldMinZ?: number;
+    worldMaxZ?: number;
+}): { minX: number; maxX: number; minZ: number; maxZ: number } {
+    return {
+        minX: source.worldMinX ?? source.minX,
+        maxX: source.worldMaxX ?? source.maxX,
+        minZ: source.worldMinZ ?? source.minZ,
+        maxZ: source.worldMaxZ ?? source.maxZ,
+    };
+}
+
+// Ground-level anchor on the doorway side. The bounds and the inset are storey-local, so the result
+// is rotated through the ground storey's frame before it is used for placement.
 function entranceAnchor(
     tower: MegastructureTower,
     inset: number,
 ): { x: number; z: number; inwardX: number; inwardZ: number; tangentX: number; tangentZ: number } {
     const centreX = (tower.minX + tower.maxX) / 2;
     const centreZ = (tower.minZ + tower.maxZ) / 2;
+    let localX = centreX;
+    let localZ = centreZ;
+    let inwardX = 0;
+    let inwardZ = 0;
+    let tangentX = 1;
+    let tangentZ = 0;
     switch (tower.entranceSide) {
         case 1:
-            return {
-                x: centreX,
-                z: tower.minZ + inset,
-                inwardX: 0,
-                inwardZ: 1,
-                tangentX: 1,
-                tangentZ: 0,
-            };
+            localZ = tower.minZ + inset;
+            inwardZ = 1;
+            break;
         case 2:
-            return {
-                x: tower.maxX - inset,
-                z: centreZ,
-                inwardX: -1,
-                inwardZ: 0,
-                tangentX: 0,
-                tangentZ: 1,
-            };
+            localX = tower.maxX - inset;
+            inwardX = -1;
+            tangentX = 0;
+            tangentZ = 1;
+            break;
         case 3:
-            return {
-                x: tower.minX + inset,
-                z: centreZ,
-                inwardX: 1,
-                inwardZ: 0,
-                tangentX: 0,
-                tangentZ: 1,
-            };
+            localX = tower.minX + inset;
+            inwardX = 1;
+            tangentX = 0;
+            tangentZ = 1;
+            break;
         default:
-            return {
-                x: centreX,
-                z: tower.maxZ - inset,
-                inwardX: 0,
-                inwardZ: -1,
-                tangentX: 1,
-                tangentZ: 0,
-            };
+            localZ = tower.maxZ - inset;
+            inwardZ = -1;
+            break;
     }
+
+    const groundStorey = tower.storeys[0];
+    const frame = groundStorey?.frame;
+    if (!groundStorey || !frame) {
+        return { x: localX, z: localZ, inwardX, inwardZ, tangentX, tangentZ };
+    }
+
+    const storeyCentreX = (groundStorey.minX + groundStorey.maxX) / 2;
+    const storeyCentreZ = (groundStorey.minZ + groundStorey.maxZ) / 2;
+    const world = localToWorld(frame, localX - storeyCentreX, 0, localZ - storeyCentreZ);
+    const inward = localDirectionToWorld(frame, inwardX, 0, inwardZ);
+    const tangent = localDirectionToWorld(frame, tangentX, 0, tangentZ);
+    return {
+        x: world.x,
+        z: world.z,
+        inwardX: inward.x,
+        inwardZ: inward.z,
+        tangentX: tangent.x,
+        tangentZ: tangent.z,
+    };
 }
 
 function rampPoint(ramp: Ramp, t: number): { x: number; y: number; z: number; yaw: number; slope: number } {
+    // Local bounds and the frame travel together; never mix them with the world AABB fields.
+    const { localMinX, localMaxX, localMinZ, localMaxZ, localMinY, localMaxY } = ramp;
+    if (
+        ramp.frame &&
+        localMinX !== undefined &&
+        localMaxX !== undefined &&
+        localMinZ !== undefined &&
+        localMaxZ !== undefined &&
+        localMinY !== undefined &&
+        localMaxY !== undefined
+    ) {
+        const alongMin = ramp.axis === 'x' ? localMinX : localMinZ;
+        const alongMax = ramp.axis === 'x' ? localMaxX : localMaxZ;
+        const across = ramp.axis === 'x' ? (localMinZ + localMaxZ) / 2 : (localMinX + localMaxX) / 2;
+        const along = alongMin + (alongMax - alongMin) * t;
+        const y = localMinY + (localMaxY - localMinY) * t;
+        const world = localToWorld(
+            ramp.frame,
+            ramp.axis === 'x' ? along : across,
+            y,
+            ramp.axis === 'x' ? across : along,
+        );
+        // Pointing the body down the descending direction mirrors the old world-axis pose.
+        const sign = localMaxY >= localMinY ? 1 : -1;
+        const direction = localDirectionToWorld(
+            ramp.frame,
+            ramp.axis === 'x' ? sign : 0,
+            0,
+            ramp.axis === 'x' ? 0 : sign,
+        );
+        return {
+            x: world.x,
+            y: world.y,
+            z: world.z,
+            yaw: Math.atan2(direction.x, direction.z),
+            slope: Math.atan2(Math.abs(localMaxY - localMinY), Math.max(0.001, Math.abs(alongMax - alongMin))),
+        };
+    }
+
     if (ramp.axis === 'x') {
         const x = ramp.minX + (ramp.maxX - ramp.minX) * t;
         const z = (ramp.minZ + ramp.maxZ) / 2;

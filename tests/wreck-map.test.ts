@@ -82,8 +82,10 @@ describe('wreck map', () => {
         parts.collectAll();
 
         const tower = terrain.megastructures.towers[0];
-        const x = Math.round((((tower.minX + tower.maxX) / 2 + WRECK_MAP_HALF_SIZE) / (WRECK_MAP_HALF_SIZE * 2)) * 512);
-        const y = Math.round((((tower.minZ + tower.maxZ) / 2 + WRECK_MAP_HALF_SIZE) / (WRECK_MAP_HALF_SIZE * 2)) * 512);
+        const towerCentreX = ((tower.worldMinX ?? tower.minX) + (tower.worldMaxX ?? tower.maxX)) / 2;
+        const towerCentreZ = ((tower.worldMinZ ?? tower.minZ) + (tower.worldMaxZ ?? tower.maxZ)) / 2;
+        const x = Math.round(((towerCentreX + WRECK_MAP_HALF_SIZE) / (WRECK_MAP_HALF_SIZE * 2)) * 512);
+        const y = Math.round(((towerCentreZ + WRECK_MAP_HALF_SIZE) / (WRECK_MAP_HALF_SIZE * 2)) * 512);
         const context = canvas.getContext('2d');
 
         map.update(terrain.spawn.x, terrain.spawn.z, 0);

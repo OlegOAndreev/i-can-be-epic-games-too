@@ -5,7 +5,7 @@ import type { Ramp } from '../src/megastructures';
 import { FIRST_PERSON_CEILING_CLEARANCE, PLAYER_HEIGHT, PLAYER_RADIUS } from '../src/player';
 import { FIRST_PERSON_EYE_HEIGHT, NEAR_Z } from '../src/player-camera';
 import { rampSurfaceAt } from '../src/ramp-collision';
-import { stepPlayer, testPlayer, testTerrain } from './test-helpers';
+import { stepPlayer, testPlayer, testRotatedTerrain, testTerrain } from './test-helpers';
 import type { Terrain } from '../src/terrain';
 
 function rampHeightAt(ramp: Ramp, x: number, z: number): number {
@@ -25,12 +25,18 @@ function rampEnd(ramp: Ramp, low: boolean): { x: number; z: number; y: number } 
 
 function towerRamps(terrain: Terrain, towerIndex: number): Ramp[] {
     const tower = terrain.megastructures.towers[towerIndex];
+    const minX = tower.worldMinX ?? tower.minX;
+    const maxX = tower.worldMaxX ?? tower.maxX;
+    const minZ = tower.worldMinZ ?? tower.minZ;
+    const maxZ = tower.worldMaxZ ?? tower.maxZ;
     return terrain.megastructures.ramps.filter(
         (ramp) =>
-            ramp.minX >= tower.minX - 0.01 &&
-            ramp.maxX <= tower.maxX + 0.01 &&
-            ramp.minZ >= tower.minZ - 0.01 &&
-            ramp.maxZ <= tower.maxZ + 0.01,
+            (ramp.towerIndex !== undefined
+                ? ramp.towerIndex === towerIndex
+                : ramp.minX >= minX - 0.01 &&
+                  ramp.maxX <= maxX + 0.01 &&
+                  ramp.minZ >= minZ - 0.01 &&
+                  ramp.maxZ <= maxZ + 0.01),
     );
 }
 
@@ -76,14 +82,12 @@ describe('megastructure ramps', () => {
         }
     });
 
-    it('turns each ramp 90 degrees and starts it away from the previous exit', () => {
+    it('starts each ramp away from the previous exit', () => {
         const terrain = testTerrain(1234);
 
         for (let towerIndex = 0; towerIndex < terrain.megastructures.towers.length; towerIndex++) {
             const ramps = towerRamps(terrain, towerIndex);
             for (let index = 1; index < ramps.length; index++) {
-                expect(ramps[index].axis, `tower ${towerIndex} ramp ${index}`).not.toBe(ramps[index - 1].axis);
-
                 const exit = rampEnd(ramps[index - 1], false);
                 const start = rampEnd(ramps[index], true);
                 expect(
@@ -109,7 +113,11 @@ describe('megastructure ramps', () => {
                 (ramp.axis === 'x' ? ramp.minX : ramp.minZ) +
                 (ramp.minY < ramp.maxY ? lowFraction : 1 - lowFraction) * run;
             const laneCentre = ramp.axis === 'x' ? (ramp.minZ + ramp.maxZ) / 2 : (ramp.minX + ramp.maxX) / 2;
-            const centreTransverse = ramp.axis === 'x' ? (tower.minZ + tower.maxZ) / 2 : (tower.minX + tower.maxX) / 2;
+            const towerMinX = tower.worldMinX ?? tower.minX;
+            const towerMaxX = tower.worldMaxX ?? tower.maxX;
+            const towerMinZ = tower.worldMinZ ?? tower.minZ;
+            const towerMaxZ = tower.worldMaxZ ?? tower.maxZ;
+            const centreTransverse = ramp.axis === 'x' ? (towerMinZ + towerMaxZ) / 2 : (towerMinX + towerMaxX) / 2;
             const outerIsMax = laneCentre > centreTransverse;
 
             let x: number;
@@ -266,7 +274,11 @@ describe('megastructure ramps', () => {
             const y = (low.y + high.y) / 2;
 
             const laneCentre = ramp.axis === 'x' ? (ramp.minZ + ramp.maxZ) / 2 : (ramp.minX + ramp.maxX) / 2;
-            const centreTransverse = ramp.axis === 'x' ? (tower.minZ + tower.maxZ) / 2 : (tower.minX + tower.maxX) / 2;
+            const towerMinX = tower.worldMinX ?? tower.minX;
+            const towerMaxX = tower.worldMaxX ?? tower.maxX;
+            const towerMinZ = tower.worldMinZ ?? tower.minZ;
+            const towerMaxZ = tower.worldMaxZ ?? tower.maxZ;
+            const centreTransverse = ramp.axis === 'x' ? (towerMinZ + towerMaxZ) / 2 : (towerMinX + towerMaxX) / 2;
             const outerIsMax = laneCentre > centreTransverse;
             const yaw = ramp.axis === 'x' ? (outerIsMax ? Math.PI : 0) : outerIsMax ? -Math.PI / 2 : Math.PI / 2;
 
@@ -337,7 +349,6 @@ describe('megastructure ramps', () => {
                 const along = ramp.axis === 'x' ? position.x : position.z;
                 const highAlong = ramp.axis === 'x' ? high.x : high.z;
                 const direction = ramp.axis === 'x' ? Math.sign(high.x - low.x) : Math.sign(high.z - low.z);
-
                 expect(position.y, `tower ${towerIndex}, ${ramp.axis} ramp`).toBeGreaterThanOrEqual(high.y - 0.02);
                 expect((along - highAlong) * direction, `tower ${towerIndex}, ${ramp.axis} ramp`).toBeGreaterThan(0.1);
                 expect(player.isGrounded, `tower ${towerIndex}, ${ramp.axis} ramp`).toBe(true);
@@ -358,15 +369,19 @@ describe('megastructure ramps', () => {
                 const ramp = towerRamps(terrain, towerIndex)[0];
                 const lowY = Math.min(ramp.minY, ramp.maxY);
                 const side = tower.entranceSide;
-                const wallCentre = side < 2 ? (tower.minX + tower.maxX) / 2 : (tower.minZ + tower.maxZ) / 2;
-                const centreX = (tower.minX + tower.maxX) / 2;
-                const centreZ = (tower.minZ + tower.maxZ) / 2;
+                const towerMinX = tower.worldMinX ?? tower.minX;
+                const towerMaxX = tower.worldMaxX ?? tower.maxX;
+                const towerMinZ = tower.worldMinZ ?? tower.minZ;
+                const towerMaxZ = tower.worldMaxZ ?? tower.maxZ;
+                const wallCentre = side < 2 ? (towerMinX + towerMaxX) / 2 : (towerMinZ + towerMaxZ) / 2;
+                const centreX = (towerMinX + towerMaxX) / 2;
+                const centreZ = (towerMinZ + towerMaxZ) / 2;
                 const outside = 4;
 
                 for (const offset of [-2, 0, 2]) {
                     const across = wallCentre + offset;
-                    const startX = side === 2 ? tower.maxX + outside : side === 3 ? tower.minX - outside : across;
-                    const startZ = side === 0 ? tower.maxZ + outside : side === 1 ? tower.minZ - outside : across;
+                    const startX = side === 2 ? towerMaxX + outside : side === 3 ? towerMinX - outside : across;
+                    const startZ = side === 0 ? towerMaxZ + outside : side === 1 ? towerMinZ - outside : across;
 
                     player.respawn(terrain);
                     player.group.position.set(startX, terrain.heightAt(startX, startZ), startZ);
@@ -396,6 +411,21 @@ describe('megastructure ramps', () => {
             }
         }
     }, 75000);
+
+    it('never allocates a ramp steeper than 45 degrees', () => {
+        for (const seed of [1234, 1, 2, 8, 14]) {
+            for (const terrain of [testTerrain(seed), testRotatedTerrain(seed)]) {
+                for (const ramp of terrain.megastructures.ramps) {
+                    const rise = Math.abs((ramp.localMaxY ?? ramp.maxY) - (ramp.localMinY ?? ramp.minY));
+                    const run =
+                        ramp.axis === 'x'
+                            ? (ramp.localMaxX ?? ramp.maxX) - (ramp.localMinX ?? ramp.minX)
+                            : (ramp.localMaxZ ?? ramp.maxZ) - (ramp.localMinZ ?? ramp.minZ);
+                    expect(rise / run, `tower ${ramp.towerIndex} ramp ${ramp.axis}`).toBeLessThanOrEqual(1 + 1e-6);
+                }
+            }
+        }
+    });
 
     it('is walkable on every ramp segment', () => {
         const terrain = testTerrain(1234);

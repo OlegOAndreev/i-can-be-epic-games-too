@@ -2,10 +2,20 @@ import { Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
 import { RobotRemains } from '../src/robot-remains';
-import { installCanvasDocument, stubAudio, testTerrain } from './test-helpers';
+import { installCanvasDocument, stubAudio, testRotatedTerrain, testTerrain } from './test-helpers';
 import { WATER_LEVEL } from '../src/terrain';
+import type { MegastructureTower } from '../src/megastructures';
 
 installCanvasDocument(1024, 320);
+
+function towerWorldBounds(tower: MegastructureTower): { minX: number; maxX: number; minZ: number; maxZ: number } {
+    return {
+        minX: tower.worldMinX ?? tower.minX,
+        maxX: tower.worldMaxX ?? tower.maxX,
+        minZ: tower.worldMinZ ?? tower.minZ,
+        maxZ: tower.worldMaxZ ?? tower.maxZ,
+    };
+}
 
 describe('robot remains', () => {
     it('places every encounter deterministically from the world seed', () => {
@@ -36,23 +46,46 @@ describe('robot remains', () => {
         const sweeper = sites.find((site) => site.id === 'sweeper')!;
         const nearestTower = terrain.megastructures.towers.reduce(
             (best, tower) => {
+                const bounds = towerWorldBounds(tower);
                 const distance = Math.hypot(
-                    (tower.minX + tower.maxX) / 2 - sweeper.x,
-                    (tower.minZ + tower.maxZ) / 2 - sweeper.z,
+                    (bounds.minX + bounds.maxX) / 2 - sweeper.x,
+                    (bounds.minZ + bounds.maxZ) / 2 - sweeper.z,
                 );
-                return distance < best.distance ? { tower, distance } : best;
+                return distance < best.distance ? { tower, bounds, distance } : best;
             },
-            { tower: terrain.megastructures.towers[0], distance: Infinity },
+            {
+                tower: terrain.megastructures.towers[0],
+                bounds: towerWorldBounds(terrain.megastructures.towers[0]),
+                distance: Infinity,
+            },
         );
-        expect(sweeper.x).toBeGreaterThanOrEqual(nearestTower.tower.minX);
-        expect(sweeper.x).toBeLessThanOrEqual(nearestTower.tower.maxX);
-        expect(sweeper.z).toBeGreaterThanOrEqual(nearestTower.tower.minZ);
-        expect(sweeper.z).toBeLessThanOrEqual(nearestTower.tower.maxZ);
+        // The sweeper stands a few metres outside the doorway, so it must stay within a footprint
+        // half-diagonal of the tower even when the storey is yawed.
+        const halfDiagonal = Math.hypot(
+            nearestTower.bounds.maxX - nearestTower.bounds.minX,
+            nearestTower.bounds.maxZ - nearestTower.bounds.minZ,
+        ) / 2;
+        expect(nearestTower.distance).toBeLessThanOrEqual(halfDiagonal + 6);
 
         const ossuary = sites.find((site) => site.id === 'ossuary')!;
         expect(
             terrain.megastructures.towers.some((tower) =>
-                tower.storeys.some((storey) => Math.abs(storey.baseY - ossuary.y) < 0.01),
+                tower.storeys.some((storey) => {
+                    const minX = storey.worldMinX ?? storey.minX;
+                    const maxX = storey.worldMaxX ?? storey.maxX;
+                    const minZ = storey.worldMinZ ?? storey.minZ;
+                    const maxZ = storey.worldMaxZ ?? storey.maxZ;
+                    const baseY = storey.worldBaseY ?? storey.baseY;
+                    const topY = storey.worldTopY ?? storey.topY;
+                    return (
+                        ossuary.x > minX &&
+                        ossuary.x < maxX &&
+                        ossuary.z > minZ &&
+                        ossuary.z < maxZ &&
+                        ossuary.y > baseY - 1 &&
+                        ossuary.y < topY
+                    );
+                }),
             ),
         ).toBe(true);
 
@@ -71,6 +104,49 @@ describe('robot remains', () => {
 
         first.dispose();
         second.dispose();
+    });
+
+    // The tower-bound encounters used to be placed from tower-local bounds, which dropped every
+    // one of them near the world origin high above the ground.
+    it('keeps tower encounters on their rotated tower', () => {
+        const terrain = testRotatedTerrain(4242);
+        const remains = new RobotRemains(terrain, stubAudio());
+        const towers = terrain.megastructures.towers;
+        const sites = remains.getSites();
+
+        const towerBound = sites.filter(
+            (site) =>
+                site.id === 'sweeper' ||
+                site.id === 'ossuary' ||
+                site.id === 'pilgrim-entrance' ||
+                site.id === 'pilgrim-crown' ||
+                site.id === 'pilgrim-fall' ||
+                site.id.startsWith('pilgrim-ramp-'),
+        );
+        expect(towerBound.length).toBeGreaterThanOrEqual(3);
+
+        for (const site of towerBound) {
+            const nearest = Math.min(
+                ...towers.map((tower) => {
+                    const bounds = towerWorldBounds(tower);
+                    return Math.hypot(
+                        (bounds.minX + bounds.maxX) / 2 - site.x,
+                        (bounds.minZ + bounds.maxZ) / 2 - site.z,
+                    );
+                }),
+            );
+            expect(nearest, site.id).toBeLessThan(80);
+        }
+
+        // Every body on a ramp must sit on the ramp surface, not merely near its world AABB.
+        for (const site of sites.filter((candidate) => candidate.id.startsWith('pilgrim-ramp-'))) {
+            expect(
+                terrain.walkSurfaceAt(site.x, site.z, site.y + 0.5),
+                site.id,
+            ).toBeCloseTo(site.y, 1);
+        }
+
+        remains.dispose();
     });
 
     it('powers down the last sweeper once and awards its cell', () => {

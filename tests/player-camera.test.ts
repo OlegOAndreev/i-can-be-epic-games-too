@@ -150,10 +150,13 @@ describe('PlayerCamera', () => {
         const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
         const controller = new PlayerCamera(camera);
         const tower = terrain.megastructures.towers[0];
-        const centreX = (tower.minX + tower.maxX) / 2;
+        const centreX = ((tower.worldMinX ?? tower.minX) + (tower.worldMaxX ?? tower.maxX)) / 2;
         const side = tower.entranceSide === 0 ? 1 : 0;
         // Stand half a metre from the inside face of a solid wall (1.8 m thick).
-        const z = side === 0 ? tower.maxZ - 1.8 - 0.5 : tower.minZ + 1.8 + 0.5;
+        const z =
+            side === 0
+                ? (tower.worldMaxZ ?? tower.maxZ) - 1.8 - 0.5
+                : (tower.worldMinZ ?? tower.minZ) + 1.8 + 0.5;
         const ground = terrain.heightAt(centreX, z);
         const playerPosition = new Vector3(centreX, ground, z);
 
