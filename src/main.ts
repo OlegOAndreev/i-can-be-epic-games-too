@@ -40,7 +40,7 @@ import { getById, reportError, setupWindowOnError } from './common-utils';
 import { DamageVignette } from './damage-vignette';
 import { DustPuffs } from './dust';
 import { EnemyDebris } from './enemy-debris';
-import { EnemyRobots, parseEnemyDialogue } from './enemies';
+import { EnemyRobots, parseEnemyDialogue, WRENCH_RANGE } from './enemies';
 import type { Difficulty, EnemyDialogue } from './enemies';
 import { Finale } from './finale';
 import type { FinaleUi } from './finale';
@@ -73,6 +73,7 @@ import {
     Player,
     WRENCH_CHARGE_SECONDS,
     WRENCH_CHARGED_DAMAGE,
+    WRENCH_CHARGED_REACH,
 } from './player';
 import type { PlayerSettings } from './player';
 import { PlayerHealth } from './player-health';
@@ -1016,9 +1017,9 @@ async function init(): Promise<void> {
     player.setLeftHanded(wrenchSettings.leftHanded);
     firstPersonWrench.setLeftHanded(wrenchSettings.leftHanded);
     playerHealth = new PlayerHealth(gameSettings.difficulty);
-    // The wrench connects once per swing, partway through the animation: a third of the way
-    // through a regular swing and halfway through the charged spin. Interrupting the swing before
-    // that point skips the hit.
+    // The wrench connects once per swing: a regular swing lands a third of the way through its
+    // animation, while the charged spin lands as soon as its animation begins. Interrupting a
+    // regular swing before that point skips the hit.
     player.onWrenchStrike = (charged) => {
         strikeWithWrench(charged);
     };
@@ -3128,7 +3129,8 @@ function beginWrenchSwing(charged: boolean): void {
 
 // Both attack types hit everything in front of the robot exactly once per swing: enemies, rocks,
 // the megastructure switch, and robot remains. A regular swing only covers the forward arc for the
-// current difficulty, while the charged spin sweeps all the way around and deals triple damage.
+// current difficulty, while the charged spin sweeps all the way around, deals double damage, and
+// reaches less far.
 function strikeWithWrench(charged: boolean): void {
     const damage = charged ? WRENCH_CHARGED_DAMAGE : 1;
     const firstPerson = cameraController.firstPerson;
@@ -3138,10 +3140,15 @@ function strikeWithWrench(charged: boolean): void {
     // The charged spin keeps its full-circle sweep. A regular first-person swing uses the fixed
     // default-FOV arc instead of the wider difficulty arcs, so off-screen targets stay safe.
     const arc = firstPerson ? FIRST_PERSON_WRENCH_STRIKE_ARC : player.wrenchStrikeArc;
-    // First person uses a narrower arc, so its wrench reaches 20% further to keep the effective
-    // threat area comparable. The multiplier depends only on the view mode, so both regular and
-    // charged attacks use it.
-    const reachScale = firstPerson ? FIRST_PERSON_WRENCH_REACH_SCALE : 1;
+    // First person uses a narrower arc, so its regular swing reaches 20% further to keep the
+    // effective threat area comparable. The charged spin is fixed at 2.5 m in both view modes: its
+    // full circle needs no arc compensation, and the shorter reach is the trade-off for its
+    // heavier hit.
+    const reachScale = charged
+        ? WRENCH_CHARGED_REACH / WRENCH_RANGE
+        : firstPerson
+          ? FIRST_PERSON_WRENCH_REACH_SCALE
+          : 1;
     strikeEnemiesWithWrench(charged, facing, arc, reachScale);
     const rockHits = terrain.wrenchStrike(player.group.position, damage, facing, arc, reachScale);
     if (rockHits.length > 0) {
@@ -3361,16 +3368,17 @@ function animate(): void {
             beginWrenchSwing(false);
         }
     }
-    // The charged attack starts filling on its own from a Shift or right-button press. A press
-    // during the previous swing is remembered by the player and starts the charge when it ends.
+    // The charged attack starts filling from a right-button or trigger press and keeps filling
+    // only while it stays held. A press during the previous swing is remembered by the player
+    // and starts the charge when it ends.
     if (input.consumeChargedAttackPress()) {
         player.beginWrenchCharge();
     }
-    // Releasing the mouse (Esc) drops an in-progress charge without striking, including a press
-    // still waiting for the previous swing to finish.
-    if (!input.pointerLocked && (player.isWrenchCharging || player.isWrenchChargeBuffered)) {
-        player.cancelWrenchCharge();
-        gameAudio.stopStructureBuzz('wrench');
+    const chargedAttackHeld = input.chargedAttackHeld;
+    // An early press is only remembered while the button stays down. Losing pointer lock (Esc)
+    // also counts as letting go, so both the press and the charge are dropped.
+    if (!chargedAttackHeld && player.isWrenchChargeBuffered) {
+        player.cancelWrenchChargeBuffer();
     }
     player.update(
         dt,
@@ -3388,12 +3396,15 @@ function animate(): void {
     if (player.updateWrenchCharge(dt)) {
         gameAudio.stopStructureBuzz('wrench');
     }
-    // A full charge releases itself; the player never has to hold the button.
-    if (player.isWrenchCharging && player.isWrenchCharged) {
-        const released = player.releaseWrench();
+    // The strike waits for the button release: a full charge swings, while an incomplete one is
+    // dropped where it stands.
+    if (player.isWrenchCharging && !chargedAttackHeld) {
+        const released = player.isWrenchCharged ? player.releaseWrench() : null;
         gameAudio.stopStructureBuzz('wrench');
         if (released) {
             beginWrenchSwing(true);
+        } else {
+            player.cancelWrenchCharge();
         }
     }
     const chargedSwing = player.isWrenchSwingCharged;

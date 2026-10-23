@@ -136,15 +136,18 @@ const AIR_TURN_ACCELERATION = GROUND_TURN_ACCELERATION / 2;
 export const WRENCH_ATTACK_SECONDS = 0.45;
 // The charged spin gets extra time so both turns read, 20% faster than the doubled pace.
 export const WRENCH_CHARGED_ATTACK_SECONDS = (WRENCH_ATTACK_SECONDS * 2) / 1.2;
-// The wrench only connects partway through the animation, once the arm has visibly swung: a third
-// of the way through a regular swing and halfway through the charged spin.
+// A regular swing connects partway through the animation, once the arm has visibly swung. The
+// charged spin connects as the animation begins instead, so the release itself is the hit.
 export const WRENCH_STRIKE_PORTION = 1 / 3;
-export const WRENCH_CHARGED_STRIKE_PORTION = 1 / 2;
-// The charged strike fills the wrench in this long after a press. A full charge triples the
-// damage and turns the release into a spinning strike: the robot makes two full turns with the
-// wrench held forward.
+// The charged strike fills the wrench in this long while the input stays held. Releasing before
+// it fills drops the charge; a full charge doubles the damage and turns the release into a
+// spinning strike: the robot makes two full turns with the wrench held forward.
 export const WRENCH_CHARGE_SECONDS = 1;
-export const WRENCH_CHARGED_DAMAGE = 3;
+export const WRENCH_CHARGED_DAMAGE = 2;
+// The charged spin trades reach for its heavier hit: it stops at 2.5 m instead of the regular
+// wrench's 4.5 m. Its full circle needs no first-person arc compensation, so the same reach
+// applies in both view modes.
+export const WRENCH_CHARGED_REACH = 2.5;
 // Petting the wolf is a short scripted gesture: the arm reaches out, sweeps sideways twice, then
 // returns to rest. The first-person viewmodel and the third-person arm share this timing.
 export const PET_ANIMATION_SECONDS = 1.4;
@@ -192,9 +195,8 @@ export class Player {
     // Fires when a wrench swing plays to completion (not when it is interrupted), with whether
     // the strike was charged.
     onWrenchSwingEnd: ((charged: boolean) => void) | null = null;
-    // Fires once per swing, when the wrench reaches the point in the animation where it connects:
-    // a third of the way through a regular swing and halfway through the charged spin. Interrupted
-    // swings never fire it.
+    // Fires once per swing, when the wrench connects. A regular swing connects a third of the way
+    // through; the charged spin connects as soon as the release starts it.
     onWrenchStrike: ((charged: boolean) => void) | null = null;
     // Fires when a petting gesture (see startPetting) plays to completion, not when it is
     // interrupted by a knockdown or destruction.
@@ -585,8 +587,8 @@ export class Player {
         return true;
     }
 
-    // Advances the charge on its own; the player does not need to hold the input. Returns true
-    // when an interrupted charge had to be dropped without striking.
+    // Advances the charge by one frame. Main drops the charge when the input is released before
+    // it fills. Returns true when an interrupted charge had to be dropped without striking.
     updateWrenchCharge(dt: number): boolean {
         if (!this.wrenchCharging) {
             return false;
@@ -603,6 +605,12 @@ export class Player {
         this.wrenchCharging = false;
         this.wrenchChargeElapsed = 0;
         this.wrenchSwingCharged = false;
+        this.wrenchChargeBufferRemaining = 0;
+    }
+
+    // Drops an early press that is waiting for the current swing to finish without touching the
+    // swing that is already playing.
+    cancelWrenchChargeBuffer(): void {
         this.wrenchChargeBufferRemaining = 0;
     }
 
@@ -642,6 +650,10 @@ export class Player {
         this.wrenchSwingStartYaw = this.group.rotation.y;
         if (!charged) {
             this.wrenchChargeElapsed = 0;
+        } else {
+            // The charged spin connects on release: its whole animation is the follow-through.
+            this.wrenchStrikeFired = true;
+            this.onWrenchStrike?.(true);
         }
         return true;
     }
@@ -1295,12 +1307,11 @@ export class Player {
                 this.stopWrenchAttack();
             } else {
                 if (!this.wrenchStrikeFired) {
-                    const strikePortion = this.wrenchSwingCharged
-                        ? WRENCH_CHARGED_STRIKE_PORTION
-                        : WRENCH_STRIKE_PORTION;
-                    if (this.wrenchAttackElapsed >= this.wrenchSwingSeconds * strikePortion) {
+                    // Only a regular swing reaches its strike portion; a charged spin has already
+                    // connected when the swing began.
+                    if (this.wrenchAttackElapsed >= this.wrenchSwingSeconds * WRENCH_STRIKE_PORTION) {
                         this.wrenchStrikeFired = true;
-                        this.onWrenchStrike?.(this.wrenchSwingCharged);
+                        this.onWrenchStrike?.(false);
                     }
                 }
                 if (this.wrenchAttackElapsed >= this.wrenchSwingSeconds) {

@@ -57,7 +57,7 @@
   "rules.title": "Rules",
   "rules.jumpFaster": "Jumping makes you faster",
   "rules.doubleJump": "Try double jumping",
-  "rules.chargeWrench": "Shift or right-click charges a heavy strike",
+  "rules.chargeWrench": "Hold right-click to charge a heavy strike, release to swing",
   "goals.title": "Goals",
   "goals.petWolf": "Pet the wolf",
   "goals.emeraldMinerals": "Break stones with an emerald sheen to gather fuel minerals",

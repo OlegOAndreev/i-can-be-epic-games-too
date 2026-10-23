@@ -66,6 +66,7 @@ export class Input {
     private jumpQueued = false;
     private attackPressQueued = false;
     private chargedAttackPressQueued = false;
+    private chargedAttackMouseHeld = false;
     private gamepadForward = 0;
     private gamepadRight = 0;
     private gamepadJumpHeld = false;
@@ -102,12 +103,14 @@ export class Input {
             this.keys.clear();
             this.attackPressQueued = false;
             this.chargedAttackPressQueued = false;
+            this.chargedAttackMouseHeld = false;
             this.gamepadAttackHeld = false;
             this.gamepadChargedAttackHeld = false;
             this.resumeOnEscapeRelease = false;
         });
         window.addEventListener('mousemove', (event) => this.onMouseMove(event));
         window.addEventListener('mousedown', (event) => this.onMouseDown(event));
+        window.addEventListener('mouseup', (event) => this.onMouseUp(event));
 
         document.addEventListener('pointerlockchange', () => this.onPointerLockChange());
         document.addEventListener('pointerlockerror', () => this.onPointerLockError());
@@ -260,6 +263,12 @@ export class Input {
         return queued;
     }
 
+    // True while the charged attack input stays down. The wrench only charges while this is true
+    // and strikes when it turns false, so losing pointer lock counts as letting go.
+    get chargedAttackHeld(): boolean {
+        return this.pointerLocked && (this.chargedAttackMouseHeld || this.gamepadChargedAttackHeld);
+    }
+
     private onKeyDown(event: KeyboardEvent): void {
         if (event.code === 'F1') {
             event.preventDefault();
@@ -348,12 +357,6 @@ export class Input {
             }
             return;
         }
-        if (event.code === 'ShiftLeft' || event.code === 'ShiftRight') {
-            if (this.pointerLocked && !event.repeat) {
-                this.chargedAttackPressQueued = true;
-            }
-            return;
-        }
         this.keys.add(event.code);
     }
 
@@ -377,7 +380,14 @@ export class Input {
             this.attackPressQueued = true;
         } else if (event.button === 2) {
             event.preventDefault();
+            this.chargedAttackMouseHeld = true;
             this.chargedAttackPressQueued = true;
+        }
+    }
+
+    private onMouseUp(event: MouseEvent): void {
+        if (event.button === 2) {
+            this.chargedAttackMouseHeld = false;
         }
     }
 
@@ -403,6 +413,7 @@ export class Input {
             this.jumpQueued = false;
             this.attackPressQueued = false;
             this.chargedAttackPressQueued = false;
+            this.chargedAttackMouseHeld = false;
             this.gamepadForward = 0;
             this.gamepadRight = 0;
             this.gamepadAttackHeld = false;

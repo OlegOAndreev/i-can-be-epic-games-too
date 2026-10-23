@@ -25,12 +25,13 @@ import {
     playerInAttackZone,
     rampFootPoint,
     rollLaserAim,
+    WRENCH_RANGE,
 } from '../src/enemies';
 import type { Difficulty, EnemyDialogue } from '../src/enemies';
 import type { MegastructureTower, Ramp, StructureBox } from '../src/megastructures';
 import { ENEMY_EYE_COLOR } from '../src/npc-robots';
 import { mulberry32 } from '../src/noise';
-import { PLAYER_RADIUS, WRENCH_CHARGED_DAMAGE } from '../src/player';
+import { PLAYER_RADIUS, WRENCH_CHARGED_DAMAGE, WRENCH_CHARGED_REACH } from '../src/player';
 import { PlayerHealth } from '../src/player-health';
 import { fakeTerrain, installCanvasDocument, stubAudio, testTerrain, visibleMeshes } from './test-helpers';
 import type { Terrain } from '../src/terrain';
@@ -1178,20 +1179,67 @@ describe('enemy robots', () => {
         enemies.dispose();
     });
 
-    it('keeps the normal reach when the wrench is charged', () => {
-        const near = singleEnemyLevel();
-        const nearPlayer = near.enemy.position.clone().add(new Vector3(2, 0, 0));
-        const chargedHit = near.enemies.wrenchStrike(nearPlayer, 3);
+    it('deals double damage with the charged strike', () => {
+        const { enemies, enemy, storeyBaseY } = singleEnemyLevel();
+        const kind = enemy.name.replace('enemy-', '') as keyof typeof ENEMY_HITS_TO_DEFEAT;
+        const maximum = Math.max(1, ENEMY_HITS_TO_DEFEAT[kind] + DIFFICULTY_SETTINGS.medium.hitPointDelta);
+        const player = new Vector3(enemy.position.x + 2, storeyBaseY, enemy.position.z);
+
+        const chargedHit = enemies.wrenchStrike(player, WRENCH_CHARGED_DAMAGE);
         expect(chargedHit).toHaveLength(1);
-        // The single test robot needs three normal hits, so one charged hit puts it down.
-        expect(chargedHit[0].health).toBe(0);
+        expect(chargedHit[0].health).toBeCloseTo((maximum - WRENCH_CHARGED_DAMAGE) / maximum);
+        enemies.dispose();
+    });
+
+    it('shortens the charged reach to 2.5 m', () => {
+        const scale = WRENCH_CHARGED_REACH / WRENCH_RANGE;
+
+        const near = singleEnemyLevel('easy');
+        const nearPlayer = new Vector3(
+            near.enemy.position.x + 2.4,
+            near.storeyBaseY,
+            near.enemy.position.z,
+        );
+        expect(near.enemies.wrenchStrike(nearPlayer, WRENCH_CHARGED_DAMAGE, null, Math.PI * 2, scale)).toHaveLength(1);
         near.enemies.dispose();
 
-        // The charged strike keeps the normal reach, so four metres still connects.
-        const far = singleEnemyLevel();
-        const farPlayer = far.enemy.position.clone().add(new Vector3(4, 0, 0));
-        expect(far.enemies.wrenchStrike(farPlayer, 3)).toHaveLength(1);
+        const far = singleEnemyLevel('easy');
+        const farPlayer = new Vector3(far.enemy.position.x + 2.6, far.storeyBaseY, far.enemy.position.z);
+        expect(far.enemies.wrenchStrike(farPlayer, WRENCH_CHARGED_DAMAGE, null, Math.PI * 2, scale)).toHaveLength(0);
         far.enemies.dispose();
+    });
+
+    it('blocks both swings when structure geometry sits between the player and the enemy', () => {
+        const blocked = singleEnemyLevel('easy');
+        const blockedPlayer = new Vector3(
+            blocked.enemy.position.x + 3,
+            blocked.storeyBaseY,
+            blocked.enemy.position.z,
+        );
+        const wallX = blocked.enemy.position.x + 1.5;
+        blocked.terrain.megastructures.boxes.push({
+            minX: wallX - 0.1,
+            maxX: wallX + 0.1,
+            minZ: blocked.enemy.position.z - 2,
+            maxZ: blocked.enemy.position.z + 2,
+            baseY: blocked.storeyBaseY,
+            topY: blocked.storeyBaseY + 3,
+        });
+
+        // The wall is inside the reach in both cases, so only the line-of-sight check can miss.
+        expect(blocked.enemies.wrenchStrike(blockedPlayer)).toHaveLength(0);
+        expect(blocked.enemies.wrenchStrike(blockedPlayer, WRENCH_CHARGED_DAMAGE)).toHaveLength(0);
+        blocked.enemies.dispose();
+
+        // The same distance connects when nothing stands between the two robots.
+        const clear = singleEnemyLevel('easy');
+        const clearPlayer = new Vector3(
+            clear.enemy.position.x + 3,
+            clear.storeyBaseY,
+            clear.enemy.position.z,
+        );
+        expect(clear.enemies.wrenchStrike(clearPlayer)).toHaveLength(1);
+        clear.enemies.dispose();
     });
 
     it('hits a nearby enemy from any side when no facing is given, as in the charged spin', () => {
@@ -1219,29 +1267,13 @@ describe('enemy robots', () => {
         enemies.dispose();
     });
 
-    it('scales wrench reach for both regular and charged swings', () => {
+    it('scales wrench reach by the supplied multiplier', () => {
         // 5.2 m is outside the normal 4.5 m reach but inside 4.5 * 1.2 = 5.4 m.
-        const regular = singleEnemyLevel();
-        const regularPlayer = new Vector3(
-            regular.enemy.position.x + 5.2,
-            regular.storeyBaseY,
-            regular.enemy.position.z,
-        );
-        expect(regular.enemies.wrenchStrike(regularPlayer)).toHaveLength(0);
-        expect(regular.enemies.wrenchStrike(regularPlayer, 1, null, Math.PI * 2, 1.2)).toHaveLength(1);
-        regular.enemies.dispose();
-
-        const charged = singleEnemyLevel();
-        const chargedPlayer = new Vector3(
-            charged.enemy.position.x + 5.2,
-            charged.storeyBaseY,
-            charged.enemy.position.z,
-        );
-        expect(charged.enemies.wrenchStrike(chargedPlayer, WRENCH_CHARGED_DAMAGE)).toHaveLength(0);
-        expect(charged.enemies.wrenchStrike(chargedPlayer, WRENCH_CHARGED_DAMAGE, null, Math.PI * 2, 1.2)).toHaveLength(
-            1,
-        );
-        charged.enemies.dispose();
+        const { enemies, enemy, storeyBaseY } = singleEnemyLevel();
+        const player = new Vector3(enemy.position.x + 5.2, storeyBaseY, enemy.position.z);
+        expect(enemies.wrenchStrike(player)).toHaveLength(0);
+        expect(enemies.wrenchStrike(player, 1, null, Math.PI * 2, 1.2)).toHaveLength(1);
+        enemies.dispose();
     });
 
     it('limits a regular swing to the configured arc ahead', () => {

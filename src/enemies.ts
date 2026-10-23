@@ -131,8 +131,9 @@ const DRAW_DISTANCE = 65;
 const RAMP_ATTACK_QUARTER = 0.25;
 const FLOOR_ENGAGE_HEIGHT = 3;
 // A wrench swing is deliberately forgiving: reach is a radius around the player. A regular swing
-// only covers the forward arc, while the charged spin sweeps all the way around.
-const WRENCH_RANGE = 4.5;
+// only covers the forward arc, while the charged spin sweeps all the way around at a shorter reach.
+// Exported so the game can scale the charged reach against this base distance.
+export const WRENCH_RANGE = 4.5;
 const WRENCH_REACH_HEIGHT = 2.5;
 // Fallback arc for callers that supply a facing; the game passes the difficulty's arc explicitly.
 const DEFAULT_WRENCH_STRIKE_ARC = (Math.PI * 4) / 3;
@@ -1085,6 +1086,8 @@ export class EnemyRobots {
     // Damages every vulnerable enemy within the wrench's reach and returns their positions and
     // remaining health fractions. A charged strike deals more damage. Pass a facing and arc to
     // limit the strike to that forward arc; omit the facing (the charged spin) to hit all around.
+    // Structure geometry always blocks the strike, so neither swing reaches through walls, floors,
+    // or ramp decks. The sight check uses body points only and ignores the player's facing.
     wrenchStrike(
         playerPosition: Vector3,
         damage = 1,
@@ -1098,6 +1101,18 @@ export class EnemyRobots {
         if (!this.enemiesEnabled) {
             return hits;
         }
+
+        const boxes = this.terrain.megastructures.boxes ?? [];
+        const ramps = this.terrain.megastructures.ramps ?? [];
+        const hasStructures = boxes.length > 0 || ramps.length > 0;
+        // Strike from the player's chest to the enemy's body centre. Feet-level points would run
+        // along the floor slab between two robots on the same storey and read as blocked.
+        const eye = new Vector3(
+            playerPosition.x,
+            playerPosition.y + PLAYER_HEIGHT * 0.5,
+            playerPosition.z,
+        );
+        const target = new Vector3();
 
         for (const enemy of this.enemies) {
             if (enemy.defeated || enemy.invulnerableRemaining > 0) {
@@ -1116,6 +1131,16 @@ export class EnemyRobots {
             if (facing !== null && distance > 1e-4) {
                 const forwardDot = (dx * Math.sin(facing) + dz * Math.cos(facing)) / distance;
                 if (forwardDot < minForwardDot) {
+                    continue;
+                }
+            }
+            if (hasStructures) {
+                target.set(
+                    enemy.group.position.x,
+                    enemy.group.position.y + enemy.height * 0.5,
+                    enemy.group.position.z,
+                );
+                if (findStructureBlockingPoint(eye, target, boxes, ramps)) {
                     continue;
                 }
             }

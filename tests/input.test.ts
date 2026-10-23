@@ -127,6 +127,60 @@ describe('Input pointer lock', () => {
     });
 });
 
+describe('Input charged attack', () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    function createInput() {
+        const windowListeners = new Map<string, EventListener>();
+        vi.stubGlobal('window', {
+            addEventListener: vi.fn((type: string, listener: EventListener) => windowListeners.set(type, listener)),
+        });
+        vi.stubGlobal('document', {
+            pointerLockElement: null,
+            addEventListener: vi.fn(),
+        });
+        // The key handlers identify text fields by constructor, which the node test environment
+        // does not provide.
+        vi.stubGlobal('HTMLInputElement', class {});
+        vi.stubGlobal('HTMLTextAreaElement', class {});
+        vi.stubGlobal('HTMLSelectElement', class {});
+        const input = new Input({} as HTMLCanvasElement);
+        input.pointerLocked = true;
+        return { input, windowListeners };
+    }
+
+    function dispatch(listener: EventListener | undefined, event: object): void {
+        listener?.(event as Event);
+    }
+
+    it('tracks the right mouse button while it is held and stops on release', () => {
+        const { input, windowListeners } = createInput();
+
+        dispatch(windowListeners.get('mousedown'), { button: 2, preventDefault: vi.fn() });
+        expect(input.chargedAttackHeld).toBe(true);
+        expect(input.consumeChargedAttackPress()).toBe(true);
+
+        dispatch(windowListeners.get('mouseup'), { button: 2 });
+        expect(input.chargedAttackHeld).toBe(false);
+    });
+
+    it('does not treat Shift as a charged attack', () => {
+        const { input, windowListeners } = createInput();
+
+        dispatch(windowListeners.get('keydown'), {
+            code: 'ShiftLeft',
+            repeat: false,
+            target: null,
+            preventDefault: vi.fn(),
+        });
+
+        expect(input.consumeChargedAttackPress()).toBe(false);
+        expect(input.chargedAttackHeld).toBe(false);
+    });
+});
+
 describe('readFlightGamepadInput', () => {
     it('returns neutral flight input without a gamepad', () => {
         expect(readFlightGamepadInput(null)).toEqual({

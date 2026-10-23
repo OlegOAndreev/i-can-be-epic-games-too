@@ -17,7 +17,6 @@ import {
     wrenchCircleAngle,
     WRENCH_ATTACK_SECONDS,
     WRENCH_CHARGED_ATTACK_SECONDS,
-    WRENCH_CHARGED_STRIKE_PORTION,
     WRENCH_STRIKE_PORTION,
 } from '../src/player';
 import {
@@ -86,7 +85,7 @@ describe('wrench attack', () => {
         full.group.removeFromParent();
     });
 
-    it('keeps charging without the input being held', () => {
+    it('keeps filling the charge over successive updates', () => {
         const terrain = testTerrain();
         const player = testPlayer(terrain);
         player.setWrenchEquipped(true);
@@ -143,6 +142,26 @@ describe('wrench attack', () => {
         expect(player.isWrenchSwinging).toBe(false);
         expect(player.isWrenchCharging).toBe(false);
         expect(chargeStarts).toBe(0);
+    });
+
+    it('drops a buffered press without disturbing the swing that is already playing', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        player.setWrenchEquipped(true);
+
+        player.beginWrenchCharge();
+        player.updateWrenchCharge(1);
+        expect(player.releaseWrench()).toBe(true);
+        player.update(0.1, NO_INPUT, 0, terrain);
+
+        expect(player.beginWrenchCharge()).toBe(false);
+        expect(player.isWrenchChargeBuffered).toBe(true);
+
+        player.cancelWrenchChargeBuffer();
+
+        expect(player.isWrenchChargeBuffered).toBe(false);
+        expect(player.isWrenchSwingCharged).toBe(true);
+        expect(player.isWrenchSwinging).toBe(true);
     });
 
     it('gives easier difficulties a longer charged attack buffer', () => {
@@ -333,25 +352,21 @@ describe('wrench attack', () => {
         expect(strikes).toHaveLength(1);
     });
 
-    it('connects once halfway through the charged spin', () => {
+    it('connects as soon as the charged spin begins', () => {
         const terrain = testTerrain();
         const player = testPlayer(terrain);
         player.setWrenchEquipped(true);
         player.beginWrenchCharge();
         player.updateWrenchCharge(1);
-        expect(player.releaseWrench()).toBe(true);
         const strikes: boolean[] = [];
         player.onWrenchStrike = (charged) => {
             strikes.push(charged);
         };
 
-        player.update(WRENCH_CHARGED_ATTACK_SECONDS * WRENCH_CHARGED_STRIKE_PORTION - 0.01, NO_INPUT, 0, terrain);
-        expect(strikes).toHaveLength(0);
-
-        player.update(0.02, NO_INPUT, 0, terrain);
+        expect(player.releaseWrench()).toBe(true);
         expect(strikes).toEqual([true]);
 
-        // The second half of the spin does not check for hits again.
+        // The rest of the spin does not check for hits again.
         player.update(WRENCH_CHARGED_ATTACK_SECONDS, NO_INPUT, 0, terrain);
         expect(strikes).toHaveLength(1);
     });
