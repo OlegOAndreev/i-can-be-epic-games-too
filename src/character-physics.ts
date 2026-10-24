@@ -12,9 +12,9 @@ const STRUCTURE_STEP_HEIGHT = 0.5;
 // a pathological frame (or a huge shock impulse) from turning into an unbounded loop.
 const MAX_SUBSTEP_DISTANCE = 0.2;
 const MAX_SUBSTEPS = 8;
-// atan(1.5) is about 56 degrees, the same slope allowance the old controller expressed as a rise
-// per metre of travel. Keeping it as a normal makes the limit independent of the step size.
-const MIN_WALKABLE_NORMAL_Y = 1 / Math.hypot(1, 1.5);
+// The walkable limit is a 50-degree slope. Expressed as the surface normal's Y component,
+// cos(50 degrees), so the limit does not depend on the step size.
+const MIN_WALKABLE_NORMAL_Y = Math.cos((50 * Math.PI) / 180);
 // Walk off anything taller than this and the body starts falling instead of snapping down.
 const LEDGE_SNAP_DISTANCE = 0.45;
 const GROUND_EPSILON = 1e-4;
@@ -22,9 +22,6 @@ const GROUND_EPSILON = 1e-4;
 export interface CharacterMoveOptions {
     radius: number;
     height: number;
-    // Vertical extent used when a ramp underside blocks a horizontal step. First person passes the
-    // taller eye-safe height so the camera cannot clip a slope the body would otherwise fit under.
-    blockHeight?: number;
     stepHeight?: number;
     rampStepHeight?: number;
     worldLimit?: number;
@@ -46,7 +43,7 @@ export interface HorizontalMoveResult {
 export interface VerticalMoveOptions {
     radius: number;
     height: number;
-    // Stop the head this far below a ceiling. First person adds its camera margin.
+    // Stop the head this far below a ceiling. Defaults to `height`.
     ceilingHeight?: number;
     gravity: number;
 }
@@ -130,13 +127,17 @@ export function moveCharacterHorizontally(
 ): HorizontalMoveResult {
     const radius = options.radius;
     const height = options.height;
-    const blockHeight = options.blockHeight ?? height;
     const stepHeight = options.stepHeight ?? STRUCTURE_STEP_HEIGHT;
     const rampStepHeight = options.rampStepHeight ?? RAMP_STEP_HEIGHT;
     const limit = options.worldLimit ?? Number.POSITIVE_INFINITY;
     const actorColliders = options.actorColliders ?? [];
     const impulseX = options.impulseX ?? 0;
     const impulseZ = options.impulseZ ?? 0;
+    // A grounded body that starts under a deck keeps walking under it even if the deck lowers
+    // toward its head. For each ground query the deck is left out of the step-up test only when
+    // the body was under that same ramp before the step, so entering a ramp from outside still
+    // works. Airborne moves skip this: a jump onto a rising deck must still see it as ground.
+    const underFrom = (): { x: number; z: number } | null => (grounded ? { x: position.x, z: position.z } : null);
 
     const travelX = (velocity.x + impulseX) * dt;
     const travelZ = (velocity.z + impulseZ) * dt;
@@ -148,19 +149,12 @@ export function moveCharacterHorizontally(
     let blockedBySlope = false;
     let moved = false;
 
-    // A ramp deck is walkable, but its underside and rails are solid. Resolve that before moving
-    // so a blocked step slides along the ramp instead of being shoved to its nearest edge by the
-    // post-move depenetration.
+    // A deck that rises ahead of an airborne body would fall between the vertical sweep's samples.
+    // Keep the old pre-move guard for that case. A grounded body resolves ramp edges through
+    // resolveCollisions instead, which slides along the deck's own normal and lets a body continue
+    // under a low underside.
     const rampBlockedAt = (x: number, z: number): boolean =>
-        rampsBlockBody(
-            terrain.megastructures.ramps,
-            x,
-            z,
-            position.y,
-            blockHeight,
-            radius,
-            rampStepHeight,
-        );
+        rampsBlockBody(terrain.megastructures.ramps, x, z, position.y, height, radius, rampStepHeight);
 
     for (let step = 0; step < steps; step++) {
         const dx = (velocity.x + impulseX) * stepDt;
@@ -185,7 +179,7 @@ export function moveCharacterHorizontally(
         // Use the ramp allowance even while airborne. Otherwise a deck that has risen just above
         // the feet is filtered out of the query, the horizontal gate sees flat ground, and the body
         // walks into the slope before the vertical sweep can land on it.
-        const nextGround = terrain.walkSurfaceAt(nextX, nextZ, position.y, rampStepHeight);
+        const nextGround = terrain.walkSurfaceAt(nextX, nextZ, position.y, rampStepHeight, underFrom());
         if (grounded) {
             if (!canClimb(terrain, nextX, nextZ, position.y, nextGround, run, stepHeight, rampStepHeight)) {
                 blockedBySlope = true;
@@ -199,7 +193,7 @@ export function moveCharacterHorizontally(
             break;
         }
 
-        if (!rampBlockedAt(position.x, position.z) && rampBlockedAt(nextX, nextZ)) {
+        if (!grounded && !rampBlockedAt(position.x, position.z) && rampBlockedAt(nextX, nextZ)) {
             hitWall = true;
             if (!rampBlockedAt(nextX, position.z)) {
                 nextZ = position.z;
@@ -214,13 +208,18 @@ export function moveCharacterHorizontally(
             }
         }
 
+        const previousX = position.x;
+        const previousZ = position.z;
         const attemptedX = nextX;
         const attemptedZ = nextZ;
         position.x = nextX;
         position.z = nextZ;
 
         if (grounded) {
-            const destinationGround = terrain.walkSurfaceAt(position.x, position.z, position.y, rampStepHeight);
+            const destinationGround = terrain.walkSurfaceAt(position.x, position.z, position.y, rampStepHeight, {
+                x: previousX,
+                z: previousZ,
+            });
             if (destinationGround > position.y) {
                 position.y = destinationGround;
                 steppedUp = true;
@@ -271,6 +270,7 @@ export function moveCharacterHorizontally(
         position.z,
         position.y,
         grounded ? rampStepHeight : undefined,
+        grounded ? { x: position.x, z: position.z } : null,
     );
     let fellOffLedge = false;
     if (grounded) {

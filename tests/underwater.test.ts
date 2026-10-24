@@ -1,4 +1,4 @@
-import { Fog, PerspectiveCamera, Scene, Vector2 } from 'three';
+import { Fog, PerspectiveCamera, Scene, Vector2, WebGLRenderTarget } from 'three';
 import type { WebGLRenderer } from 'three';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -12,6 +12,7 @@ function createRenderer(): { renderer: WebGLRenderer; order: string[] } {
         clearDepth: vi.fn(() => order.push('clearDepth')),
         render: vi.fn(() => order.push('render')),
         getDrawingBufferSize: vi.fn((target: Vector2) => target.set(320, 180)),
+        compileAsync: vi.fn(async () => new Set()),
     } as unknown as WebGLRenderer;
     return { renderer, order };
 }
@@ -60,5 +61,44 @@ describe('underwater foreground pass', () => {
         expect(order).toEqual(['target:screen', 'render']);
         expect(renderer.clearDepth).not.toHaveBeenCalled();
         underwater.dispose();
+    });
+
+    it('compiles the target variants up front and keeps the target for the first dive', async () => {
+        const { renderer, order } = createRenderer();
+        const underwater = new UnderwaterEffect(renderer, new Fog(0, 90, 600));
+        const camera = new PerspectiveCamera();
+        const scene = new Scene();
+        const dispose = vi.spyOn(WebGLRenderTarget.prototype, 'dispose');
+
+        try {
+            await underwater.warmUp(scene, camera);
+
+            // The material programs are compiled while the target is bound, then the pass itself
+            // is drawn once through the offscreen path.
+            expect(renderer.compileAsync).toHaveBeenCalledTimes(1);
+            expect(order).toEqual([
+                'target:water',
+                'target:screen',
+                'target:water',
+                'render',
+                'target:screen',
+                'render',
+            ]);
+
+            // Idle menu frames must not throw the warm target away.
+            underwater.update(1 / 60, 10, 0);
+            underwater.render(scene, camera);
+            expect(dispose).not.toHaveBeenCalled();
+
+            // The first dive and the following surface release it as before.
+            underwater.update(1 / 60, -5, 0);
+            for (let frame = 0; frame < 120; frame++) {
+                underwater.update(1 / 60, 10, 0);
+            }
+            expect(dispose).toHaveBeenCalledTimes(1);
+        } finally {
+            dispose.mockRestore();
+            underwater.dispose();
+        }
     });
 });

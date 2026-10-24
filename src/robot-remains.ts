@@ -32,7 +32,7 @@ const ROBOT_HEIGHT: Record<RobotKind, number> = { matron: 2.6, walle: 1.5, probe
 const CORPSE_GLOW = 0.02;
 const WORDS_PER_SECOND = 3.2;
 // Beeps follow the text at roughly the same cadence as the living caretakers.
-const BEEP_INTERVAL = 0.16;
+const BEEP_INTERVAL = 0.15;
 const MAX_TRIGGER_DISTANCE = 9;
 const SPEECH_HEIGHT = 2.2;
 // Every salvaged core restores a quarter of the ship's energy goal.

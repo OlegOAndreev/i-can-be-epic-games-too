@@ -13,8 +13,8 @@ const TRAIL_LENGTHS = [1.5, 1.9, 2.3, 1.7, 2.1, 2.5];
 const TRAIL_LENGTH_SCALE = 0.65;
 // World-space diameter of each streak, independent of its length.
 const TRAIL_WIDTH = 0.03;
-const TRAIL_MIN_LIFETIME = 0.11;
-const TRAIL_LIFETIME_VARIATION = 0.09;
+const TRAIL_MIN_LIFETIME = 0.15;
+const TRAIL_LIFETIME_VARIATION = 0.05;
 // Each streak is anchored somewhere in a wide cone of air behind the robot. The cone reaches past
 // its shoulders on either side, and the height range runs from its ankles to above its antenna,
 // so successive bursts do not line up in a neat pair beside it.

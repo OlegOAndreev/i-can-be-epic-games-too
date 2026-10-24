@@ -33,6 +33,7 @@ const DEBRIS_LIFETIME_SECONDS = 15;
 const FADE_SECONDS = 0.6;
 const HORIZONTAL_DRAG = 0.2;
 const BOUNCE_FRICTION = 0.7;
+const BURST_FADE_MIN_SECONDS = 0.5;
 const BURST_FADE_SECONDS = 0.7;
 
 interface DebrisProfile {
@@ -423,7 +424,8 @@ export class EnemyDebris {
             );
             burst.velocity.set(Math.cos(angle) * speed, 0.4 + this.rng() * 1.4, Math.sin(angle) * speed);
             burst.age = 0;
-            burst.lifetime = BURST_FADE_SECONDS * (0.65 + this.rng() * 0.35);
+            burst.lifetime =
+                BURST_FADE_MIN_SECONDS + this.rng() * (BURST_FADE_SECONDS - BURST_FADE_MIN_SECONDS);
             burst.startScale = scale;
             burst.active = true;
             burst.material.color.setHex(profile.burstColors[Math.floor(this.rng() * profile.burstColors.length)]);

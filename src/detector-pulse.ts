@@ -3,7 +3,7 @@ import { clamp } from './math-utils';
 // The detector answers each beep with a pulse that decays until the next beep. The cycle is
 // stretched to the current beep interval, so the blink quickens as the tracked piece gets closer.
 // After the last beep the level fades out over a short tail instead of cutting off abruptly.
-export const DETECTOR_PULSE_FADE_SECONDS = 0.35;
+export const DETECTOR_PULSE_FADE_SECONDS = 0.3;
 const MIN_DETECTOR_PULSE_INTERVAL = 0.05;
 
 export interface DetectorPulseSample {

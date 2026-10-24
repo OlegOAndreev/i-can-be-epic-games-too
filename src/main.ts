@@ -44,6 +44,7 @@ import { EnemyRobots, parseEnemyDialogue, WRENCH_RANGE } from './enemies';
 import type { Difficulty, EnemyDialogue } from './enemies';
 import { Finale } from './finale';
 import type { FinaleUi } from './finale';
+import { FirstPersonRifle } from './first-person-rifle';
 import {
     FIRST_PERSON_SWING_RECOVERY_PORTION,
     FIRST_PERSON_TRAIL_THINNING,
@@ -65,6 +66,7 @@ import { NightSky } from './night-sky';
 import { NpcRobots, parseRobotDialogue } from './npc-robots';
 import type { DialogueLine, DialoguePresenter, RobotDialogue } from './npc-robots';
 import {
+    DEFAULT_MOVEMENT_COEFFICIENTS,
     FIRST_PERSON_DEFAULT_FOV,
     FIRST_PERSON_WRENCH_STRIKE_ARC,
     HARD_LANDING_SPEED,
@@ -99,7 +101,7 @@ import { Terrain, WATER_LEVEL, WORLD_HALF_SIZE, MINERAL_GOAL } from './terrain';
 import type { CylinderCollider } from './terrain';
 import { preloadSurfaceTextures, getSurfaceTextures } from './textures';
 import { textureMemory } from './texture-memory';
-import { NEAR_Z, PlayerCamera, THIRD_PERSON_DISTANCE } from './player-camera';
+import { NEAR_Z, PlayerCamera } from './player-camera';
 import { UnderwaterEffect } from './underwater';
 import { WaterSplash } from './water-splash';
 import { WindTrails } from './wind-trails';
@@ -108,13 +110,18 @@ import { WRENCH_WIND_TRAIL_ARC, WrenchWindTrail } from './wrench-wind-trail';
 import { WreckMap } from './wreck-map';
 
 const FOV = 62;
-// Running above the start speed adds up to 10 degrees of FOV on top of the configured view,
-// which makes the robot feel faster without permanently widening the lens.
-const SPEED_FOV_START = 13;
-const SPEED_FOV_FULL = 18;
-const MAX_SPEED_FOV_BOOST = 10;
-const SPEED_FOV_RAMP_RATE = 5;
 const FAR_Z = 6000;
+// The menu backdrop renders the camera-locked sky dome through its own camera. The lens is
+// narrower than the walking camera so the suns read at backdrop scale, and they are parked in the
+// upper-right corner where the menu panel leaves them visible. The target is a screen fraction, so
+// the camera angles are solved from it at any aspect ratio.
+const MENU_SKY_FOV = 45;
+const MENU_SUN_SCREEN_X = 0.9;
+const MENU_SUN_SCREEN_Y = 0.22;
+const MENU_SUN_ELEVATION = Math.asin(SUN_BISECTOR_DIRECTION.y);
+const MENU_SUN_AZIMUTH = Math.atan2(SUN_BISECTOR_DIRECTION.x, SUN_BISECTOR_DIRECTION.z);
+// Layer 3 is unused elsewhere: 0 is the default world, 1 megastructures, 2 the static shadow atlas.
+const MENU_SKY_LAYER = 3;
 const PLAYER_FADE_START_DISTANCE = 3.5;
 const PLAYER_FADE_END_DISTANCE = 0.5;
 const PLAYER_MIN_OPACITY = 0.1;
@@ -153,10 +160,10 @@ const SEED_STORAGE_KEY = 'walking-game.seed';
 const PLAYER_STORAGE_KEY = 'walking-game.player';
 const SETTINGS_STORAGE_KEY = 'walking-game.settings';
 const PLAYER_SAVE_INTERVAL = 10;
-// Full-screen overlays snap to full colour over 240 ms and fade back over 520 ms. The lightning
+// Full-screen overlays snap to full colour over 300 ms and fade back over 600 ms. The lightning
 // whiteout starts fading in just before the bolt and then clears after its hold over 160 ms.
-const SCREEN_FADE_OUT_SECONDS = 0.24;
-const SCREEN_FADE_IN_SECONDS = 0.52;
+const SCREEN_FADE_OUT_SECONDS = 0.3;
+const SCREEN_FADE_IN_SECONDS = 0.6;
 // Hold the full-white frame for a beat, like the death respawn, before revealing the finale.
 const FINALE_WHITE_HOLD_SECONDS = 0.4;
 const LIGHTNING_FADE_OUT_SECONDS = 0.16;
@@ -205,11 +212,15 @@ const HUD_ELEMENT_IDS = [
 const DEFAULT_SETTINGS = {
     moveSpeed: 10.5,
     jumpSpeed: 12,
+    jumpBufferSeconds: 0.2,
+    wrenchBufferSeconds: 0.2,
     sensitivity: 0.0022,
     unacceleratedMouse: true,
     firstPerson: false,
     firstPersonFov: FIRST_PERSON_DEFAULT_FOV,
     thirdPersonFov: FOV,
+    landingDipDownSeconds: 0.2,
+    landingDipUpSeconds: 0.4,
     antialias: false,
     shadowQuality: 'high' as ShadowQuality,
     shadowMode: 'staticAtlas' as ShadowMode,
@@ -465,11 +476,19 @@ function storeSettings(): void {
         const settings: StoredSettings = {
             moveSpeed: playerSettings.moveSpeed,
             jumpSpeed: playerSettings.jumpSpeed,
+            jumpBufferSeconds: inputSettings.jumpBufferSeconds,
+            wrenchBufferSeconds: inputSettings.wrenchBufferSeconds,
+            groundAcceleration: movementSettings.groundAcceleration,
+            airAcceleration: movementSettings.airAcceleration,
+            groundDeceleration: movementSettings.groundDeceleration,
+            airDeceleration: movementSettings.airDeceleration,
             sensitivity: cameraController.sensitivity,
             unacceleratedMouse: mouseSettings.unacceleratedMouse,
             firstPerson: viewSettings.firstPerson,
             firstPersonFov: viewSettings.firstPersonFov,
             thirdPersonFov: viewSettings.thirdPersonFov,
+            landingDipDownSeconds: viewSettings.landingDipDownSeconds,
+            landingDipUpSeconds: viewSettings.landingDipUpSeconds,
             antialias: renderSettings.antialias,
             shadowQuality: renderSettings.shadowQuality,
             shadowMode: renderSettings.shadowMode,
@@ -519,6 +538,58 @@ const playerSettings: PlayerSettings = {
     jumpSpeed: storedNumber(storedSettings, 'jumpSpeed', 4, 16, DEFAULT_SETTINGS.jumpSpeed),
     gravity: 26,
 };
+const inputSettings = {
+    jumpBufferSeconds: storedNumber(
+        storedSettings,
+        'jumpBufferSeconds',
+        0,
+        0.5,
+        DEFAULT_SETTINGS.jumpBufferSeconds,
+    ),
+    wrenchBufferSeconds: storedNumber(
+        storedSettings,
+        'wrenchBufferSeconds',
+        0,
+        0.5,
+        DEFAULT_SETTINGS.wrenchBufferSeconds,
+    ),
+};
+
+function applyInputBuffers(): void {
+    player.jumpBufferSeconds = inputSettings.jumpBufferSeconds;
+    player.wrenchBufferSeconds = inputSettings.wrenchBufferSeconds;
+}
+
+const movementSettings = {
+    groundAcceleration: storedNumber(
+        storedSettings,
+        'groundAcceleration',
+        0,
+        60,
+        DEFAULT_MOVEMENT_COEFFICIENTS.groundAcceleration,
+    ),
+    airAcceleration: storedNumber(
+        storedSettings,
+        'airAcceleration',
+        0,
+        60,
+        DEFAULT_MOVEMENT_COEFFICIENTS.airAcceleration,
+    ),
+    groundDeceleration: storedNumber(
+        storedSettings,
+        'groundDeceleration',
+        0,
+        60,
+        DEFAULT_MOVEMENT_COEFFICIENTS.groundDeceleration,
+    ),
+    airDeceleration: storedNumber(
+        storedSettings,
+        'airDeceleration',
+        0,
+        60,
+        DEFAULT_MOVEMENT_COEFFICIENTS.airDeceleration,
+    ),
+};
 
 const worldSettings = {
     seed: readSharedSeed(initialSearchParams) ?? readStoredSeed() ?? randomSeed(),
@@ -537,6 +608,20 @@ const viewSettings = {
     firstPerson: storedBoolean(storedSettings, 'firstPerson', DEFAULT_SETTINGS.firstPerson),
     firstPersonFov: storedNumber(storedSettings, 'firstPersonFov', 40, 110, DEFAULT_SETTINGS.firstPersonFov),
     thirdPersonFov: storedNumber(storedSettings, 'thirdPersonFov', 40, 110, DEFAULT_SETTINGS.thirdPersonFov),
+    landingDipDownSeconds: storedNumber(
+        storedSettings,
+        'landingDipDownSeconds',
+        0,
+        0.3,
+        DEFAULT_SETTINGS.landingDipDownSeconds,
+    ),
+    landingDipUpSeconds: storedNumber(
+        storedSettings,
+        'landingDipUpSeconds',
+        0,
+        0.6,
+        DEFAULT_SETTINGS.landingDipUpSeconds,
+    ),
 };
 
 // Which hand holds the wrench. The default is the original screen-left pose.
@@ -575,7 +660,6 @@ const debugSettings = {
 };
 
 const windDirection = new Vector3();
-let speedFovBoost = 0;
 const footstepPosition = new Vector3();
 const wrenchTrailPoints = [new Vector3(), new Vector3()];
 const wrenchHitTrailPoint = new Vector3();
@@ -594,6 +678,9 @@ class View {
     viewmodelRoot = new Group();
     fog = new Fog(SKY_COLOR, 90, MAX_SHADOW_DISTANCE);
     camera = new PerspectiveCamera(FOV, 1, NEAR_Z, FAR_Z);
+    // Draws only the sky dome, its suns, and its stars for the menu backdrop, so the paused island
+    // does not show through the overlay. Every other object stays on the camera's default layers.
+    menuSkyCamera = new PerspectiveCamera(MENU_SKY_FOV, 1, NEAR_Z, FAR_Z);
     viewSize = {
         width: 0,
         height: 0,
@@ -621,6 +708,7 @@ class View {
         this.viewmodelScene.add(this.viewmodelRoot);
         // Megastructures live on their own layer; the main camera renders that layer too.
         this.camera.layers.enable(MEGASTRUCTURE_LAYER);
+        this.menuSkyCamera.layers.set(MENU_SKY_LAYER);
         this.observeCanvasSize(canvas);
     }
 
@@ -680,6 +768,8 @@ class View {
 
         this.camera.aspect = this.viewSize.aspect;
         this.camera.updateProjectionMatrix();
+        this.menuSkyCamera.aspect = this.viewSize.aspect;
+        this.menuSkyCamera.updateProjectionMatrix();
         this.renderer.setSize(width, height, false);
     }
 }
@@ -716,6 +806,7 @@ let windTrails: WindTrails;
 let wrenchTrails: WrenchTrail[];
 let wrenchHitTrail: WrenchWindTrail;
 let firstPersonWrench: FirstPersonWrench;
+let firstPersonRifle: FirstPersonRifle;
 let waterSplash: WaterSplash;
 let shoreFoam: ShoreFoam;
 let cameraController: PlayerCamera;
@@ -884,6 +975,7 @@ function createWorldActors(terrain: Terrain): void {
     spaceshipParts.onDetectorBeep = (closeness, interval) => {
         player.pulseDetectorAntenna(closeness, interval);
         firstPersonWrench.pulseDetectorGlow(closeness, interval);
+        firstPersonRifle.pulseDetectorGlow(closeness, interval);
     };
     view.scene.add(spaceshipParts.group);
     partsRemaining = spaceshipParts.remaining;
@@ -990,7 +1082,8 @@ async function init(): Promise<void> {
     ];
     wrenchHitTrail = new WrenchWindTrail(view.scene, WRENCH_WIND_TRAIL_ARC);
     firstPersonWrench = new FirstPersonWrench(getSurfaceTextures().wrenchWear);
-    view.viewmodelRoot.add(firstPersonWrench.attachment);
+    firstPersonRifle = new FirstPersonRifle(getSurfaceTextures().wrenchWear);
+    view.viewmodelRoot.add(firstPersonWrench.attachment, firstPersonRifle.attachment);
     waterSplash = new WaterSplash(view.scene);
 
     createSky();
@@ -1016,9 +1109,12 @@ async function init(): Promise<void> {
     shoreFoam = new ShoreFoam(view.scene, terrain);
 
     player = new Player(terrain, playerSettings);
+    applyInputBuffers();
+    player.setMovementCoefficients(movementSettings);
     player.setDifficulty(gameSettings.difficulty);
     player.setLeftHanded(wrenchSettings.leftHanded);
     firstPersonWrench.setLeftHanded(wrenchSettings.leftHanded);
+    firstPersonRifle.setLeftHanded(wrenchSettings.leftHanded);
     playerHealth = new PlayerHealth(gameSettings.difficulty);
     // The wrench connects per check: a regular swing lands one hit, a third of the way through its
     // animation, while the charged spin lands one on release and another halfway through the turn.
@@ -1057,7 +1153,13 @@ async function init(): Promise<void> {
         doubleJumpTrailTimer = DOUBLE_JUMP_TRAIL_INTERVAL;
     };
     player.onLanded = (position, impactSpeed) => {
+        // A hard landing already drops the first-person eye with the face-plant, so the camera dip
+        // would only add noise on top of it.
+        if (!player.isKnockedDown) {
+            cameraController.land();
+        }
         firstPersonWrench.land(impactSpeed);
+        firstPersonRifle.land(impactSpeed);
         const inWater = position.y < WATER_LEVEL - 0.02;
         const onMetal = !inWater && terrain.isOnStructure(position.x, position.z, position.y);
         const insideStructure = terrain.megastructures.isInside(position.x, position.y, position.z);
@@ -1094,35 +1196,6 @@ async function init(): Promise<void> {
             }
         }
     };
-    // A jump accepted just before touchdown still leaves the ground contact behind: the same
-    // footprint, impact-scaled dust, and footstep sound as a landing, plus the jump sound.
-    player.onLandingGrace = (position, impactSpeed) => {
-        firstPersonWrench.land(impactSpeed);
-        const inWater = position.y < WATER_LEVEL - 0.02;
-        const onMetal = !inWater && terrain.isOnStructure(position.x, position.z, position.y);
-        const insideStructure = terrain.megastructures.isInside(position.x, position.y, position.z);
-        const boost = insideStructure ? INSIDE_FOOTSTEP_BOOST : 1;
-        const groundColor = terrain.groundColorAt(position.x, position.z);
-
-        if (onMetal) {
-            gameAudio.playMetalFootstep(0, METAL_FOOTSTEP_GAIN * boost);
-            dustPuffs.spawnMetalLanding(position, groundColor);
-            return;
-        }
-
-        gameAudio.playFootstep(0, (inWater ? WATER_FOOTSTEP_GAIN : WALKING_FOOTSTEP_GAIN) * boost, inWater);
-        if (inWater) {
-            if (!isFullySubmerged(position)) {
-                waterSplash.spawn(position, impactSpeed);
-            }
-            return;
-        }
-
-        footstepPosition.set(position.x, terrain.heightAt(position.x, position.z), position.z);
-        dustPuffs.spawn(footstepPosition, impactSpeed, groundColor);
-        footprints.spawn(footstepPosition, windDirection, footstepSide, groundColor, terrain);
-        footstepSide *= -1;
-    };
     view.scene.add(player.group);
     applyRobotWorldOnlyShadows(player.group, robotShadowSun, sunShadowIndex(view.scene, robotShadowSun));
 
@@ -1133,6 +1206,8 @@ async function init(): Promise<void> {
     grassField.update(player.group.position);
 
     cameraController = new PlayerCamera(view.camera);
+    cameraController.landingDipDownSeconds = viewSettings.landingDipDownSeconds;
+    cameraController.landingDipUpSeconds = viewSettings.landingDipUpSeconds;
     cameraController.sensitivity = storedNumber(
         storedSettings,
         'sensitivity',
@@ -1261,6 +1336,11 @@ async function init(): Promise<void> {
         onToggleView: () => {
             if (!finale?.active) {
                 toggleFirstPerson();
+            }
+        },
+        onSelectWeapon: (slot) => {
+            if (!finale?.active && !cinematicActive) {
+                player.selectWeapon(slot === 2 ? 'rifle' : 'wrench');
             }
         },
         onTogglePerformanceGraph: () => performanceGraph?.toggle(),
@@ -1461,6 +1541,10 @@ function createSky(): void {
     const glowTexture = createSunGlowTexture();
     addSun(SUN_DIRECTION, radius * 0.82, 62, 0xfff2cc, 0xffd9a0, 720, glowTexture);
     addSun(SECOND_SUN_DIRECTION, radius * 0.82, 48, 0xff5a42, 0xff5a3a, 640, glowTexture);
+
+    // The menu renders the dome through its own camera, which only sees this layer. Enabling it on
+    // every sky object leaves the normal world render untouched.
+    sky.traverse((object) => object.layers.enable(MENU_SKY_LAYER));
 }
 
 function addSun(
@@ -1626,6 +1710,14 @@ async function warmUpRenderer(): Promise<void> {
     } catch (error) {
         console.warn('Shader warm-up failed; shaders will compile on first use.', error);
     }
+    // The underwater pass draws the world into its own render target, which makes three use a
+    // separate program variant for every material. Warm that path up now, while the loading
+    // screen still hides the canvas, instead of compiling everything on the first dive.
+    try {
+        await underwater.warmUp(view.scene, view.camera, warmUpViewmodelScene);
+    } catch (error) {
+        console.warn('Underwater warm-up failed; shaders will compile on the first dive.', error);
+    }
     // A real frame also compiles the shadow-depth and full-screen overlay programs that
     // compileAsync does not reach.
     renderFrame();
@@ -1772,6 +1864,10 @@ function randomizeWorld(): void {
 function resetSettingsToDefaults(): void {
     playerSettings.moveSpeed = DEFAULT_SETTINGS.moveSpeed;
     playerSettings.jumpSpeed = DEFAULT_SETTINGS.jumpSpeed;
+    inputSettings.jumpBufferSeconds = DEFAULT_SETTINGS.jumpBufferSeconds;
+    inputSettings.wrenchBufferSeconds = DEFAULT_SETTINGS.wrenchBufferSeconds;
+    applyInputBuffers();
+    Object.assign(movementSettings, DEFAULT_MOVEMENT_COEFFICIENTS);
     cameraController.sensitivity = DEFAULT_SETTINGS.sensitivity;
     mouseSettings.unacceleratedMouse = DEFAULT_SETTINGS.unacceleratedMouse;
     mouseInputControl.unacceleratedMouse =
@@ -1787,10 +1883,15 @@ function resetSettingsToDefaults(): void {
 
     viewSettings.firstPersonFov = DEFAULT_SETTINGS.firstPersonFov;
     viewSettings.thirdPersonFov = DEFAULT_SETTINGS.thirdPersonFov;
+    viewSettings.landingDipDownSeconds = DEFAULT_SETTINGS.landingDipDownSeconds;
+    viewSettings.landingDipUpSeconds = DEFAULT_SETTINGS.landingDipUpSeconds;
+    cameraController.landingDipDownSeconds = viewSettings.landingDipDownSeconds;
+    cameraController.landingDipUpSeconds = viewSettings.landingDipUpSeconds;
     setFirstPerson(DEFAULT_SETTINGS.firstPerson);
     wrenchSettings.leftHanded = DEFAULT_SETTINGS.leftHanded;
     player.setLeftHanded(DEFAULT_SETTINGS.leftHanded);
     firstPersonWrench.setLeftHanded(DEFAULT_SETTINGS.leftHanded);
+    firstPersonRifle.setLeftHanded(DEFAULT_SETTINGS.leftHanded);
 
     const shadowQualityChanged = renderSettings.shadowQuality !== DEFAULT_SETTINGS.shadowQuality;
     const antialiasChanged = renderSettings.antialias !== DEFAULT_SETTINGS.antialias;
@@ -1853,6 +1954,26 @@ function createGui(GuiConstructor: typeof GUI): GUI {
     movementFolder.add(playerSettings, 'moveSpeed', 4, 22, 0.1).name(t('gui.moveSpeed', 'Move speed'));
     movementFolder.add(playerSettings, 'jumpSpeed', 4, 16, 0.1).name(t('gui.jumpStrength', 'Jump strength'));
     movementFolder
+        .add(inputSettings, 'jumpBufferSeconds', 0, 0.5, 0.01)
+        .name(t('gui.jumpBuffer', 'Jump buffer (s)'))
+        .onChange(applyInputBuffers);
+    movementFolder
+        .add(inputSettings, 'wrenchBufferSeconds', 0, 0.5, 0.01)
+        .name(t('gui.wrenchBuffer', 'Wrench buffer (s)'))
+        .onChange(applyInputBuffers);
+    movementFolder
+        .add(movementSettings, 'groundAcceleration', 0, 60, 0.5)
+        .name(t('gui.groundAcceleration', 'Ground acceleration (1/s)'));
+    movementFolder
+        .add(movementSettings, 'airAcceleration', 0, 60, 0.5)
+        .name(t('gui.airAcceleration', 'Air acceleration (1/s)'));
+    movementFolder
+        .add(movementSettings, 'groundDeceleration', 0, 60, 0.5)
+        .name(t('gui.groundDeceleration', 'Ground deceleration (1/s)'));
+    movementFolder
+        .add(movementSettings, 'airDeceleration', 0, 60, 0.5)
+        .name(t('gui.airDeceleration', 'Air deceleration (1/s)'));
+    movementFolder
         .add(cameraController, 'sensitivity', 0.0005, 0.005, 0.0001)
         .name(t('gui.mouseSensitivity', 'Mouse sensitivity'));
     unacceleratedMouseController = movementFolder
@@ -1872,6 +1993,18 @@ function createGui(GuiConstructor: typeof GUI): GUI {
         .add(viewSettings, 'firstPersonFov', 40, 110, 1)
         .name(t('gui.firstPersonFov', 'First-person FOV'))
         .onChange(() => applyCameraFov());
+    viewFolder
+        .add(viewSettings, 'landingDipDownSeconds', 0, 0.3, 0.01)
+        .name(t('gui.landingDipDown', 'Landing dip down (s)'))
+        .onChange((value: number) => {
+            cameraController.landingDipDownSeconds = value;
+        });
+    viewFolder
+        .add(viewSettings, 'landingDipUpSeconds', 0, 0.6, 0.01)
+        .name(t('gui.landingDipUp', 'Landing dip return (s)'))
+        .onChange((value: number) => {
+            cameraController.landingDipUpSeconds = value;
+        });
 
     const graphicsFolder = guiInstance.addFolder(t('gui.graphics', 'Graphics')).close();
     const shadowModeOptions: Record<string, ShadowMode> = {
@@ -2240,14 +2373,11 @@ function startFinale(): void {
         return;
     }
 
-    // The walking camera may still carry the sprint FOV boost. Clear it before the finale records
-    // its base FOV, or the whole flight inherits a permanently wider lens.
-    speedFovBoost = 0;
-    applyCameraFov();
     // Enemy updates stop for the duration of the finale, so expire their visual effects here.
     enemyRobots.clearTransientEffects();
     hideDialogueLine();
     firstPersonWrench.hide();
+    firstPersonRifle.hide();
     wreckMap.setVisible(false);
     damageVignette.reset();
     playerHealth.reset();
@@ -2412,7 +2542,7 @@ function updateWhiteout(dt: number): void {
     if (whiteoutLeadRemaining > 0) {
         whiteoutLeadRemaining = Math.max(0, whiteoutLeadRemaining - dt);
         if (whiteoutLeadRemaining === 0) {
-            // The fade takes 0.24 s, so the strike lands during the first part of it and the
+            // The fade takes 0.3 s, so the strike lands during the first part of it and the
             // screen reaches full white just after the bolt appears.
             whiteoutRemaining = SCREEN_FADE_OUT_SECONDS + WHITEOUT_SECONDS;
             lightningFlash.fadeTo(1, SCREEN_FADE_OUT_SECONDS, 'in');
@@ -2595,11 +2725,19 @@ function setShadowQuality(quality: ShadowQuality): void {
 // cleared the depth buffer and disabled auto-clear, so this lands on top of every world object.
 // The world lights are moved into the mini-scene for the draw and returned immediately after, which
 // keeps the wrench lit and baked-shadowed without walking the whole world scene again.
-function renderFirstPersonWrenchOverlay(): void {
-    if (!firstPersonWrench.group.visible) {
+// Draws the first-person weapon over the finished world frame. UnderwaterEffect has already
+// cleared the depth buffer and disabled auto-clear, so this lands on top of every world object.
+// The world lights are moved into the mini-scene for the draw and returned immediately after, which
+// keeps the weapon lit and baked-shadowed without walking the whole world scene again.
+function renderFirstPersonWeaponOverlay(): void {
+    if (!firstPersonWrench.group.visible && !firstPersonRifle.group.visible) {
         return;
     }
-    // The root mirrors the parentless camera, so the wrench keeps its camera-space pose.
+    renderViewmodelScene();
+}
+
+function renderViewmodelScene(): void {
+    // The root mirrors the parentless camera, so the weapon keeps its camera-space pose.
     view.viewmodelRoot.position.copy(view.camera.position);
     view.viewmodelRoot.quaternion.copy(view.camera.quaternion);
     try {
@@ -2612,6 +2750,67 @@ function renderFirstPersonWrenchOverlay(): void {
             view.scene.attach(light);
         }
     }
+}
+
+// The loading warm-up runs before the first gameplay frame, so both weapon groups are still
+// hidden. Show them for the offscreen pass so the shader variants used over the underwater
+// target are compiled there instead of on the first dive.
+function warmUpViewmodelScene(): void {
+    const wrenchVisible = firstPersonWrench.group.visible;
+    const rifleVisible = firstPersonRifle.group.visible;
+    firstPersonWrench.group.visible = true;
+    firstPersonRifle.group.visible = true;
+    try {
+        renderViewmodelScene();
+    } finally {
+        firstPersonWrench.group.visible = wrenchVisible;
+        firstPersonRifle.group.visible = rifleVisible;
+    }
+}
+
+const menuSkyTarget = new Vector3();
+
+// Frames the sky dome for the menu. The camera sits at the centre of the camera-locked dome, and
+// the point between the two suns is placed at a fixed screen fraction. The yaw and elevation are
+// solved from the perspective projection, so the framing holds at any aspect ratio, and looking
+// along the solved direction with world up keeps the horizon level.
+function renderMenuSky(): void {
+    if (webglContextLost) {
+        return;
+    }
+    view.renderer.info.reset();
+
+    const camera = view.menuSkyCamera;
+    camera.position.copy(sky.position);
+
+    const halfHeight = Math.tan((camera.fov * Math.PI) / 360);
+    const halfWidth = halfHeight * camera.aspect;
+    const ndcX = MENU_SUN_SCREEN_X * 2 - 1;
+    const ndcY = 1 - MENU_SUN_SCREEN_Y * 2;
+    const ndcHalfY = ndcY * halfHeight;
+    const sunCosine = Math.cos(MENU_SUN_ELEVATION);
+    const sunSine = Math.sin(MENU_SUN_ELEVATION);
+
+    // Invert the projection for the sun bisector: first the yaw offset that puts it at ndcX, then
+    // the camera elevation that puts it at ndcY. The remaining vertical spread between the two
+    // suns follows from their real directions.
+    const ratio = (ndcX * halfWidth) / (sunCosine * Math.sqrt(1 + ndcHalfY * ndcHalfY));
+    const delta = Math.asin(clamp(ratio / Math.sqrt(1 + ratio * ratio * sunCosine * sunCosine), -1, 1));
+    const cosDelta = Math.cos(delta);
+    const elevation = Math.atan2(
+        sunSine - ndcHalfY * sunCosine * cosDelta,
+        ndcHalfY * sunSine + sunCosine * cosDelta,
+    );
+    const azimuth = MENU_SUN_AZIMUTH + delta;
+
+    menuSkyTarget.set(
+        camera.position.x + Math.cos(elevation) * Math.sin(azimuth),
+        camera.position.y + Math.sin(elevation),
+        camera.position.z + Math.cos(elevation) * Math.cos(azimuth),
+    );
+    camera.lookAt(menuSkyTarget);
+
+    view.renderer.render(view.scene, camera);
 }
 
 function renderFrame(): void {
@@ -2629,10 +2828,11 @@ function renderFrame(): void {
     // the extra shadow pass once the map exists; the first frame still renders it so the sun shadow
     // sampler array never contains an uninitialized map.
     robotShadowSun.shadow.needsUpdate = player.group.visible || robotShadowSun.shadow.map === null;
-    // Skip the foreground pass entirely when the wrench is not on screen (third person, no wrench,
+    // Skip the foreground pass entirely when neither weapon is on screen (third person, no weapon,
     // cinematics), so those frames pay nothing for it.
-    const wrenchOverlay = firstPersonWrench.group.visible ? renderFirstPersonWrenchOverlay : null;
-    underwater.render(view.scene, view.camera, wrenchOverlay);
+    const weaponOverlay =
+        firstPersonWrench.group.visible || firstPersonRifle.group.visible ? renderFirstPersonWeaponOverlay : null;
+    underwater.render(view.scene, view.camera, weaponOverlay);
     damageVignette.render();
     deathFade.render();
     finaleFade.render();
@@ -2766,40 +2966,16 @@ function applyDebugSettings(): void {
 }
 
 function applyCameraFov(): void {
-    const baseFov = viewSettings.firstPerson ? viewSettings.firstPersonFov : viewSettings.thirdPersonFov;
-    // The speed boost is a third-person effect; the first-person lens stays fixed.
-    const speedBoost = viewSettings.firstPerson ? 0 : speedFovBoost;
-    const fov = baseFov + speedBoost;
-    // Fit the live cascades to the widest lens this camera can reach, so easing the speed boost
-    // cannot continuously resample the shadow maps and make their edges crawl.
-    const stableFitFov = baseFov + (viewSettings.firstPerson ? 0 : MAX_SPEED_FOV_BOOST);
-    (sun.shadow as CascadedSunLightShadow).fitFov = stableFitFov;
-    (robotShadowSun.shadow as CascadedSunLightShadow).fitFov = stableFitFov;
-    // Widen the lens and dolly in by the matching amount, keeping the robot the same size on
-    // screen while the background gains the extra parallax that sells the speed.
-    cameraController.distance =
-        (THIRD_PERSON_DISTANCE * Math.tan((viewSettings.thirdPersonFov * Math.PI) / 360)) /
-        Math.tan(((viewSettings.thirdPersonFov + speedBoost) * Math.PI) / 360);
+    const fov = viewSettings.firstPerson ? viewSettings.firstPersonFov : viewSettings.thirdPersonFov;
+    // Fit the cascades to the configured lens so changing FOV does not leave the shadow maps sized
+    // for a wider view.
+    (sun.shadow as CascadedSunLightShadow).fitFov = fov;
+    (robotShadowSun.shadow as CascadedSunLightShadow).fitFov = fov;
     if (view.camera.fov === fov) {
         return;
     }
     view.camera.fov = fov;
     view.camera.updateProjectionMatrix();
-}
-
-function updateSpeedFov(dt: number, speed: number): void {
-    // First person keeps the configured FOV constant regardless of speed.
-    if (viewSettings.firstPerson) {
-        speedFovBoost = 0;
-        return;
-    }
-    const intensity = clamp((speed - SPEED_FOV_START) / (SPEED_FOV_FULL - SPEED_FOV_START), 0, 1);
-    const target = intensity * MAX_SPEED_FOV_BOOST;
-    speedFovBoost = damp(speedFovBoost, target, SPEED_FOV_RAMP_RATE, dt);
-    if (Math.abs(target - speedFovBoost) < 0.001) {
-        speedFovBoost = target;
-    }
-    applyCameraFov();
 }
 
 function setFirstPerson(firstPerson: boolean): void {
@@ -2821,6 +2997,7 @@ function setWrenchHand(leftHanded: boolean): void {
     wrenchSettings.leftHanded = leftHanded;
     player.setLeftHanded(leftHanded);
     firstPersonWrench.setLeftHanded(leftHanded);
+    firstPersonRifle.setLeftHanded(leftHanded);
     syncWrenchHandButtons();
     storeSettings();
 }
@@ -3385,7 +3562,7 @@ function animate(): void {
         // nothing fires when the game resumes.
         player.cancelWrenchHold();
         performanceGraph?.beginRender();
-        renderFrame();
+        renderMenuSky();
         performanceGraph?.endFrame();
         return;
     }
@@ -3516,7 +3693,6 @@ function animate(): void {
         }
     }
 
-    updateSpeedFov(dt, player.horizontalSpeed);
     cameraController.update(dt, player.group.position, terrain, player.knockdownProgress);
     updateCinematicCamera(dt);
     underwater.update(dt, view.camera.position.y, WATER_LEVEL);
@@ -3524,8 +3700,12 @@ function animate(): void {
     gameAudio.setListener(view.camera.position, cameraForward);
     gameAudio.setUnderwater(view.camera.position.y < WATER_LEVEL);
     updatePlayerAppearance();
-    const firstPersonWrenchActive =
-        cameraController.firstPerson && player.isWrenchEquipped && playerDestroyedRemaining === 0 && !cinematicActive;
+    const firstPersonWeaponActive =
+        cameraController.firstPerson &&
+        (player.isWrenchEquipped || player.isRifleEquipped) &&
+        playerDestroyedRemaining === 0 &&
+        !cinematicActive;
+    const firstPersonWrenchActive = firstPersonWeaponActive && player.isWrenchEquipped;
     // Keep the viewmodel frame current before sampling the first-person trail.
     view.viewmodelRoot.position.copy(view.camera.position);
     view.viewmodelRoot.quaternion.copy(view.camera.quaternion);
@@ -3544,6 +3724,15 @@ function animate(): void {
         petting: player.isPetting,
         petProgress: player.petProgress,
         petReach: player.petReach,
+        knockdownProgress: player.knockdownProgress,
+    });
+    firstPersonRifle.update(dt, {
+        visible: firstPersonWeaponActive && player.isRifleEquipped,
+        speed: player.horizontalSpeed,
+        moveSpeed: playerSettings.moveSpeed,
+        walkPhase: player.walkAnimationPhase,
+        cameraYaw: cameraController.yaw,
+        cameraPitch: cameraController.pitch,
         knockdownProgress: player.knockdownProgress,
     });
     // The trails must follow the visible wrench. In first person that is the camera-mounted

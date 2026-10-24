@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { GrassField } from '../src/grass';
 import { smoothstep } from '../src/math-utils';
 import { Terrain, WATER_LEVEL, WORLD_HALF_SIZE } from '../src/terrain';
-import { FAST_TERRAIN, PLAYER_SETTINGS, stepPlayer, testPlayer, testTerrain, triangleCount } from './test-helpers';
+import { FAST_TERRAIN, NO_INPUT, PLAYER_SETTINGS, stepPlayer, testPlayer, testTerrain, triangleCount } from './test-helpers';
 import type { CylinderCollider } from '../src/terrain';
 
 // A point on the map's boundary for a side of the rim (0 = +x, 1 = -x, 2 = +z, 3 = -z), where `t`
@@ -819,6 +819,23 @@ describe('Player', () => {
         expect(player.landingSpeedBoost).toBeGreaterThan(0);
     });
 
+    it('does not drift horizontally while jumping in place', () => {
+        const terrain = testTerrain(424242);
+        const player = testPlayer(terrain);
+        const cameraYaw = player.group.rotation.y - Math.PI;
+        const start = player.group.position.clone();
+
+        for (let jump = 0; jump < 5; jump++) {
+            player.update(1 / 60, { forward: 0, right: 0, jump: true }, cameraYaw, terrain);
+            for (let frame = 0; frame < 240 && !player.isGrounded; frame++) {
+                player.update(1 / 60, NO_INPUT, cameraYaw, terrain);
+            }
+        }
+
+        expect(player.group.position.x).toBeCloseTo(start.x, 5);
+        expect(player.group.position.z).toBeCloseTo(start.z, 5);
+    });
+
     it('builds speed by chaining jump landings', () => {
         const terrain = testTerrain(424242);
         const player = testPlayer(terrain);
@@ -926,16 +943,14 @@ describe('Player', () => {
         expect(player.landingSpeedBoost).toBeGreaterThan(boostDuringDoubleJump);
     });
 
-    it('accepts a jump pressed just before landing as a ground jump', () => {
+    it('fires a jump buffered before landing on the landing frame', () => {
         const terrain = testTerrain(424242);
         const player = testPlayer(terrain);
         const cameraYaw = player.group.rotation.y - Math.PI;
+        const dt = 1 / 60;
         let groundJumps = 0;
         let airJumps = 0;
         let landings = 0;
-        let graceContacts = 0;
-        let gracePosition: Vector3 | null = null;
-        let graceImpactSpeed = 0;
         player.onJump = (doubleJump) => {
             if (doubleJump) {
                 airJumps++;
@@ -946,38 +961,39 @@ describe('Player', () => {
         player.onLanded = () => {
             landings++;
         };
-        player.onLandingGrace = (position, impactSpeed) => {
-            graceContacts++;
-            gracePosition = position.clone();
-            graceImpactSpeed = impactSpeed;
-        };
 
-        const ground = player.group.position.y;
+        // Ground jump, then spend the air jump: the next press has nothing to act on until touchdown.
+        player.update(dt, { forward: 0, right: 0, jump: true }, cameraYaw, terrain);
+        player.update(dt, { forward: 0, right: 0, jump: true }, cameraYaw, terrain);
+        expect(airJumps).toBe(1);
+
         const { x, z } = player.group.position;
-        // Falling at 3 m/s from 0.19 m up reaches the ground almost immediately.
-        player.restoreSnapshot({ x, y: ground + 0.19, z, facing: 0, speed: 0, verticalSpeed: -3, grounded: false });
-        player.update(1 / 60, { forward: 0, right: 0, jump: true }, cameraYaw, terrain);
+        const heightAboveGround = (): number =>
+            player.group.position.y - terrain.walkSurfaceAt(x, z, player.group.position.y);
 
+        // Fall until the ground is close enough that a press can wait for it.
+        for (let frame = 0; frame < 240 && heightAboveGround() > 0.3; frame++) {
+            player.update(dt, NO_INPUT, cameraYaw, terrain);
+        }
+        expect(heightAboveGround()).toBeLessThanOrEqual(0.3);
+
+        // The press is remembered rather than executed: the robot is still in the air.
+        player.update(dt, { forward: 0, right: 0, jump: true }, cameraYaw, terrain);
+        expect(player.isGrounded).toBe(false);
         expect(groundJumps).toBe(1);
-        expect(airJumps).toBe(0);
-        // The robot launches from the ground rather than passing through the landing and its effects.
-        expect(landings).toBe(0);
-        expect(graceContacts).toBe(1);
-        expect(gracePosition!.y).toBeCloseTo(ground, 5);
-        // The callback carries the speed the robot would have hit at, so the dust scales with it.
-        expect(graceImpactSpeed).toBeCloseTo(Math.sqrt(3 * 3 + 2 * PLAYER_SETTINGS.gravity * 0.19), 5);
+
+        for (let frame = 0; frame < 60 && landings === 0; frame++) {
+            player.update(dt, NO_INPUT, cameraYaw, terrain);
+        }
+
+        // The real landing ran its effects, then the remembered press launched from the ground.
+        expect(landings).toBe(1);
+        expect(groundJumps).toBe(2);
         expect(player.isGrounded).toBe(false);
         expect(player.verticalSpeed).toBeGreaterThan(0);
-        expect(player.group.position.y - ground).toBeLessThan(0.25);
-        // The forgiven landing still awards the forward boost that chained jumps build on.
-        expect(player.landingSpeedBoost).toBeGreaterThan(0);
-
-        // Starting from the ground refills the air jump, so a second press is a double jump.
-        player.update(1 / 60, { forward: 0, right: 0, jump: true }, cameraYaw, terrain);
-        expect(airJumps).toBe(1);
     });
 
-    it('only forgives the jump while the robot is falling', () => {
+    it('uses a press while rising as the air jump, not a buffered ground jump', () => {
         const terrain = testTerrain(424242);
         const player = testPlayer(terrain);
         const cameraYaw = player.group.rotation.y - Math.PI;
@@ -1001,45 +1017,42 @@ describe('Player', () => {
         expect(airJumps).toBe(1);
     });
 
-    it('scales the landing grace with difficulty', () => {
-        const jumpDuringFall = (difficulty: 'easy' | 'medium', height: number, verticalSpeed: number): boolean => {
-            const terrain = testTerrain(424242);
-            const player = testPlayer(terrain);
-            player.setDifficulty(difficulty);
-            const cameraYaw = player.group.rotation.y - Math.PI;
-            let groundJumps = 0;
-            player.onJump = (doubleJump) => {
-                if (!doubleJump) {
-                    groundJumps++;
-                }
-            };
-
-            const ground = player.group.position.y;
-            const { x, z } = player.group.position;
-            player.restoreSnapshot({
-                x,
-                y: ground + height,
-                z,
-                facing: 0,
-                speed: 0,
-                verticalSpeed,
-                grounded: false,
-            });
-            player.update(1 / 60, { forward: 0, right: 0, jump: true }, cameraYaw, terrain);
-
-            player.group.removeFromParent();
-            return groundJumps === 1;
+    it('drops a buffered press that outlives the buffer window', () => {
+        const terrain = testTerrain(424242);
+        const player = testPlayer(terrain);
+        player.jumpBufferSeconds = 0.1;
+        const cameraYaw = player.group.rotation.y - Math.PI;
+        const dt = 1 / 60;
+        let groundJumps = 0;
+        let airJumps = 0;
+        player.onJump = (doubleJump) => {
+            if (doubleJump) {
+                airJumps++;
+            } else {
+                groundJumps++;
+            }
         };
 
-        // 2.5 m at 5 m/s down reaches the ground in ~0.29 s: inside easy's 0.4 s window,
-        // outside medium's 0.2 s.
-        expect(jumpDuringFall('easy', 2.5, -5)).toBe(true);
-        expect(jumpDuringFall('medium', 2.5, -5)).toBe(false);
-        // A fall that reaches the ground in ~0.15 s is forgiven even on medium.
-        expect(jumpDuringFall('medium', 0.6, -2)).toBe(true);
+        // Ground jump, then spend the air jump so the next press can only be remembered.
+        player.update(dt, { forward: 0, right: 0, jump: true }, cameraYaw, terrain);
+        player.update(dt, { forward: 0, right: 0, jump: true }, cameraYaw, terrain);
+        expect(airJumps).toBe(1);
+
+        // Press at the apex, far more than 0.1 s above the ground, so the buffer expires first.
+        for (let frame = 0; frame < 120 && player.verticalSpeed > 0.5; frame++) {
+            player.update(dt, NO_INPUT, cameraYaw, terrain);
+        }
+        player.update(dt, { forward: 0, right: 0, jump: true }, cameraYaw, terrain);
+
+        for (let frame = 0; frame < 240 && !player.isGrounded; frame++) {
+            player.update(dt, NO_INPUT, cameraYaw, terrain);
+        }
+
+        expect(player.isGrounded).toBe(true);
+        expect(groundJumps).toBe(1);
     });
 
-    it('stacks the landing boost when chained jumps all use the landing grace', () => {
+    it('keeps stacking the landing boost across buffered chained jumps', () => {
         const terrain = testTerrain(424242);
         const player = testPlayer(terrain);
         const cameraYaw = player.group.rotation.y - Math.PI;
@@ -1059,21 +1072,15 @@ describe('Player', () => {
             return (velocity + Math.sqrt(velocity * velocity + 2 * gravity * height)) / gravity;
         };
 
-        let graceJumps = 0;
-        player.onLandingGrace = () => {
-            graceJumps++;
+        const boosts: number[] = [];
+        player.onLanded = () => {
+            boosts.push(player.landingSpeedBoost);
         };
 
-        const boosts: number[] = [];
-        let previousGraceJumps = 0;
-        for (let frame = 0; frame < 900 && boosts.length < 4; frame++) {
-            // Jump from the ground, then press again whenever the fall enters the grace window.
+        for (let frame = 0; frame < 1200 && boosts.length < 4; frame++) {
+            // Jump from the ground, then press again whenever the fall enters the buffer window.
             const jump = player.isGrounded || timeToGround() <= 0.19;
             player.update(1 / 60, { forward: 0, right: 0, jump }, cameraYaw, terrain);
-            if (graceJumps > previousGraceJumps) {
-                previousGraceJumps = graceJumps;
-                boosts.push(player.landingSpeedBoost);
-            }
         }
 
         expect(boosts).toHaveLength(4);

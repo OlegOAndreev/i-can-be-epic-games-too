@@ -141,7 +141,7 @@ export function bestGridSpot(options: {
 // it so the longer approach still produces proportionally more warning beeps.
 const DETECTOR_REACH_SCALE = 1.3;
 const DETECTOR_RANGE = 120 * DETECTOR_REACH_SCALE;
-const DETECTOR_NEAR_INTERVAL = 0.14 / DETECTOR_REACH_SCALE;
+const DETECTOR_NEAR_INTERVAL = 0.18 / DETECTOR_REACH_SCALE;
 const DETECTOR_FAR_INTERVAL = 1.8 / DETECTOR_REACH_SCALE;
 // Looking towards the tracked piece makes the locator tick 30% faster, so sweeping the horizon
 // gives feedback about which direction the missing piece lies in.

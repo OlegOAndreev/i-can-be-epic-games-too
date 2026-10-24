@@ -1,6 +1,7 @@
 import {
     AdditiveBlending,
     BoxGeometry,
+    BufferGeometry,
     CylinderGeometry,
     Group,
     Mesh,
@@ -19,6 +20,7 @@ import {
     glowMaterial as createGlowMaterial,
     glowSpriteMaterial,
 } from './glow';
+import { buildLightningRifleModel } from './lightning-rifle';
 import { materialCastsShadow, mergeMeshesByMaterial } from './mesh-optimize';
 
 // The rear thruster dots glow softly while idle and flare up while running.
@@ -59,6 +61,13 @@ export interface PlayerModel {
     wrench: Group;
     wrenchTips: Group[];
     wrenchJawCenter: Group;
+    rifle: Group;
+    rifleMuzzle: Group;
+    rifleEnergyMaterial: MeshStandardMaterial;
+    rifleArc: Group;
+    rifleArcMesh: Mesh;
+    rifleArcMaterial: MeshBasicMaterial;
+    rifleArcGeometries: BufferGeometry[];
     glowMaterial: MeshStandardMaterial;
     antennaGlowMaterial: MeshStandardMaterial;
     antennaGlowSprite: Sprite;
@@ -78,6 +87,9 @@ export interface PlayerModel {
 // outward lean lets the same local pose fit either hand.
 const WRENCH_HAND_OFFSET = { x: 0.08, y: -0.88, z: 0.08 } as const;
 const WRENCH_HAND_ROTATION = { x: -0.1, z: 0.12 } as const;
+// The rifle hangs from the same palm as the wrench. Its local +Z axis is the barrel, so a quarter
+// turn about X lays the barrel along the arm and lets the arm's forward carry pose point it ahead.
+const RIFLE_HAND_OFFSET = { x: 0.06, y: -0.85, z: 0.1 } as const;
 
 export function mountWrench(wrench: Group, leftArm: Group, rightArm: Group, leftHanded: boolean): void {
     // The model's rightArm group renders on the left of the third-person view, which is where the
@@ -87,6 +99,16 @@ export function mountWrench(wrench: Group, leftArm: Group, rightArm: Group, left
     arm.add(wrench);
     wrench.position.set(WRENCH_HAND_OFFSET.x * side, WRENCH_HAND_OFFSET.y, WRENCH_HAND_OFFSET.z);
     wrench.rotation.set(WRENCH_HAND_ROTATION.x, 0, WRENCH_HAND_ROTATION.z * side);
+}
+
+export function mountRifle(rifle: Group, leftArm: Group, rightArm: Group, leftHanded: boolean): void {
+    const side = leftHanded ? 1 : -1;
+    const arm = leftHanded ? rightArm : leftArm;
+    arm.add(rifle);
+    rifle.position.set(RIFLE_HAND_OFFSET.x * side, RIFLE_HAND_OFFSET.y, RIFLE_HAND_OFFSET.z);
+    // The yaw angles the barrel away from the body, so the long rifle stays readable in the default
+    // third-person view instead of disappearing behind the torso when it points straight ahead.
+    rifle.rotation.set(Math.PI / 2, 0.3 * side, 0);
 }
 
 // Builds the explorer robot from procedural primitives. The returned visual group has its origin at
@@ -387,17 +409,26 @@ export function buildPlayerModel(): PlayerModel {
     wrench.visible = false;
     mountWrench(wrench, leftArm, rightArm, true);
 
+    // The lightning rifle shares the wrench hand. It stays hidden until the weapon is selected, and
+    // its cyan hardware echoes the robot's own antenna and chest core.
+    const lightningRifle = buildLightningRifleModel({ castShadow: true });
+    const rifle = lightningRifle.group;
+    rifle.name = 'lightning-rifle';
+    rifle.visible = false;
+    mountRifle(rifle, leftArm, rightArm, true);
+
     // Merge every static part inside its animated pivot. Arms are children of upperBody, so they
     // must be skipped here or their meshes would be baked into the body and stop following the
-    // arm pivots. The wrench stays separate because only it is toggled visible.
+    // arm pivots. The two weapons stay separate because only they are toggled visible.
     mergeMeshesByMaterial(upperBody, {
         skip: (object) => object === leftArm || object === rightArm,
     });
     mergeMeshesByMaterial(leftArm);
-    mergeMeshesByMaterial(rightArm, { skip: (object) => object === wrench });
+    mergeMeshesByMaterial(rightArm, { skip: (object) => object === wrench || object === rifle });
     mergeMeshesByMaterial(leftLeg);
     mergeMeshesByMaterial(rightLeg);
     mergeMeshesByMaterial(wrench);
+    mergeMeshesByMaterial(rifle);
 
     visual.scale.setScalar(PLAYER_VISUAL_SCALE);
 
@@ -442,6 +473,13 @@ export function buildPlayerModel(): PlayerModel {
         wrench,
         wrenchTips,
         wrenchJawCenter,
+        rifle,
+        rifleMuzzle: lightningRifle.muzzle,
+        rifleEnergyMaterial: lightningRifle.energyMaterial,
+        rifleArc: lightningRifle.arc,
+        rifleArcMesh: lightningRifle.arcMesh,
+        rifleArcMaterial: lightningRifle.arcMaterial,
+        rifleArcGeometries: lightningRifle.arcGeometries,
         glowMaterial,
         antennaGlowMaterial,
         antennaGlowSprite,

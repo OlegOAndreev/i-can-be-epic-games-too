@@ -63,6 +63,7 @@ export function fakeTerrain(overrides: Partial<Record<keyof Terrain, unknown>> =
         seed: 1,
         heightAt: () => 0,
         walkSurfaceAt: () => 0,
+        ceilingAt: () => Number.POSITIVE_INFINITY,
         slopeAt: () => 0,
         earthinessAt: () => 0,
         isOnStructure: () => false,

@@ -80,12 +80,12 @@ export class WaterSplash {
                 size,
                 (1.1 + Math.random() * 2.1) * strength,
                 (2.2 + Math.random() * 2.6) * strength,
-                0.45 + Math.random() * 0.35,
+                0.4 + Math.random() * 0.4,
             );
         }
 
         this.spawnRing(position, 0.3, 0.95, 0.85, 0.55, 0);
-        this.spawnRing(position, 0.18, 0.55, 0.6, 0.45, 0.08);
+        this.spawnRing(position, 0.18, 0.55, 0.6, 0.45, 0.1);
     }
 
     spawnFootstep(position: Vector3): void {
@@ -129,7 +129,7 @@ export class WaterSplash {
             0.16 + Math.random() * 0.08,
             0.32 + Math.random() * 0.12,
             0.34 + Math.random() * 0.18,
-            0.32 + Math.random() * 0.16,
+            0.2 + Math.random() * 0.2,
         );
 
         this.spawnFoamPatch(

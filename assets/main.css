@@ -24,6 +24,8 @@ html.i18n-pending body {
     height: 100%;
 }
 
+/* Transparent on purpose: the starry backdrop is the Three.js sky dome rendered on the canvas
+   behind the menu. */
 #overlay {
     position: fixed;
     top: 0;
@@ -35,8 +37,7 @@ html.i18n-pending body {
     align-items: center;
     justify-content: center;
     padding: 20px;
-    background: radial-gradient(circle at 50% 38%, rgba(15, 30, 40, 0.35), rgba(6, 12, 17, 0.78));
-    transition: opacity 180ms ease;
+    transition: opacity 200ms ease;
 }
 
 #overlay.is-hidden {
@@ -57,7 +58,7 @@ html.i18n-pending body {
     justify-content: center;
     padding: 20px;
     background: radial-gradient(circle at 50% 38%, rgba(15, 30, 40, 0.55), rgba(4, 9, 13, 0.98)), #070d12;
-    transition: opacity 420ms ease;
+    transition: opacity 400ms ease;
 }
 
 #loading-screen.is-hidden {
@@ -65,8 +66,8 @@ html.i18n-pending body {
     visibility: hidden;
     pointer-events: none;
     transition:
-        opacity 420ms ease,
-        visibility 0s linear 420ms;
+        opacity 400ms ease,
+        visibility 0s linear 400ms;
 }
 
 .loading-panel {
@@ -102,7 +103,7 @@ html.i18n-pending body {
     height: 100%;
     border-radius: inherit;
     background: linear-gradient(90deg, #5fc8d8, #9fe8d8);
-    transition: width 220ms ease;
+    transition: width 200ms ease;
 }
 
 .loading-line {
@@ -126,7 +127,8 @@ html.i18n-pending body {
     padding: 34px 38px 26px;
     border: 1px solid rgba(255, 255, 255, 0.16);
     border-radius: 18px;
-    background: rgba(10, 20, 28, 0.82);
+    /* Translucent enough that the stars and suns glow faintly behind the text. */
+    background: rgba(8, 16, 26, 0.7);
     box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
     text-align: center;
 }
@@ -202,7 +204,7 @@ h1 {
     font-weight: 600;
     letter-spacing: 0.02em;
     cursor: pointer;
-    transition: background-color 120ms ease;
+    transition: background-color 100ms ease;
 }
 
 #play-button:hover {
@@ -344,7 +346,7 @@ kbd {
     font-weight: 600;
     cursor: pointer;
     white-space: pre-line;
-    transition: background-color 120ms ease;
+    transition: background-color 100ms ease;
 }
 
 .menu-split-button button:first-child {
@@ -446,7 +448,7 @@ kbd {
     font-size: 16px;
     font-weight: 600;
     cursor: pointer;
-    transition: background-color 120ms ease;
+    transition: background-color 100ms ease;
 }
 
 .menu-button:hover {
@@ -645,15 +647,15 @@ kbd {
     pointer-events: none;
     visibility: visible;
     opacity: 1;
-    transition: opacity 180ms ease;
+    transition: opacity 200ms ease;
 }
 
 #dialogue.is-hidden {
     visibility: hidden;
     opacity: 0;
     transition:
-        opacity 180ms ease,
-        visibility 0s linear 180ms;
+        opacity 200ms ease,
+        visibility 0s linear 200ms;
 }
 
 #dialogue-speaker {

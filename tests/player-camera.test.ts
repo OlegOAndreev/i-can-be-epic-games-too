@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { fakeTerrain, testTerrain } from './test-helpers';
 import { WATER_LEVEL } from '../src/terrain';
-import { FIRST_PERSON_EYE_HEIGHT, PlayerCamera } from '../src/player-camera';
+import { FIRST_PERSON_EYE_HEIGHT, NEAR_Z, PlayerCamera, THIRD_PERSON_DISTANCE } from '../src/player-camera';
 
 describe('PlayerCamera', () => {
     it('sits at eye height and looks along yaw and pitch in first person', () => {
@@ -29,7 +29,28 @@ describe('PlayerCamera', () => {
         expect(forward.z).toBeCloseTo(-Math.cos(controller.yaw) * cosPitch, 4);
     });
 
-    it('eases the eye into a jump and out of a landing', () => {
+    it('lowers the first-person eye under a low ceiling so the near plane stays clear', () => {
+        const camera = new PerspectiveCamera(70, 1, NEAR_Z, 1000);
+        const controller = new PlayerCamera(camera);
+        controller.setFirstPerson(true);
+
+        const underLowDeck = fakeTerrain({
+            ceilingAt: () => 2.0,
+            walkSurfaceAt: () => 0,
+            heightAt: () => 0,
+            intersectsStructure: () => false,
+        });
+        controller.update(1 / 60, new Vector3(0, 0, 0), underLowDeck);
+        // The eye stops a near plane plus a margin below the underside (2.0 - 0.45).
+        expect(camera.position.y).toBeCloseTo(2.0 - NEAR_Z - 0.15, 5);
+        expect(camera.position.y).toBeLessThan(FIRST_PERSON_EYE_HEIGHT);
+
+        const openSky = fakeTerrain({ ceilingAt: () => Number.POSITIVE_INFINITY });
+        controller.update(1 / 60, new Vector3(0, 0, 0), openSky);
+        expect(camera.position.y).toBeCloseTo(FIRST_PERSON_EYE_HEIGHT, 5);
+    });
+
+    it('tracks the eye exactly through a jump and a landing', () => {
         const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
         const controller = new PlayerCamera(camera);
         controller.setFirstPerson(true);
@@ -42,27 +63,56 @@ describe('PlayerCamera', () => {
         controller.update(1 / 60, position, terrain);
         expect(camera.position.y).toBeCloseTo(FIRST_PERSON_EYE_HEIGHT);
 
-        // The first frame of a jump moves the feet up by one frame of jump speed. The eye should
-        // follow most of the way, but not instantly, so takeoff does not feel like a hard cut.
+        // The eye follows the body with no smoothing, so both takeoff and landing are exact.
         position.y = 0.2;
         controller.update(1 / 60, position, terrain);
-        expect(camera.position.y).toBeGreaterThan(FIRST_PERSON_EYE_HEIGHT);
-        expect(camera.position.y).toBeLessThan(FIRST_PERSON_EYE_HEIGHT + 0.2);
+        expect(camera.position.y).toBeCloseTo(FIRST_PERSON_EYE_HEIGHT + 0.2, 6);
 
-        // A long frame or a slow follow lets the eye settle exactly on the new head position.
-        for (let frame = 0; frame < 120; frame++) {
-            controller.update(1 / 60, position, terrain);
-        }
-        expect(camera.position.y).toBeCloseTo(FIRST_PERSON_EYE_HEIGHT + 0.2, 3);
-
-        // Landing stops the feet in one frame, so the eye keeps easing down instead of snapping.
+        // Landing stops the feet in one frame and the eye stops with them.
         position.y = 0;
         controller.update(1 / 60, position, terrain);
-        expect(camera.position.y).toBeGreaterThan(FIRST_PERSON_EYE_HEIGHT);
-        for (let frame = 0; frame < 120; frame++) {
-            controller.update(1 / 60, position, terrain);
-        }
-        expect(camera.position.y).toBeCloseTo(FIRST_PERSON_EYE_HEIGHT, 3);
+        expect(camera.position.y).toBeCloseTo(FIRST_PERSON_EYE_HEIGHT, 6);
+    });
+
+    it('tracks the third-person target exactly through a jump and a fall', () => {
+        const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
+        const controller = new PlayerCamera(camera);
+        const terrain = fakeTerrain({
+            walkSurfaceAt: () => -1000,
+            heightAt: () => -1000,
+            intersectsStructure: () => false,
+        });
+        const position = new Vector3(0, 0, 0);
+        controller.update(1 / 60, position, terrain);
+        const standingCameraY = camera.position.y;
+
+        // The orbit target follows the body with no smoothing in either direction.
+        position.y = 2;
+        controller.update(1 / 60, position, terrain);
+        expect(camera.position.y).toBeCloseTo(standingCameraY + 2, 5);
+
+        position.y = 0;
+        controller.update(1 / 60, position, terrain);
+        expect(camera.position.y).toBeCloseTo(standingCameraY, 5);
+    });
+
+    it('does not ease the camera distance back out after an obstruction clears', () => {
+        let blocked = true;
+        const terrain = fakeTerrain({
+            walkSurfaceAt: () => -1000,
+            heightAt: () => -1000,
+            intersectsStructure: () => blocked,
+        });
+        const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
+        const controller = new PlayerCamera(camera);
+
+        controller.update(1 / 60, new Vector3(0, 10, 0), terrain);
+        expect(controller.cameraDistance).toBe(0);
+
+        blocked = false;
+        // Move enough to invalidate the static-view occlusion cache.
+        controller.update(1 / 60, new Vector3(0, 10, 0.5), terrain);
+        expect(controller.cameraDistance).toBeCloseTo(THIRD_PERSON_DISTANCE, 5);
     });
 
     it('drops and tilts the first-person eye through a knockdown', () => {
@@ -232,5 +282,61 @@ describe('PlayerCamera', () => {
         controller.update(1 / 60, new Vector3(0, seabed, 0), terrain);
 
         expect(camera.position.y).toBeLessThan(WATER_LEVEL);
+    });
+
+    it('dips the first-person eye and returns without overshoot after a landing', () => {
+        const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
+        const controller = new PlayerCamera(camera);
+        controller.setFirstPerson(true);
+        const terrain = fakeTerrain({
+            walkSurfaceAt: () => 0,
+            heightAt: () => 0,
+            intersectsStructure: () => false,
+        });
+        const position = new Vector3(0, 0, 0);
+        controller.update(1 / 60, position, terrain);
+
+        controller.land();
+        let lowest = 0;
+        let highest = Number.NEGATIVE_INFINITY;
+        const frames = Math.ceil((controller.landingDipDownSeconds + controller.landingDipUpSeconds) * 60) + 2;
+        for (let frame = 0; frame < frames; frame++) {
+            controller.update(1 / 60, position, terrain);
+            const offset = camera.position.y - (position.y + FIRST_PERSON_EYE_HEIGHT);
+            lowest = Math.min(lowest, offset);
+            highest = Math.max(highest, offset);
+        }
+
+        expect(lowest).toBeLessThan(-0.2);
+        // The view never rises above the rest pose, so there is nothing to read as a bounce.
+        expect(highest).toBeLessThanOrEqual(1e-6);
+        expect(camera.position.y).toBeCloseTo(FIRST_PERSON_EYE_HEIGHT, 6);
+    });
+
+    it('dips the third-person camera without changing the orbit distance', () => {
+        const camera = new PerspectiveCamera(62, 1, 0.1, 1000);
+        const controller = new PlayerCamera(camera);
+        const terrain = fakeTerrain({
+            walkSurfaceAt: () => -1000,
+            heightAt: () => -1000,
+            intersectsStructure: () => false,
+        });
+        const position = new Vector3(0, 0, 0);
+        controller.update(1 / 60, position, terrain);
+        const standingY = camera.position.y;
+        const standingDistance = controller.cameraDistance;
+
+        controller.land();
+        let lowest = 0;
+        const frames = Math.ceil((controller.landingDipDownSeconds + controller.landingDipUpSeconds) * 60) + 2;
+        for (let frame = 0; frame < frames; frame++) {
+            controller.update(1 / 60, position, terrain);
+            lowest = Math.min(lowest, camera.position.y - standingY);
+            expect(controller.cameraDistance).toBeCloseTo(standingDistance, 6);
+        }
+
+        // The third-person camera dips half as far as the first-person eye.
+        expect(lowest).toBeCloseTo(-0.125, 2);
+        expect(camera.position.y).toBeCloseTo(standingY, 6);
     });
 });

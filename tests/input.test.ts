@@ -247,6 +247,69 @@ describe('Input debug shortcuts', () => {
     });
 });
 
+describe('Input weapon selection', () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    function createInput() {
+        const windowListeners = new Map<string, EventListener>();
+        vi.stubGlobal('window', {
+            addEventListener: vi.fn((type: string, listener: EventListener) => windowListeners.set(type, listener)),
+        });
+        vi.stubGlobal('document', {
+            pointerLockElement: null,
+            addEventListener: vi.fn(),
+        });
+        // The key handlers identify text fields by constructor, which the node test environment
+        // does not provide.
+        vi.stubGlobal('HTMLInputElement', class {});
+        vi.stubGlobal('HTMLTextAreaElement', class {});
+        vi.stubGlobal('HTMLSelectElement', class {});
+        const onSelectWeapon = vi.fn();
+        const input = new Input({} as HTMLCanvasElement, { onSelectWeapon });
+        return { input, onSelectWeapon, windowListeners };
+    }
+
+    function press(windowListeners: Map<string, EventListener>, code: string, repeat = false): void {
+        windowListeners.get('keydown')?.({
+            code,
+            repeat,
+            target: null,
+            preventDefault: vi.fn(),
+        } as unknown as Event);
+    }
+
+    it('maps the number row and numpad to the two weapon slots', () => {
+        const { input, onSelectWeapon, windowListeners } = createInput();
+        input.pointerLocked = true;
+
+        press(windowListeners, 'Digit1');
+        expect(onSelectWeapon).toHaveBeenLastCalledWith(1);
+
+        press(windowListeners, 'Digit2');
+        expect(onSelectWeapon).toHaveBeenLastCalledWith(2);
+
+        press(windowListeners, 'Numpad1');
+        expect(onSelectWeapon).toHaveBeenLastCalledWith(1);
+
+        press(windowListeners, 'Numpad2');
+        expect(onSelectWeapon).toHaveBeenLastCalledWith(2);
+        expect(onSelectWeapon).toHaveBeenCalledTimes(4);
+    });
+
+    it('ignores repeated presses and presses outside pointer lock', () => {
+        const { input, onSelectWeapon, windowListeners } = createInput();
+
+        press(windowListeners, 'Digit1');
+        expect(onSelectWeapon).not.toHaveBeenCalled();
+
+        input.pointerLocked = true;
+        press(windowListeners, 'Digit2', true);
+        expect(onSelectWeapon).not.toHaveBeenCalled();
+    });
+});
+
 describe('readFlightGamepadInput', () => {
     it('returns neutral flight input without a gamepad', () => {
         expect(readFlightGamepadInput(null)).toEqual({

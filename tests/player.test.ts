@@ -13,6 +13,7 @@ import {
     isFullySubmerged,
     PET_ANIMATION_SECONDS,
     PLAYER_HEIGHT,
+    THIRD_PERSON_RIFLE_AIM_ANGLE,
     thrusterGlowStrength,
     wrenchCircleAngle,
     WRENCH_ATTACK_SECONDS,
@@ -1227,5 +1228,102 @@ describe('Player snapshot', () => {
         expect(snapshot.speed).toBeCloseTo(6);
         expect(snapshot.verticalSpeed).toBe(3);
         expect(snapshot.grounded).toBe(false);
+    });
+});
+
+describe('weapon switching', () => {
+    it('unlocks both weapons with the wrench hand-over and shows only the selected one', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        const rifle = player.group.getObjectByName('lightning-rifle');
+        expect(rifle).toBeInstanceOf(Group);
+        expect(rifle?.visible).toBe(false);
+        expect(player.isWrenchEquipped).toBe(false);
+        expect(player.isRifleEquipped).toBe(false);
+        expect(player.selectWeapon('rifle')).toBe(false);
+
+        player.setWrenchEquipped(true);
+        expect(player.equippedWeapon).toBe('wrench');
+        expect(player.isWrenchEquipped).toBe(true);
+        expect(player.isRifleEquipped).toBe(false);
+        expect(rifle?.visible).toBe(false);
+
+        expect(player.selectWeapon('rifle')).toBe(true);
+        expect(player.equippedWeapon).toBe('rifle');
+        expect(player.isWrenchEquipped).toBe(false);
+        expect(player.isRifleEquipped).toBe(true);
+        expect(rifle?.visible).toBe(true);
+        expect(player.group.getObjectByName('wrench')?.visible).toBe(false);
+
+        expect(player.selectWeapon('rifle')).toBe(false);
+    });
+
+    it('refuses wrench actions while the rifle is out', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        player.setWrenchEquipped(true);
+        expect(player.selectWeapon('rifle')).toBe(true);
+
+        expect(player.swingWrench()).toBe(false);
+        expect(player.beginWrenchHold()).toBe(false);
+        expect(player.startPetting(0)).toBe(false);
+        expect(player.isWrenchSwinging).toBe(false);
+    });
+
+    it('drops a swing and a hold when the rifle is drawn', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        player.setWrenchEquipped(true);
+        expect(player.swingWrench()).toBe(true);
+        player.update(0.1, NO_INPUT, 0, terrain);
+        expect(player.isWrenchSwinging).toBe(true);
+
+        expect(player.selectWeapon('rifle')).toBe(true);
+        expect(player.isWrenchSwinging).toBe(false);
+        expect(player.isWrenchHolding).toBe(false);
+        expect(player.isWrenchCharging).toBe(false);
+    });
+
+    it('shoulders the rifle in third person', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        const rifle = player.group.getObjectByName('lightning-rifle');
+        const arm = rifle?.parent;
+        expect(arm).toBeDefined();
+
+        player.setWrenchEquipped(true);
+        expect(player.selectWeapon('rifle')).toBe(true);
+        stepPlayer(player, terrain, 60);
+
+        expect(arm?.rotation.x).toBeCloseTo(THIRD_PERSON_RIFLE_AIM_ANGLE, 1);
+        // The arm flares away from the torso so the long rifle stays visible from behind.
+        expect(arm?.rotation.z).toBeGreaterThan(0.05);
+    });
+
+    it('moves the rifle to the other arm with the hand setting', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        const rifle = player.group.getObjectByName('lightning-rifle');
+        const firstArm = rifle?.parent;
+
+        player.setWrenchEquipped(true);
+        expect(player.selectWeapon('rifle')).toBe(true);
+        player.setLeftHanded(false);
+        expect(rifle?.parent).not.toBe(firstArm);
+    });
+
+    it('puts both weapons away when the hand-over is removed', () => {
+        const terrain = testTerrain();
+        const player = testPlayer(terrain);
+        player.setWrenchEquipped(true);
+        expect(player.selectWeapon('rifle')).toBe(true);
+
+        player.setWrenchEquipped(false);
+        expect(player.isWrenchEquipped).toBe(false);
+        expect(player.isRifleEquipped).toBe(false);
+
+        player.setWrenchEquipped(true);
+        expect(player.equippedWeapon).toBe('wrench');
+        expect(player.isWrenchEquipped).toBe(true);
     });
 });

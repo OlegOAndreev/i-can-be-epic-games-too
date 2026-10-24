@@ -39,6 +39,7 @@ export interface InputCallbacks {
     onToggleFullscreen?: () => void;
     onScreenshot?: () => void;
     onToggleView?: () => void;
+    onSelectWeapon?: (slot: 1 | 2) => void;
     onTogglePerformanceGraph?: () => void;
     onLogAudio?: () => void;
     onToggleMusic?: () => void;
@@ -339,6 +340,18 @@ export class Input {
         if (event.code === 'KeyV') {
             if (!event.repeat) {
                 this.callbacks.onToggleView?.();
+            }
+            return;
+        }
+        if (event.code === 'Digit1' || event.code === 'Numpad1') {
+            if (this.pointerLocked && !event.repeat) {
+                this.callbacks.onSelectWeapon?.(1);
+            }
+            return;
+        }
+        if (event.code === 'Digit2' || event.code === 'Numpad2') {
+            if (this.pointerLocked && !event.repeat) {
+                this.callbacks.onSelectWeapon?.(2);
             }
             return;
         }

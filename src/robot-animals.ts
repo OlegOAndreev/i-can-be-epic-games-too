@@ -71,7 +71,7 @@ const DISTANT_PACK_DISTANCE = 150;
 // A walkability query is only repeated after the animal has moved this far, or after the fallback
 // interval, whichever comes first. Both are well inside one terrain cell.
 const WALK_CHECK_DISTANCE = 0.4;
-const WALK_CHECK_INTERVAL = 0.12;
+const WALK_CHECK_INTERVAL = 0.1;
 // Headings tried to either side of a blocked step, in radians. Trees, boulders, and tower walls are
 // narrow, so a short detour keeps an animal moving instead of pinning it against whatever it faces.
 const WALK_DETOUR_ANGLES = [0.7, -0.7, 1.4, -1.4];

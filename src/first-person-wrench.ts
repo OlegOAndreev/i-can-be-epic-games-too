@@ -62,7 +62,7 @@ const VIEW_LAG_ROLL_LIMIT = 0.14;
 const VIEW_LAG_MAX_STEP = 1 / 120;
 // The viewmodel dips when the robot lands, then eases back over a fraction of a second.
 const LANDING_DIP_SECONDS = 0.25;
-const LANDING_DIP_HEIGHT = 0.06;
+const LANDING_DIP_HEIGHT = 0.1;
 const LANDING_DIP_SPEED_SCALE = 25;
 const LANDING_DIP_MIN_STRENGTH = 0.45;
 // A face plant parks the viewmodel below the frame until the robot is back on its feet.
@@ -355,8 +355,7 @@ export class FirstPersonWrench {
         this.lagPitchVelocity = 0;
     }
 
-    // Drops the viewmodel when the robot lands. Main calls this for both normal landings and the
-    // pre-touchdown jump grace, which snaps the player to the ground before impact.
+    // Drops the viewmodel when the robot lands.
     land(impactSpeed: number): void {
         const strength = clamp(impactSpeed / LANDING_DIP_SPEED_SCALE, LANDING_DIP_MIN_STRENGTH, 1);
         this.landingDipStrength = Math.max(this.landingDipStrength, strength);

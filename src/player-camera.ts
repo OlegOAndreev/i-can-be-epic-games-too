@@ -1,6 +1,5 @@
 import { MathUtils, PerspectiveCamera, Vector3 } from 'three';
 
-import { damp } from './math-utils';
 import type { Terrain } from './terrain';
 
 const MIN_PITCH = -1.35;
@@ -10,12 +9,6 @@ const FIRST_PERSON_MAX_PITCH = 1.45;
 // The robot's head top sits just under two metres once the model scale is applied. First person
 // rides at the crown rather than at chest height so the view clears the shoulders.
 export const FIRST_PERSON_EYE_HEIGHT = 1.9;
-// A jump starts at full vertical speed and a landing stops it in one frame. Following the eye with
-// a short first-order lag turns those two hard velocity changes into a brief ease in and out.
-const FIRST_PERSON_VERTICAL_FOLLOW = 50;
-// Respawns and world rebuilds move the player tens of metres between frames. Those must snap
-// instead of flying the camera through the world.
-const FIRST_PERSON_SNAP_DISTANCE = 2.5;
 // A hard landing puts the robot on its face. First person follows the head down to just above the
 // ground and tilts the view toward the dirt, then comes back up with the get-up animation. The
 // values match the model's own face-plant pose rather than the full 78-degree body tilt, which
@@ -26,6 +19,11 @@ export const THIRD_PERSON_DISTANCE = 7.2;
 // Shared with main.ts when constructing the walking camera. First person also uses it to keep the
 // eye a full near plane below low ceilings and ramp undersides.
 export const NEAR_Z = 0.3;
+// A ramp deck or ledge can sit just above the body while the player slides beneath it, which is
+// less clearance than the near plane needs. Lower the eye by this much at most, and keep the near
+// plane this far below whatever is overhead.
+const FIRST_PERSON_MIN_EYE_HEIGHT = 0.5;
+const FIRST_PERSON_CEILING_MARGIN = NEAR_Z + 0.15;
 // When the player is in a tight space (for example inside a tower), the camera may need to move
 // right up to the character instead of being pushed through a wall.
 const MIN_OCCLUDED_DISTANCE = 0;
@@ -49,6 +47,15 @@ const CAMERA_GROUND_MARGIN = 0.15;
 const OCCLUSION_CACHE_MOVE_SQUARED = 0.05 * 0.05;
 const OCCLUSION_CACHE_DIRECTION_DOT = 1 - 1e-12;
 const OCCLUSION_CACHE_LENGTH_EPSILON = 1e-4;
+// A landing drops the view briefly and returns it without oscillating. The descent is quicker than
+// the return so it reads as the body absorbing the impact rather than a bounce.
+const LANDING_DIP_DOWN_SECONDS = 0.2;
+const LANDING_DIP_UP_SECONDS = 0.4;
+// The first-person eye sits close to the ground, where a quarter of a metre reads as a heavy
+// landing. The third-person camera sits farther back, so it dips half as far to read the same. The
+// dip is applied after the ground clamp, so it can never push the camera through the floor.
+const FIRST_PERSON_LANDING_DIP_HEIGHT = 0.25;
+const THIRD_PERSON_LANDING_DIP_HEIGHT = FIRST_PERSON_LANDING_DIP_HEIGHT * 0.5;
 
 // Camera controller with an orbit-style third-person mode and a first-person mode, both driven by
 // pointer-locked mouse movement.
@@ -59,12 +66,11 @@ export class PlayerCamera {
     distance = THIRD_PERSON_DISTANCE;
     sensitivity = 0.0022;
     firstPerson = false;
+    landingDipDownSeconds = LANDING_DIP_DOWN_SECONDS;
+    landingDipUpSeconds = LANDING_DIP_UP_SECONDS;
 
     private target = new Vector3();
-    private smoothedTarget = new Vector3();
     private offset = new Vector3();
-    private targetInitialized = false;
-    private currentDistance = this.distance;
     private effectiveDistance = this.distance;
     private cachedOcclusionDistance = this.distance;
     private cachedOcclusionLength = this.distance;
@@ -72,8 +78,8 @@ export class PlayerCamera {
     private readonly cachedOcclusionTarget = new Vector3();
     private readonly cachedOcclusionDirection = new Vector3();
     private hasOcclusionCache = false;
-    private firstPersonEyeY = FIRST_PERSON_EYE_HEIGHT;
-    private firstPersonEyeInitialized = false;
+    private landingDipElapsed = 0;
+    private landingDipActive = false;
 
     constructor(camera: PerspectiveCamera) {
         this.camera = camera;
@@ -95,20 +101,14 @@ export class PlayerCamera {
         }
         this.firstPerson = firstPerson;
         this.pitch = this.clampPitch(this.pitch);
-        // Re-entering first person should start at the eye, not ease in from wherever the previous
-        // first-person camera (or the third-person camera) happened to be.
-        this.firstPersonEyeInitialized = false;
         if (!firstPerson) {
             this.snap();
         }
     }
 
     snap(): void {
-        this.targetInitialized = false;
-        this.currentDistance = this.distance;
         this.effectiveDistance = this.distance;
         this.hasOcclusionCache = false;
-        this.firstPersonEyeInitialized = false;
     }
 
     get cameraDistance(): number {
@@ -126,7 +126,38 @@ export class PlayerCamera {
         this.pitch = this.clampPitch(this.pitch + deltaY * this.sensitivity);
     }
 
+    // Drops the view when the robot lands. Only the camera moves: the robot's position, the orbit
+    // target and the aim direction are untouched.
+    land(): void {
+        this.landingDipElapsed = 0;
+        this.landingDipActive = true;
+    }
+
+    private landingDipOffset(dt: number): number {
+        if (!this.landingDipActive) {
+            return 0;
+        }
+        this.landingDipElapsed += dt;
+        const down = this.landingDipDownSeconds;
+        const up = this.landingDipUpSeconds;
+        if (this.landingDipElapsed >= down + up) {
+            this.landingDipActive = false;
+            return 0;
+        }
+
+        const height = this.firstPerson ? FIRST_PERSON_LANDING_DIP_HEIGHT : THIRD_PERSON_LANDING_DIP_HEIGHT;
+        if (this.landingDipElapsed < down) {
+            // Fast in, decelerating into the lowest point so there is no visible corner.
+            const progress = this.landingDipElapsed / down;
+            return -height * (1 - (1 - progress) * (1 - progress));
+        }
+        // Slower out and flat at both ends, so the view settles instead of springing past rest.
+        const progress = up > 0 ? (this.landingDipElapsed - down) / up : 1;
+        return -height * (1 - progress * progress * (3 - 2 * progress));
+    }
+
     update(dt: number, playerPosition: Vector3, terrain: Terrain, knockdownProgress = 0): void {
+        const landingDip = this.landingDipOffset(dt);
         if (this.firstPerson) {
             // The robot's face-plant is driven by the same 0..1 progress the viewmodel uses. Only
             // the first-person eye follows it; the third-person camera keeps its orbit height and
@@ -134,17 +165,11 @@ export class PlayerCamera {
             const knockdown = MathUtils.clamp(knockdownProgress, 0, 1);
             const eyeHeight =
                 FIRST_PERSON_EYE_HEIGHT + (FIRST_PERSON_KNOCKDOWN_EYE_HEIGHT - FIRST_PERSON_EYE_HEIGHT) * knockdown;
-            const targetEyeY = playerPosition.y + eyeHeight;
-            if (
-                !this.firstPersonEyeInitialized ||
-                Math.abs(targetEyeY - this.firstPersonEyeY) > FIRST_PERSON_SNAP_DISTANCE
-            ) {
-                this.firstPersonEyeY = targetEyeY;
-                this.firstPersonEyeInitialized = true;
-            } else {
-                this.firstPersonEyeY = damp(this.firstPersonEyeY, targetEyeY, FIRST_PERSON_VERTICAL_FOLLOW, dt);
-            }
-            this.camera.position.set(playerPosition.x, this.firstPersonEyeY, playerPosition.z);
+            this.camera.position.set(
+                playerPosition.x,
+                playerPosition.y + this.clearEyeHeight(playerPosition, terrain, eyeHeight) + landingDip,
+                playerPosition.z,
+            );
             const knockdownPitch = Math.min(
                 FIRST_PERSON_MAX_PITCH,
                 this.pitch + FIRST_PERSON_KNOCKDOWN_PITCH * knockdown,
@@ -155,36 +180,27 @@ export class PlayerCamera {
         }
 
         this.target.set(playerPosition.x, playerPosition.y + 1.45, playerPosition.z);
-        if (!this.targetInitialized) {
-            this.smoothedTarget.copy(this.target);
-            this.targetInitialized = true;
-        } else {
-            this.smoothedTarget.lerp(this.target, 1 - Math.exp(-18 * dt));
-        }
 
         const cosPitch = Math.cos(this.pitch);
         this.offset
             .set(Math.sin(this.yaw) * cosPitch, Math.sin(this.pitch), Math.cos(this.yaw) * cosPitch)
             .multiplyScalar(this.distance);
 
-        const allowedDistance = this.resolveOcclusion(this.smoothedTarget, this.offset, terrain);
-        if (allowedDistance < this.currentDistance) {
-            // Move in immediately when something blocks the view, then ease back out.
-            this.currentDistance = allowedDistance;
-        } else {
-            this.currentDistance += (allowedDistance - this.currentDistance) * (1 - Math.exp(-4 * dt));
-        }
+        const allowedDistance = this.resolveOcclusion(this.target, this.offset, terrain);
 
         this.offset.normalize();
-        this.camera.position.copy(this.smoothedTarget).addScaledVector(this.offset, this.currentDistance);
+        this.camera.position.copy(this.target).addScaledVector(this.offset, allowedDistance);
 
         // Follow the player below the water line; the walk surface already includes the seabed.
         const floor = terrain.walkSurfaceAt(this.camera.position.x, this.camera.position.z, this.camera.position.y);
-        this.camera.position.y = Math.max(
-            this.camera.position.y,
-            floor + Math.max(0.35, this.camera.near + CAMERA_GROUND_MARGIN),
-        );
-        this.effectiveDistance = this.camera.position.distanceTo(this.smoothedTarget);
+        const lowestAllowedY = floor + Math.max(0.35, this.camera.near + CAMERA_GROUND_MARGIN);
+        this.camera.position.y = Math.max(this.camera.position.y, lowestAllowedY);
+        this.effectiveDistance = this.camera.position.distanceTo(this.target);
+
+        // Lower the view after the ground clamp so the reported distance (used for the player fade)
+        // ignores the dip, then clamp again: the dip must not break the clearance guaranteed above.
+        // The look direction is derived from the camera's own position, so the pitch is unchanged.
+        this.camera.position.y = Math.max(this.camera.position.y + landingDip, lowestAllowedY);
 
         // Aim along the requested yaw/pitch instead of back at the target. When looking up, the
         // floor clamp raises the camera, and looking at the target would flatten the view again.
@@ -193,6 +209,19 @@ export class PlayerCamera {
             this.camera.position.y - Math.sin(this.pitch),
             this.camera.position.z - Math.cos(this.yaw) * cosPitch,
         );
+    }
+
+    // The horizontal move stops the body only when a ramp underside reaches its actual height, so
+    // the last half metre of headroom can be too tight for the near plane. Lower the eye under a
+    // low ceiling instead of blocking the player from walking beneath it. A normal room or a
+    // ramp's own deck is far enough above the probe to leave the eye at its rest height.
+    private clearEyeHeight(position: Vector3, terrain: Terrain, eyeHeight: number): number {
+        const ceiling = terrain.ceilingAt(position.x, position.z, position.y + FIRST_PERSON_MIN_EYE_HEIGHT, 0.1);
+        if (!Number.isFinite(ceiling)) {
+            return eyeHeight;
+        }
+        const allowed = ceiling - position.y - FIRST_PERSON_CEILING_MARGIN;
+        return Math.min(eyeHeight, Math.max(FIRST_PERSON_MIN_EYE_HEIGHT, allowed));
     }
 
     // March from the character toward the desired camera position and stop before entering a hill

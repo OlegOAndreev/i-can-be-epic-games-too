@@ -253,10 +253,10 @@ const MINERAL_BOB_HEIGHT = 0.1;
 const MINERAL_BOB_SPEED = 2.4;
 // Each dropped shard continuously sheds short-lived glints that drift off its surface.
 const MINERAL_SPARKLE_COUNT = 12;
-const MINERAL_SPARKLE_LIFETIME_MIN = 0.18;
-const MINERAL_SPARKLE_LIFETIME_MAX = 0.42;
-const MINERAL_SPARKLE_DELAY_MIN = 0.04;
-const MINERAL_SPARKLE_DELAY_MAX = 0.26;
+const MINERAL_SPARKLE_LIFETIME_MIN = 0.2;
+const MINERAL_SPARKLE_LIFETIME_MAX = 0.4;
+const MINERAL_SPARKLE_DELAY_MIN = 0.05;
+const MINERAL_SPARKLE_DELAY_MAX = 0.25;
 const MINERAL_SPARKLE_COLORS = [0xffffff, 0xd7ffe8, 0x5cffa6];
 // Several independently deformed boulder meshes are distributed across the world so neighbouring
 // rocks do not repeat the same silhouette.
@@ -1078,8 +1078,16 @@ export class Terrain {
     // Highest walkable surface at a position: terrain, seabed floor, the top of a megastructure
     // tier, or a ramp the player could be standing on. Water does not raise the floor, so the
     // player walks on the seabed when the ground drops below the water line. Callers that can step
-    // onto a ramp from an uneven approach can raise the ramp allowance.
-    walkSurfaceAt(x: number, z: number, feetY: number, rampStepHeight = STEP_HEIGHT): number {
+    // onto a ramp from an uneven approach can raise the ramp allowance. `underFrom` is the point
+    // the body is moving from: a ramp already above the body there is being walked under, so it
+    // must not become a step that snaps the body up through its underside.
+    walkSurfaceAt(
+        x: number,
+        z: number,
+        feetY: number,
+        rampStepHeight = STEP_HEIGHT,
+        underFrom: { x: number; z: number } | null = null,
+    ): number {
         let surface = this.heightAt(x, z);
         const bounds = this.getStructureBounds();
         if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) {
@@ -1122,6 +1130,12 @@ export class Terrain {
             const rampY = this.sampleRampHeight(ramp, x, z);
             if (rampY === null || rampY > feetY + maxRampStepHeight) {
                 continue;
+            }
+            if (underFrom) {
+                const current = this.sampleRampHeight(ramp, underFrom.x, underFrom.z);
+                if (current !== null && current > feetY + 0.05) {
+                    continue;
+                }
             }
             surface = Math.max(surface, rampY);
         }
@@ -1771,6 +1785,14 @@ export class Terrain {
                 // While on the walkway, the side rails keep the robot from stepping off the edge.
                 // The taller allowance treats a robot standing just below the low edge as being on
                 // the walkway, so it can step up instead of being pushed out of the ramp's side.
+                const insideFootprint =
+                    local.x > localMinX && local.x < localMaxX && local.z > localMinZ && local.z < localMaxZ;
+                // Under the deck, its underside is a ceiling: the vertical sweep already keeps the
+                // head out of it. Pushing horizontally here would shove the body out of the whole
+                // footprint, which reads as a dead stop in one walking direction only.
+                if (insideFootprint && local.y < rampY - RAMP_THICKNESS) {
+                    continue;
+                }
                 if (local.y >= rampY - RAMP_STEP_HEIGHT) {
                     if (local.y <= rampY + RAMP_PARAPET_HEIGHT) {
                         const localAlong = ramp.axis === 'x' ? local.x : local.z;

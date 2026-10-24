@@ -27,7 +27,7 @@ import {
     windowWallPair,
 } from '../src/megastructures';
 import type { CrownSpiral, MegastructureStorey } from '../src/megastructures';
-import { FIRST_PERSON_CEILING_CLEARANCE, PLAYER_HEIGHT } from '../src/player';
+import { PLAYER_CEILING_CLEARANCE, PLAYER_HEIGHT } from '../src/player';
 import { FIRST_PERSON_EYE_HEIGHT } from '../src/player-camera';
 import { findStructureBlockingPoint } from '../src/ramp-collision';
 import { SMOKE_RENDER_ORDER } from '../src/spaceship';
@@ -1456,7 +1456,7 @@ describe('megastructures', () => {
         const player = testPlayer(terrain, { moveSpeed: 5, jumpSpeed: 12, gravity: 26 });
         player.restoreSnapshot({
             x,
-            y: slab.baseY - 2.4,
+            y: slab.baseY - 3.0,
             z,
             facing: 0,
             speed: 0,
@@ -1470,9 +1470,10 @@ describe('megastructures', () => {
             highestHead = Math.max(highestHead, player.group.position.y + PLAYER_HEIGHT);
         }
 
-        expect(highestHead).toBeLessThanOrEqual(slab.baseY + 1e-6);
+        expect(highestHead).toBeLessThanOrEqual(slab.baseY - PLAYER_CEILING_CLEARANCE + 1e-6);
 
-        // First person also keeps the camera's near plane off the slab, not just the head.
+        // First person shares the same collision height. Its eye sits below the crown, so it stops
+        // even lower than the slab.
         const firstPersonPlayer = testPlayer(terrain, { moveSpeed: 5, jumpSpeed: 12, gravity: 26 });
         firstPersonPlayer.restoreSnapshot({
             x,
@@ -1490,9 +1491,9 @@ describe('megastructures', () => {
             highestEye = Math.max(highestEye, firstPersonPlayer.group.position.y + FIRST_PERSON_EYE_HEIGHT);
         }
 
-        const minimumEyeClearance = FIRST_PERSON_CEILING_CLEARANCE + (PLAYER_HEIGHT - FIRST_PERSON_EYE_HEIGHT);
-        expect(highestEye).toBeLessThanOrEqual(slab.baseY - minimumEyeClearance + 1e-6);
-        expect(highestEye).toBeGreaterThan(slab.baseY - minimumEyeClearance - 0.05);
+        const eyeClearance = PLAYER_CEILING_CLEARANCE + (PLAYER_HEIGHT - FIRST_PERSON_EYE_HEIGHT);
+        expect(highestEye).toBeLessThanOrEqual(slab.baseY - eyeClearance + 1e-6);
+        expect(highestEye).toBeGreaterThan(slab.baseY - eyeClearance - 0.05);
     });
 
     it('detects metal decks and tower interiors for footsteps and reverb', () => {

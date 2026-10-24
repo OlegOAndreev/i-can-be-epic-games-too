@@ -16,12 +16,15 @@ import { DetectorPulse } from './detector-pulse';
 import type { Difficulty } from './enemies';
 import { moveCharacterHorizontally, moveCharacterVertically } from './character-physics';
 import { GLOW_RING_TEXTURE_INNER_RADIUS } from './glow';
+import { RIFLE_ARC_REFRESH_SECONDS, RIFLE_ENERGY_BASE_INTENSITY } from './lightning-rifle';
 import { angleDelta, clamp, damp, dampAngle, smoothstep } from './math-utils';
+import { PressBuffer } from './press-buffer';
 import {
     ANTENNA_IDLE_HALO_OPACITY,
     ANTENNA_IDLE_HALO_SCALE,
     ANTENNA_TIP_RADIUS,
     buildPlayerModel,
+    mountRifle,
     mountWrench,
     THRUSTER_BASE_GLOW,
     THRUSTER_BASE_HALO_OPACITY,
@@ -46,6 +49,15 @@ export interface PlayerInput {
     jump: boolean;
 }
 
+// Exponential follow rates (1/s). Acceleration applies while movement input is held; deceleration
+// applies while it is released.
+export interface MovementCoefficients {
+    groundAcceleration: number;
+    airAcceleration: number;
+    groundDeceleration: number;
+    airDeceleration: number;
+}
+
 export interface PlayerSnapshot {
     x: number;
     y: number;
@@ -55,6 +67,12 @@ export interface PlayerSnapshot {
     verticalSpeed: number;
     grounded: boolean;
 }
+
+export type Weapon = 'wrench' | 'rifle';
+// The third-person rifle is carried at low ready: the arm is lowered so the stock and receiver stay
+// visible from behind, and flared out sideways so the long body clears the torso.
+export const THIRD_PERSON_RIFLE_AIM_ANGLE = -1.1;
+export const THIRD_PERSON_RIFLE_OUTWARD = 0.16;
 
 // One extra jump is available while airborne. It is refilled whenever the player is grounded.
 const MAX_AIR_JUMPS = 1;
@@ -75,20 +93,16 @@ export const FIRST_PERSON_WRENCH_STRIKE_ARC = (FIRST_PERSON_DEFAULT_FOV * Math.P
 // Third person keeps the wide difficulty arcs, so its regular swing reaches a little further than
 // the first-person one, which swings its narrower default-FOV cone at the base reach.
 export const THIRD_PERSON_WRENCH_REACH_SCALE = 1.2;
-// A jump pressed while falling this close (in seconds) to touchdown counts as a ground jump, so a
-// press that lands a frame before touchdown still launches the robot instead of being eaten.
-const JUMP_LANDING_GRACE_SECONDS: Record<Difficulty, number> = {
-    peaceful: 0.4,
-    easy: 0.4,
-    medium: 0.2,
-    hard: 0.2,
-};
+// A jump pressed while falling with no air jump left is remembered this long, so a press that
+// arrives a frame before touchdown still launches the robot instead of being eaten. The buffer
+// fires on the landing frame itself, after the normal landing effects have run.
+export const JUMP_BUFFER_SECONDS = 0.2;
 export const PLAYER_RADIUS = 0.5;
 export const PLAYER_HEIGHT = 2.0;
-// The first-person eye sits 0.1 m below the top of the collision capsule. Stop the body this much
-// short of ceilings and ramp undersides in first person so the near plane cannot cut into them.
-// This makes the effective first-person ceiling height 2.45 m and leaves the eye 0.55 m clear.
-export const FIRST_PERSON_CEILING_CLEARANCE = 0.45;
+// Both views stop the body this much short of ceilings and ramp undersides. In first person this
+// keeps the near plane off the surface; third person reserves the same space so the two modes cannot
+// take different routes through a tight gap. The effective ceiling height is 2.45 m.
+export const PLAYER_CEILING_CLEARANCE = 0.45;
 // `position` is the robot's feet. Once the whole body is below the water line, surface splashes and
 // wake foam above it would be out of place.
 export function isFullySubmerged(position: Vector3): boolean {
@@ -98,7 +112,7 @@ const LANDING_EFFECT_THRESHOLD = 3.5;
 // Megastructure towers stand about 60-80 metres tall, so the threshold sits at roughly half a
 // tower's height (~31 metres of fall). Ordinary hills and double jumps stay well below it.
 export const HARD_LANDING_SPEED = 40;
-const KNOCKDOWN_FALL_SECONDS = 0.24;
+const KNOCKDOWN_FALL_SECONDS = 0.3;
 const KNOCKDOWN_HOLD_SECONDS = 0.5;
 const KNOCKDOWN_GET_UP_SECONDS = 0.7;
 const KNOCKDOWN_TILT = 1.36;
@@ -106,7 +120,22 @@ const KNOCKDOWN_TOTAL_SECONDS = KNOCKDOWN_FALL_SECONDS + KNOCKDOWN_HOLD_SECONDS 
 const LANDING_BOOST_GAIN = 1.5;
 const MAX_LANDING_BOOST = 7.5;
 const LANDING_BOOST_IMPULSE = 2.0;
-const LANDING_BOOST_DECAY = 0.7;
+// Most player controls are frame-rate independent: horizontal acceleration and deceleration use the
+// closed-form 1 - exp(-rate * dt), and the landing-boost decay and turn damping use exp(-rate * dt)
+// rather than a raw per-frame delta. The near-zero cutoffs below are the deliberate exception: they
+// compare instantaneous speed against a threshold, so they can fire one frame earlier or later at
+// different frame rates. That difference is bounded by a single frame and never accumulates.
+// The landing bonus fades quickly while walking so a hop's extra speed settles back to the normal
+// move speed instead of lingering for seconds. Chained jumps still refresh it on each landing.
+const LANDING_BOOST_DECAY = 4;
+// A bonus within 10% of the base speed is visually indistinguishable from normal movement. Snap it
+// to zero there instead of letting the exponential tail leave a sub-1 m/s boost for another second.
+const LANDING_BOOST_SNAP_FRACTION = 0.1;
+// Exponential decay only approaches zero asymptotically. Once a grounded, input-free robot is this
+// close to stopping, clear the remainder so it does not visibly glide through the last few
+// centimetres. This is a speed threshold, not a per-frame subtraction, so the stop point does not
+// depend on the frame rate.
+const MOVEMENT_STOP_SPEED = 1.0;
 // The rear thruster dots glow softly while idle and flare up past this speed.
 const THRUSTER_GLOW_SPEED = 11;
 const THRUSTER_GLOW_FULL_SPEED = 19;
@@ -121,6 +150,12 @@ const WALK_LEAN = Math.PI / 12;
 const TURN_GAIN = 11;
 const GROUND_TURN_ACCELERATION = TURN_GAIN * 2;
 const AIR_TURN_ACCELERATION = GROUND_TURN_ACCELERATION / 2;
+export const DEFAULT_MOVEMENT_COEFFICIENTS: MovementCoefficients = {
+    groundAcceleration: 12,
+    airAcceleration: 5,
+    groundDeceleration: 12,
+    airDeceleration: 1,
+};
 // Regular swing duration. The first- and third-person animations both run off this timer, and the
 // charged spin below scales from it as well.
 export const WRENCH_ATTACK_SECONDS = 0.45;
@@ -131,7 +166,7 @@ export const WRENCH_CHARGED_ATTACK_SECONDS = (WRENCH_ATTACK_SECONDS * 2) / 1.2;
 export const WRENCH_STRIKE_PORTION = 1 / 3;
 // An attack press in the last moments of a swing is remembered, so a press meant for the next
 // strike is not lost while the previous animation finishes. The next hold starts when it ends.
-export const WRENCH_PRESS_BUFFER_SECONDS = 0.25;
+export const WRENCH_PRESS_BUFFER_SECONDS = 0.2;
 // One button drives both strikes: the press starts a hold and the release swings. Holding past
 // WRENCH_CHARGE_START_SECONDS begins filling the charge, so a tap or a short hold swings the
 // regular strike and only a longer hold reaches the charged spin.
@@ -210,10 +245,10 @@ export class Player {
     // Fires whenever a charge begins, including one remembered from a press that arrived in the
     // last moments of the previous swing.
     onWrenchChargeStart: (() => void) | null = null;
-    // Fires when a jump press is accepted just before touchdown, with the ground contact point
-    // and the speed the robot would have hit at. Main uses it to leave the same footprint, dust,
-    // and sound as a normal landing.
-    onLandingGrace: ((position: Vector3, impactSpeed: number) => void) | null = null;
+
+    // How long a press with nothing left to act on is remembered. Exposed in the advanced settings.
+    jumpBufferSeconds = JUMP_BUFFER_SECONDS;
+    wrenchBufferSeconds = WRENCH_PRESS_BUFFER_SECONDS;
 
     private visual: Group;
     private upperBody: Group;
@@ -224,7 +259,20 @@ export class Player {
     private wrench: Group;
     private wrenchTips: Group[];
     private wrenchJawCenter: Group;
+    private rifle: Group;
+    private rifleEnergyMaterial: MeshStandardMaterial;
+    private rifleArc: Group;
+    private rifleArcMesh: Mesh;
+    private rifleArcMaterial: MeshBasicMaterial;
+    private readonly rifleArcGeometries: BufferGeometry[];
+    private rifleArcVariant = 0;
+    private rifleArcTimer = 0;
+    private rifleAimBlend = 0;
+    private riflePop = 0;
     private wrenchPop = 0;
+    // Both weapons are unlocked by the caretakers' hand-over, but only the selected one is visible.
+    private weapon: Weapon = 'wrench';
+    private wrenchUnlocked = false;
     private wrenchAttackElapsed = -1;
     private wrenchStrikeFired = false;
     private wrenchSpinCheckFired = false;
@@ -237,7 +285,7 @@ export class Player {
     private wrenchHoldElapsed = 0;
     private wrenchSwingCharged = false;
     private wrenchSwingStartYaw = 0;
-    private wrenchPressBuffered = false;
+    private readonly wrenchPressBuffer = new PressBuffer();
     private wrenchBoltMesh: Mesh;
     private wrenchBoltMaterial: MeshBasicMaterial;
     private readonly wrenchBoltGeometries: BufferGeometry[];
@@ -248,11 +296,15 @@ export class Player {
     private readonly leftArmRestZ: number;
     // The original pose hangs the wrench from the hand that renders on the left of the screen.
     private leftHanded = true;
+    private movementCoefficients: MovementCoefficients = DEFAULT_MOVEMENT_COEFFICIENTS;
     private velocity = new Vector3();
     private turnVelocity = 0;
     private verticalVelocity = 0;
     private grounded = true;
     private airJumpsRemaining = MAX_AIR_JUMPS;
+    private readonly jumpPressBuffer = new PressBuffer();
+    // Own clock for the press buffers, so their windows stay independent of the frame rate.
+    private elapsed = 0;
     private walkPhase = 0;
     private idleTime = 0;
     private landingBoost = 0;
@@ -322,6 +374,12 @@ export class Player {
         this.wrench = model.wrench;
         this.wrenchTips = model.wrenchTips;
         this.wrenchJawCenter = model.wrenchJawCenter;
+        this.rifle = model.rifle;
+        this.rifleEnergyMaterial = model.rifleEnergyMaterial;
+        this.rifleArc = model.rifleArc;
+        this.rifleArcMesh = model.rifleArcMesh;
+        this.rifleArcMaterial = model.rifleArcMaterial;
+        this.rifleArcGeometries = model.rifleArcGeometries;
         this.rightArmRestZ = this.rightArm.rotation.z;
         this.leftArmRestZ = this.leftArm.rotation.z;
         this.glowMaterial = model.glowMaterial;
@@ -472,9 +530,18 @@ export class Player {
         );
     }
 
-    // True once the caretakers have handed the wrench over. The first-person viewmodel follows it.
+    // True once the caretakers have handed the weapons over. The first-person viewmodels follow
+    // the selection, so only the active weapon reports itself as equipped.
     get isWrenchEquipped(): boolean {
         return this.wrench.visible;
+    }
+
+    get isRifleEquipped(): boolean {
+        return this.rifle.visible;
+    }
+
+    get equippedWeapon(): Weapon {
+        return this.weapon;
     }
 
     private get wrenchSwingSeconds(): number {
@@ -503,18 +570,50 @@ export class Player {
     }
 
     setWrenchEquipped(equipped: boolean): void {
-        if (equipped && !this.wrench.visible) {
-            this.wrenchPop = 0;
-            this.wrench.scale.setScalar(0.01);
-        }
+        const wasUnlocked = this.wrenchUnlocked;
+        this.wrenchUnlocked = equipped;
         if (!equipped) {
             this.stopWrenchAttack();
             this.stopPetting();
         }
-        this.wrench.visible = equipped;
+        if (equipped && !wasUnlocked) {
+            // A fresh hand-over always starts with the wrench in hand.
+            this.weapon = 'wrench';
+            this.wrenchPop = 0;
+            this.wrench.scale.setScalar(0.01);
+            this.riflePop = 0;
+            this.rifle.scale.setScalar(0.01);
+        }
+        this.syncWeaponVisibility();
     }
 
-    // Swaps the third-person wrench between the robot's hands. Any swing or pet in progress is
+    // Switches between the wrench and the rifle. Returns false when the weapons are still locked or
+    // the requested weapon is already out. Switching always drops a charge, swing, or pet so the
+    // old animation cannot carry over to the weapon that replaces it.
+    selectWeapon(weapon: Weapon): boolean {
+        if (!this.wrenchUnlocked || weapon === this.weapon) {
+            return false;
+        }
+        this.stopWrenchAttack();
+        this.stopPetting();
+        this.weapon = weapon;
+        if (weapon === 'rifle') {
+            this.riflePop = 0;
+            this.rifle.scale.setScalar(0.01);
+        } else {
+            this.wrenchPop = 0;
+            this.wrench.scale.setScalar(0.01);
+        }
+        this.syncWeaponVisibility();
+        return true;
+    }
+
+    private syncWeaponVisibility(): void {
+        this.wrench.visible = this.wrenchUnlocked && this.weapon === 'wrench';
+        this.rifle.visible = this.wrenchUnlocked && this.weapon === 'rifle';
+    }
+
+    // Swaps the third-person weapons between the robot's hands. Any swing or pet in progress is
     // dropped so the arm pose does not carry over to the other side.
     setLeftHanded(leftHanded: boolean): void {
         if (leftHanded === this.leftHanded) {
@@ -524,6 +623,7 @@ export class Player {
         this.stopWrenchAttack();
         this.stopPetting();
         mountWrench(this.wrench, this.leftArm, this.rightArm, leftHanded);
+        mountRifle(this.rifle, this.leftArm, this.rightArm, leftHanded);
     }
 
     // Called once for every detector beep. interval is the time until the next beep, so a pulse
@@ -568,10 +668,13 @@ export class Player {
         );
     }
 
-    // Sets the difficulty that tunes the input leniency: easier settings let a jump pressed shortly
-    // before touchdown count as a ground jump.
+    // Sets the difficulty that scales the wrench strike arc.
     setDifficulty(difficulty: Difficulty): void {
         this.difficulty = difficulty;
+    }
+
+    setMovementCoefficients(coefficients: MovementCoefficients): void {
+        this.movementCoefficients = coefficients;
     }
 
     // Starts a wrench hold from the attack press. The swing itself waits for the release, so a tap
@@ -603,11 +706,11 @@ export class Player {
             this.destroyed ||
             !this.wrench.visible ||
             this.knockdownActive ||
-            this.wrenchSwingSeconds - this.wrenchAttackElapsed > WRENCH_PRESS_BUFFER_SECONDS
+            this.wrenchSwingSeconds - this.wrenchAttackElapsed > this.wrenchBufferSeconds
         ) {
             return false;
         }
-        this.wrenchPressBuffered = true;
+        this.wrenchPressBuffer.press(this.elapsed, this.wrenchBufferSeconds);
         return true;
     }
 
@@ -665,7 +768,7 @@ export class Player {
         this.wrenchHolding = false;
         this.wrenchHoldElapsed = 0;
         // A pause or an interruption also drops a press that was waiting for the swing to end.
-        this.wrenchPressBuffered = false;
+        this.wrenchPressBuffer.clear();
         this.cancelWrenchCharge();
     }
 
@@ -715,7 +818,7 @@ export class Player {
         this.wrenchSwingCharged = false;
         this.wrenchHolding = false;
         this.wrenchHoldElapsed = 0;
-        this.wrenchPressBuffered = false;
+        this.wrenchPressBuffer.clear();
         this.wrenchBoltMesh.visible = false;
         this.wrenchArm.rotation.set(0, 0, this.wrenchArmRestZ);
         this.offArm.rotation.set(0, 0, this.offArmRestZ);
@@ -914,6 +1017,7 @@ export class Player {
 
     private resetPose(): void {
         this.stopPetting();
+        this.jumpPressBuffer.clear();
         this.airJumpsRemaining = MAX_AIR_JUMPS;
         this.turnVelocity = 0;
         this.walkPhase = 0;
@@ -940,6 +1044,7 @@ export class Player {
         if (this.destroyed) {
             return;
         }
+        this.elapsed += dt;
         const position = this.group.position;
 
         // A hard landing briefly takes control away while the robot picks itself up. The timer keeps
@@ -952,11 +1057,12 @@ export class Player {
             }
         }
 
-        // First person rides at eye height rather than at the crown of the capsule, so stop the head
-        // short of ceilings and ramp undersides. This only affects the upward stop: horizontal
-        // collision keeps the real body height, so a ramp that physically fits can be walked under
-        // without the camera margin pushing the body sideways out of its footprint.
-        const ceilingHeight = PLAYER_HEIGHT + (firstPerson && !knockedDown ? FIRST_PERSON_CEILING_CLEARANCE : 0);
+        // Both views reserve the same clearance below ceilings and ramp undersides. In first person
+        // it keeps the near plane clear; in third person it keeps the visible body and the routes it
+        // can take identical to first person. This is a vertical margin only: the horizontal move
+        // below is limited by the robot's actual body, so brushing a sloped underside with its head
+        // slides it along instead of stopping it dead.
+        const ceilingHeight = PLAYER_HEIGHT + (knockedDown ? 0 : PLAYER_CEILING_CLEARANCE);
 
         // Petting is a short scripted gesture. A knockdown interrupts it without awarding the
         // follow-up, which is why the completion callback lives here rather than at the input site.
@@ -983,26 +1089,38 @@ export class Player {
         }
 
         const inWater = position.y < WATER_LEVEL - 0.1;
+        const baseSpeed = this.settings.moveSpeed * (inWater ? 0.6 : 1);
 
         // Momentum fades while touching the ground, but survives while airborne so chained jumps build speed.
         if (this.grounded) {
             this.airJumpsRemaining = MAX_AIR_JUMPS;
             this.landingBoost *= Math.exp(-LANDING_BOOST_DECAY * dt);
-            if (this.landingBoost < 0.02) {
+            if (this.landingBoost < baseSpeed * LANDING_BOOST_SNAP_FRACTION) {
                 this.landingBoost = 0;
             }
         }
 
         const hasInput = !knockedDown && !petting && inputLength > 0.01;
-        const baseSpeed = this.settings.moveSpeed * (inWater ? 0.6 : 1);
         const targetSpeed = hasInput ? baseSpeed + this.landingBoost : 0;
 
-        // Release input and the robot keeps drifting for a moment instead of stopping dead.
-        const acceleration = knockedDown ? 12 : this.grounded ? (hasInput ? 16 : 10) : 8;
+        // Release input and the robot keeps drifting for a moment instead of stopping dead. A
+        // knockdown is treated as grounded deceleration even while falling.
+        const onGround = this.grounded || knockedDown;
+        const acceleration = hasInput
+            ? onGround
+                ? this.movementCoefficients.groundAcceleration
+                : this.movementCoefficients.airAcceleration
+            : onGround
+              ? this.movementCoefficients.groundDeceleration
+              : this.movementCoefficients.airDeceleration;
         const blend = 1 - Math.exp(-acceleration * dt);
 
         this.velocity.x += (directionX * targetSpeed - this.velocity.x) * blend;
         this.velocity.z += (directionZ * targetSpeed - this.velocity.z) * blend;
+
+        if (!hasInput && this.grounded && Math.hypot(this.velocity.x, this.velocity.z) < MOVEMENT_STOP_SPEED) {
+            this.velocity.set(0, 0, 0);
+        }
 
         // The crown's shock is a separate impulse, so the player's input cannot simply walk out of
         // it. It decays linearly over the same window as a caretaker's hit knockback.
@@ -1022,9 +1140,6 @@ export class Player {
         const motion = moveCharacterHorizontally(position, this.velocity, this.grounded, dt, terrain, {
             radius: PLAYER_RADIUS,
             height: PLAYER_HEIGHT,
-            // First person blocks at the same eye-safe height as the jump ceiling stop, so the
-            // near plane and its corners stay below a sloped underside.
-            blockHeight: firstPerson && !knockedDown ? ceilingHeight : PLAYER_HEIGHT,
             rampStepHeight: RAMP_STEP_HEIGHT,
             worldLimit: limit,
             actorColliders,
@@ -1035,31 +1150,13 @@ export class Player {
         if (motion.fellOffLedge) {
             this.verticalVelocity = 0;
         }
-        const ground = motion.groundHeight;
-
-        // A press just before touchdown counts as a ground jump. "Before" is measured in time to
-        // impact under the current fall speed, not in metres, so a fast fall is forgiven from
-        // further up. The feet are snapped to the ground first so the takeoff reads exactly like
-        // one started while standing: a normal footstep and jump sound, and no double-jump effects.
-        const landingPrediction = this.predictLanding(ground);
-        const landingGrace = !this.grounded && landingPrediction.time <= JUMP_LANDING_GRACE_SECONDS[this.difficulty];
 
         // The ground jump leaves one air jump available. A second press while airborne consumes it,
         // without touching the landing boost so chained-jump speed carries through the double jump.
+        // A press with nothing left to act on is remembered for jumpBufferSeconds and fires on the
+        // landing frame below, so a press that arrives just before touchdown is not lost.
         if (!knockedDown && !petting && input.jump) {
-            if (this.grounded || landingGrace) {
-                if (landingGrace) {
-                    position.y = ground;
-                    // The robot would have landed a moment later, so award the same forward shove
-                    // and stacked speed bonus a normal landing gives. This keeps chained jumps
-                    // accelerating even when every press is forgiven just before touchdown.
-                    const hardLanding =
-                        landingPrediction.impactSpeed >= HARD_LANDING_SPEED && position.y >= WATER_LEVEL - 0.05;
-                    if (landingPrediction.impactSpeed > LANDING_EFFECT_THRESHOLD && !hardLanding) {
-                        this.applyLandingBoost();
-                    }
-                    this.onLandingGrace?.(position, landingPrediction.impactSpeed);
-                }
+            if (this.grounded) {
                 this.jumpFromGround();
             } else if (this.airJumpsRemaining > 0) {
                 this.airJumpsRemaining--;
@@ -1067,6 +1164,8 @@ export class Player {
                 this.leftArmForward = !this.leftArmForward;
                 this.onJump?.(true);
                 this.onDoubleJump?.(position);
+            } else {
+                this.jumpPressBuffer.press(this.elapsed, this.jumpBufferSeconds);
             }
         }
 
@@ -1093,6 +1192,7 @@ export class Player {
                         this.knockdownElapsed = 0;
                         this.velocity.x *= 0.25;
                         this.velocity.z *= 0.25;
+                        this.jumpPressBuffer.clear();
                     } else {
                         this.applyLandingBoost();
                     }
@@ -1100,6 +1200,13 @@ export class Player {
                     this.onLanded?.(position, impactSpeed);
                 }
             }
+        }
+
+        // A remembered press launches from the ground on the frame the robot touches down. The
+        // landing above has already run its effects, so a buffered jump and a standing jump are
+        // indistinguishable from the outside.
+        if (!this.knockdownActive && !petting && this.grounded && this.jumpPressBuffer.take(this.elapsed)) {
+            this.jumpFromGround();
         }
 
         const horizontalSpeed = Math.hypot(this.velocity.x + shockKnockbackX, this.velocity.z + shockKnockbackZ);
@@ -1144,47 +1251,31 @@ export class Player {
     }
 
     private jumpFromGround(): void {
-        // Starting from the ground always refills the air jump, including when the press was
-        // accepted as a landing grace shortly before touchdown.
+        // Starting from the ground always refills the air jump.
         this.airJumpsRemaining = MAX_AIR_JUMPS;
         this.verticalVelocity = this.settings.jumpSpeed;
         this.grounded = false;
         this.leftArmForward = !this.leftArmForward;
+        this.jumpPressBuffer.clear();
         this.onJump?.(false);
     }
 
     // Each qualifying landing adds a forward impulse and stacks a speed bonus, so chained jumps
-    // build momentum. The landing grace uses it too when it substitutes for an actual touchdown.
+    // build momentum.
     private applyLandingBoost(): void {
         this.landingBoost = Math.min(MAX_LANDING_BOOST, this.landingBoost + LANDING_BOOST_GAIN);
 
-        let forwardX = Math.sin(this.group.rotation.y);
-        let forwardZ = Math.cos(this.group.rotation.y);
+        // Only push along momentum the robot already has. At a standstill there is no direction to
+        // preserve, and falling back to the facing direction would make a jump in place drift forward.
         const landingSpeed = Math.hypot(this.velocity.x, this.velocity.z);
-        if (landingSpeed > 0.5) {
-            forwardX = this.velocity.x / landingSpeed;
-            forwardZ = this.velocity.z / landingSpeed;
+        if (landingSpeed <= MOVEMENT_STOP_SPEED) {
+            return;
         }
 
-        this.velocity.x += forwardX * LANDING_BOOST_IMPULSE;
-        this.velocity.z += forwardZ * LANDING_BOOST_IMPULSE;
-    }
-
-    // Ballistic time and impact speed for reaching the given ground height. The time is Infinity
-    // when the robot is rising or already at/below the ground, so those frames cannot trigger the
-    // landing grace.
-    private predictLanding(ground: number): { time: number; impactSpeed: number } {
-        const height = this.group.position.y - ground;
-        const velocity = this.verticalVelocity;
-        const gravity = this.settings.gravity;
-        if (velocity >= 0 || height < 0 || gravity <= 0) {
-            return { time: Number.POSITIVE_INFINITY, impactSpeed: 0 };
-        }
-        const speedSquared = velocity * velocity + 2 * gravity * height;
-        return {
-            time: (velocity + Math.sqrt(speedSquared)) / gravity,
-            impactSpeed: Math.sqrt(speedSquared),
-        };
+        const impulseX = (this.velocity.x / landingSpeed) * LANDING_BOOST_IMPULSE;
+        const impulseZ = (this.velocity.z / landingSpeed) * LANDING_BOOST_IMPULSE;
+        this.velocity.x += impulseX;
+        this.velocity.z += impulseZ;
     }
 
     private animate(dt: number, horizontalSpeed: number): void {
@@ -1269,11 +1360,29 @@ export class Player {
             rightArmTarget = -breathing;
         }
 
+        if (this.rifle.visible && !petting && lying <= 0.001) {
+            // The rifle is carried at low ready while walking, jumping, and idling. The off arm keeps
+            // its usual swing so the robot still reads as moving rather than aiming rigidly.
+            if (this.leftHanded) {
+                rightArmTarget = THIRD_PERSON_RIFLE_AIM_ANGLE;
+            } else {
+                leftArmTarget = THIRD_PERSON_RIFLE_AIM_ANGLE;
+            }
+        }
+        this.rifleAimBlend = damp(this.rifleAimBlend, this.rifle.visible && !petting && lying <= 0.001 ? 1 : 0, 12, dt);
+
         const poseBlend = 1 - Math.exp(-14 * dt);
         this.leftLeg.rotation.x += (leftLegTarget - this.leftLeg.rotation.x) * poseBlend;
         this.rightLeg.rotation.x += (rightLegTarget - this.rightLeg.rotation.x) * poseBlend;
         this.leftArm.rotation.x += (leftArmTarget - this.leftArm.rotation.x) * poseBlend;
         this.rightArm.rotation.x += (rightArmTarget - this.rightArm.rotation.x) * poseBlend;
+        if (!petting && lying <= 0.001) {
+            // Flaring the elbow outward keeps the long rifle out of the torso silhouette from the
+            // default camera, which sits almost directly behind the robot.
+            const outward = this.leftHanded ? 1 : -1;
+            this.wrenchArm.rotation.z =
+                this.wrenchArmRestZ + outward * THIRD_PERSON_RIFLE_OUTWARD * this.rifleAimBlend;
+        }
 
         if (petting) {
             // Reach straight ahead, then sweep the extended arm left and right twice. Rotating the
@@ -1311,7 +1420,7 @@ export class Player {
                 }
                 if (this.wrenchAttackElapsed >= this.wrenchSwingSeconds) {
                     const charged = this.wrenchSwingCharged;
-                    const bufferedPress = this.wrenchPressBuffered;
+                    const bufferedPress = this.wrenchPressBuffer.take(this.elapsed);
                     if (charged) {
                         // Finish on the exact starting facing so a slow final frame cannot leave the
                         // robot a few degrees off after the full turn.
@@ -1347,7 +1456,13 @@ export class Player {
             const pop = 1 - (1 - this.wrenchPop) ** 3;
             this.wrench.scale.setScalar(0.01 + 0.99 * pop);
         }
+        if (this.rifle.visible) {
+            this.riflePop = Math.min(1, this.riflePop + dt * 7);
+            const pop = 1 - (1 - this.riflePop) ** 3;
+            this.rifle.scale.setScalar(0.01 + 0.99 * pop);
+        }
         this.updateWrenchBolts(dt);
+        this.updateRifleEffects(dt);
 
         const bobTarget = this.grounded ? Math.abs(Math.sin(this.walkPhase)) * 0.055 * movingRatio : 0.025;
         const speedRatio = Math.min(1.5, horizontalSpeed / Math.max(this.settings.moveSpeed, 0.01));
@@ -1410,6 +1525,29 @@ export class Player {
             active *
             Math.min(1, ringProgress / 0.12) *
             (1 - ringProgress);
+    }
+
+    // The rifle's exposed coil and muzzle arc keep breathing while it is out. The arc geometry is
+    // swapped like the charging wrench's bolts so it reads as live electricity rather than a decal.
+    private updateRifleEffects(dt: number): void {
+        const active = this.rifle.visible;
+        this.rifleArc.visible = active;
+        if (!active) {
+            this.rifleArcTimer = 0;
+            return;
+        }
+
+        this.rifleArcTimer -= dt;
+        if (this.rifleArcTimer <= 0) {
+            this.rifleArcTimer = RIFLE_ARC_REFRESH_SECONDS;
+            this.rifleArcVariant = (this.rifleArcVariant + 1) % this.rifleArcGeometries.length;
+            this.rifleArcMesh.geometry = this.rifleArcGeometries[this.rifleArcVariant];
+            this.rifleArc.rotation.z = Math.random() * Math.PI * 2;
+            this.rifleArcMaterial.opacity = 0.5 + Math.random() * 0.4;
+        }
+
+        const flicker = 0.94 + Math.sin(this.idleTime * 7.1) * 0.05;
+        this.rifleEnergyMaterial.emissiveIntensity = RIFLE_ENERGY_BASE_INTENSITY * flicker * this.opacity;
     }
 
     private updateWrenchBolts(dt: number): void {

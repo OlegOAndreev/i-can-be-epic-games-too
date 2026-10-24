@@ -136,11 +136,13 @@ const CROWN_PARAPET_HEIGHT = 0.8;
 const CROWN_PARAPET_THICKNESS = 0.14;
 // One complete pulse: the core swells from its smallest radius to its largest, then contracts back
 // to its smallest as a hollow ring expands outward and fades.
-const GLOW_PULSE_PERIOD = 2.8;
+const GLOW_PULSE_PERIOD = 3;
 const GLOW_GROW_FRACTION = 0.36;
 const GLOW_MIN_SCALE = 0.7;
 const GLOW_MAX_SCALE = 1.4;
 const GLOW_RING_OPACITY = 0.5;
+const GLOW_RING_FADE_IN_SECONDS = 0.3;
+const GLOW_RING_LIFETIME = (1 - GLOW_GROW_FRACTION) * GLOW_PULSE_PERIOD;
 // Rectangular totems on a grid that spans each walled storey. Each one is a different size and
 // keeps a fixed gold or purple glyph pattern drawn on one face, with a wave travelling through
 // the marks.
@@ -171,7 +173,9 @@ export const SWITCH_CHARGE_SECONDS = 3;
 const SWITCH_LEVER_IDLE = 0.65;
 const SWITCH_LEVER_PULLED = -0.65;
 const BOLT_DURATION = 0.5;
-const BOLT_FLICKER_INTERVAL = 0.055;
+const BOLT_FLICKER_INTERVAL = 0.06;
+const SWITCH_SPARK_INTERVAL_MIN = 0.2;
+const SWITCH_SPARK_INTERVAL_MAX = 0.4;
 // A straight dead-end walkway continues the spiral's tangent out into the air. The final stretch
 // widens into a ledge that extends behind the switch.
 const CROWN_CATWALK_LENGTH = 10;
@@ -870,7 +874,7 @@ export class Megastructures {
             // The ring starts at the fully swollen core's edge and decelerates as it fades.
             const ringEase = 1 - (1 - ringProgress) * (1 - ringProgress);
             const radius = glow.coreRadius * GLOW_MAX_SCALE * (1.05 + ringEase * 1.55);
-            const fadeIn = Math.min(1, ringProgress / 0.12);
+            const fadeIn = Math.min(1, (ringProgress * GLOW_RING_LIFETIME) / GLOW_RING_FADE_IN_SECONDS);
             glow.ring.visible = true;
             glow.ring.scale.setScalar(radius / GLOW_RING_TEXTURE_RADIUS);
             glow.ring.material.opacity = GLOW_RING_OPACITY * fadeIn * (1 - ringProgress);
@@ -1041,7 +1045,10 @@ export class Megastructures {
 
             structureSwitch.sparkTimer -= dt;
             if (structureSwitch.sparkTimer <= 0) {
-                structureSwitch.sparkTimer = 0.3 - progress * 0.16 + Math.random() * 0.12;
+                structureSwitch.sparkTimer = Math.min(
+                    SWITCH_SPARK_INTERVAL_MAX,
+                    Math.max(SWITCH_SPARK_INTERVAL_MIN, 0.3 - progress * 0.16 + Math.random() * 0.12),
+                );
                 this.spawnChargeSpark(structureSwitch);
             }
 

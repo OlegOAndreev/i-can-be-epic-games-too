@@ -155,7 +155,7 @@ export class DustPuffs {
                 growth: 2.0 + Math.random() * 0.8,
                 horizontalSpeed: 0.25 + Math.random() * 0.6,
                 upwardSpeed: 0.2 + Math.random() * 0.45,
-                lifetime: 0.35 + Math.random() * 0.2,
+                lifetime: 0.4 + Math.random() * 0.2,
                 opacity: 0.6 + Math.random() * 0.2,
                 heightOffset: 0.12 + Math.random() * 0.08,
                 neutralMix: 0.32,

@@ -261,6 +261,7 @@ describe('first-person wrench', () => {
         rest.update(0, RESTING);
         landed.update(0, RESTING);
         expect(landed.group.position.y).toBeLessThan(rest.group.position.y);
+        expect(rest.group.position.y - landed.group.position.y).toBeLessThanOrEqual(0.1);
 
         rest.update(0.5, RESTING);
         landed.update(0.5, RESTING);

@@ -46,6 +46,9 @@ export class UnderwaterEffect {
     private readonly baseFogNear: number;
     private readonly baseFogFar: number;
     private target: WebGLRenderTarget | null = null;
+    // warmUp() allocates the target while the loading screen is up. Keep it until the first dive
+    // so the driver never allocates a full-size half-float attachment mid-gameplay.
+    private holdTarget = false;
     private strength = 0;
     private fadeOutStrength = 0;
     private fadeOutRemaining = 0;
@@ -135,6 +138,7 @@ export class UnderwaterEffect {
         const depth = waterLevel - cameraY;
         if (depth > 0) {
             // Snap on entry, then keep following the depth.
+            this.holdTarget = false;
             this.strength = MIN_STRENGTH + (1 - MIN_STRENGTH) * clamp(depth / FULL_DEPTH, 0, 1);
             this.fadeOutStrength = this.strength;
             this.fadeOutRemaining = FADE_OUT_SECONDS;
@@ -147,7 +151,7 @@ export class UnderwaterEffect {
 
         // The full-screen half-float target is expensive, so release it as soon as the fade reaches
         // zero. render() recreates it on the next dive.
-        if (this.strength === 0) {
+        if (this.strength === 0 && !this.holdTarget) {
             this.releaseTarget();
         }
 
@@ -157,6 +161,39 @@ export class UnderwaterEffect {
         this.fog.color.copy(this.baseFogColor).lerp(UNDERWATER_FOG_COLOR, this.strength);
         this.fog.near = lerp(this.baseFogNear, UNDERWATER_FOG_NEAR, this.strength);
         this.fog.far = lerp(this.baseFogFar, UNDERWATER_FOG_FAR, this.strength);
+    }
+
+    // Draws one frame through the offscreen path while the loading screen still covers the canvas.
+    // Rendering the scene into a render target makes three compile a second program variant for
+    // every material (the target uses a linear output color space), and this pass' own shader is
+    // only compiled when it is first drawn. Without this, all of that ran on the first dive.
+    async warmUp(scene: Scene, camera: Camera, overlay?: (() => void) | null): Promise<void> {
+        this.ensureTarget();
+        if (this.target) {
+            // Compile against the bound target so every material gets its target-side variant,
+            // including objects that are outside the spawn view or currently hidden.
+            this.renderer.setRenderTarget(this.target);
+            try {
+                await this.renderer.compileAsync(scene, camera);
+            } catch (error) {
+                console.warn('Underwater shader warm-up failed; variants will compile on the first dive.', error);
+            } finally {
+                this.renderer.setRenderTarget(null);
+            }
+        }
+
+        const strength = this.strength;
+        this.strength = MIN_STRENGTH;
+        this.material.uniforms.uStrength.value = MIN_STRENGTH;
+        try {
+            this.render(scene, camera, overlay);
+        } finally {
+            this.strength = strength;
+            this.material.uniforms.uStrength.value = strength;
+        }
+        // ensureTarget() left a freshly allocated, already-used target in place; hold it until the
+        // first real dive so the first entry does not pay for the allocation either.
+        this.holdTarget = true;
     }
 
     // Renders the scene, then an optional foreground pass on top of it with a fresh depth buffer.
@@ -186,27 +223,32 @@ export class UnderwaterEffect {
             return;
         }
 
-        renderer.getDrawingBufferSize(this.size);
-        const width = Math.max(1, Math.floor(this.size.x * RENDER_SCALE));
-        const height = Math.max(1, Math.floor(this.size.y * RENDER_SCALE));
-        if (!this.target || this.target.width !== width || this.target.height !== height) {
-            this.target?.dispose();
-            this.target = new WebGLRenderTarget(width, height, {
-                type: HalfFloatType,
-                minFilter: LinearFilter,
-                magFilter: LinearFilter,
-                depthBuffer: true,
-                stencilBuffer: false,
-            });
-            this.material.uniforms.tDiffuse.value = this.target.texture;
-            textureMemory.registerRenderTarget(this.target);
-        }
+        this.ensureTarget();
 
         renderer.setRenderTarget(this.target);
         renderer.render(scene, camera);
         renderOverlay();
         renderer.setRenderTarget(null);
         renderer.render(this.passScene, this.passCamera);
+    }
+
+    private ensureTarget(): void {
+        this.renderer.getDrawingBufferSize(this.size);
+        const width = Math.max(1, Math.floor(this.size.x * RENDER_SCALE));
+        const height = Math.max(1, Math.floor(this.size.y * RENDER_SCALE));
+        if (this.target && this.target.width === width && this.target.height === height) {
+            return;
+        }
+        this.target?.dispose();
+        this.target = new WebGLRenderTarget(width, height, {
+            type: HalfFloatType,
+            minFilter: LinearFilter,
+            magFilter: LinearFilter,
+            depthBuffer: true,
+            stencilBuffer: false,
+        });
+        this.material.uniforms.tDiffuse.value = this.target.texture;
+        textureMemory.registerRenderTarget(this.target);
     }
 
     dispose(): void {
