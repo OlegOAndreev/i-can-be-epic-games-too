@@ -134,6 +134,19 @@ const RIM_END_HEIGHT = 95;
 const RIM_COL_DEPTH = 26;
 const RIM_ROUGHNESS = 18;
 const RIM_ROUGHNESS_SCALE = 6.5;
+// Some seeds leave the whole interior below this height. A deterministic massif is then added
+// inside the rim so every world has at least one mountain, without disturbing worlds that already
+// have their own ranges.
+export const GUARANTEED_MOUNTAIN_TRIGGER_HEIGHT = 70;
+const GUARANTEED_MOUNTAIN_RADIUS_MIN = 0.28;
+const GUARANTEED_MOUNTAIN_RADIUS_MAX = 0.4;
+const GUARANTEED_MOUNTAIN_HALF_LENGTH_MIN = 150;
+const GUARANTEED_MOUNTAIN_HALF_LENGTH_MAX = 190;
+const GUARANTEED_MOUNTAIN_HALF_WIDTH_MIN = 85;
+const GUARANTEED_MOUNTAIN_HALF_WIDTH_MAX = 120;
+const GUARANTEED_MOUNTAIN_PEAK_MIN = 110;
+const GUARANTEED_MOUNTAIN_PEAK_MAX = 150;
+const GUARANTEED_MOUNTAIN_SCAN_STEP = 32;
 // Besides the two bays, every world carries a handful of pools dug into the island, cut off from the
 // sea by land. The count is drawn from the seed, so some worlds are lakelands and others barely have
 // one. A pool is a flat floor below the world's waterline with banks that climb back into the ground
@@ -423,6 +436,16 @@ export interface RimPeak {
     height: number;
 }
 
+interface GuaranteedMountain {
+    x: number;
+    z: number;
+    cos: number;
+    sin: number;
+    halfLength: number;
+    halfWidth: number;
+    height: number;
+}
+
 // An inland pool: a basin dug into the island, cut off from the sea by land. The flat floor sits below
 // the world's waterline, so the water fills it to the pool's own outline.
 export interface TerrainPool {
@@ -485,6 +508,8 @@ export class Terrain {
     poolCount = 0;
     // The rim's summits per side, in the order +x, -x, +z, -z, sorted along each side.
     readonly rimPeaks: RimPeak[][];
+    // Filled only for seeds whose own fields leave no interior peak above the trigger height.
+    private guaranteedMountain: GuaranteedMountain | null = null;
     private readonly sandCornerX: number;
     private readonly sandCornerZ: number;
     private scratchColor = new Color();
@@ -548,6 +573,7 @@ export class Terrain {
             { x: -this.seaCornerX, z: -this.seaCornerZ },
         ];
         this.rimPeaks = this.placeRimPeaks();
+        this.placeGuaranteedMountain();
         this.placePools();
         this.group.name = 'terrain';
         this.rockEffects = new RockEffects(this);
@@ -699,15 +725,15 @@ export class Terrain {
             rim = smoothstep(RIM_FOOT, 0.98, edge) * height;
         }
 
-        return (
+        const ground =
             lowland +
             hills * 4.5 * (1 - sand * 0.45) +
             relief +
             liftedMountains +
             duneShaping +
             rim -
-            seaDepth
-        );
+            seaDepth;
+        return ground + this.guaranteedMountainHeightAt(x, z, ground);
     }
 
     // How far below the waterline the sea pulls the land at a point: nothing until its shore, then a
@@ -758,6 +784,95 @@ export class Terrain {
         }
 
         return ridges;
+    }
+
+    // Some seeds produce no interior peak at all. In that case a deterministic massif is placed on
+    // the highest dry ground inside the rim, so every world has at least one mountain to climb.
+    // Worlds that already reach the trigger height keep their own terrain untouched.
+    private placeGuaranteedMountain(): void {
+        let peak = -Infinity;
+        let highestDry: { x: number; z: number; height: number } | null = null;
+        for (let z = -WORLD_HALF_SIZE; z <= WORLD_HALF_SIZE; z += GUARANTEED_MOUNTAIN_SCAN_STEP) {
+            for (let x = -WORLD_HALF_SIZE; x <= WORLD_HALF_SIZE; x += GUARANTEED_MOUNTAIN_SCAN_STEP) {
+                if (this.isInRim(x, z)) {
+                    continue;
+                }
+                const height = this.baseHeightAt(x, z);
+                peak = Math.max(peak, height);
+                if (height > WATER_LEVEL + 4 && (!highestDry || height > highestDry.height)) {
+                    highestDry = { x, z, height };
+                }
+            }
+        }
+        if (peak >= GUARANTEED_MOUNTAIN_TRIGGER_HEIGHT) {
+            return;
+        }
+
+        const rng = mulberry32(hash32(0x6d6f, 0x756e, this.seed));
+        let site = highestDry;
+        let bestHeight = highestDry?.height ?? -Infinity;
+        for (let attempt = 0; attempt < 96; attempt++) {
+            const angle = rng() * Math.PI * 2;
+            const radius =
+                WORLD_HALF_SIZE *
+                (GUARANTEED_MOUNTAIN_RADIUS_MIN +
+                    rng() * (GUARANTEED_MOUNTAIN_RADIUS_MAX - GUARANTEED_MOUNTAIN_RADIUS_MIN));
+            const x = Math.cos(angle) * radius;
+            const z = Math.sin(angle) * radius;
+            // Keep the whole massif inside the rim, not just its centre.
+            if (this.isInRim(x, z, 0.22)) {
+                continue;
+            }
+            const height = this.baseHeightAt(x, z);
+            if (height < WATER_LEVEL + 4) {
+                continue;
+            }
+            if (height > bestHeight) {
+                bestHeight = height;
+                site = { x, z, height };
+            }
+        }
+        if (!site) {
+            return;
+        }
+
+        const orientation = rng() * Math.PI * 2;
+        this.guaranteedMountain = {
+            x: site.x,
+            z: site.z,
+            cos: Math.cos(orientation),
+            sin: Math.sin(orientation),
+            halfLength:
+                GUARANTEED_MOUNTAIN_HALF_LENGTH_MIN +
+                rng() * (GUARANTEED_MOUNTAIN_HALF_LENGTH_MAX - GUARANTEED_MOUNTAIN_HALF_LENGTH_MIN),
+            halfWidth:
+                GUARANTEED_MOUNTAIN_HALF_WIDTH_MIN +
+                rng() * (GUARANTEED_MOUNTAIN_HALF_WIDTH_MAX - GUARANTEED_MOUNTAIN_HALF_WIDTH_MIN),
+            height:
+                GUARANTEED_MOUNTAIN_PEAK_MIN +
+                rng() * (GUARANTEED_MOUNTAIN_PEAK_MAX - GUARANTEED_MOUNTAIN_PEAK_MIN),
+        };
+    }
+
+    // Height contribution of the fallback massif, zero on worlds with their own ranges. The dry
+    // gate keeps it from filling the sea, and the local ridged noise breaks the ellipse into crests.
+    private guaranteedMountainHeightAt(x: number, z: number, ground: number): number {
+        const mountain = this.guaranteedMountain;
+        if (!mountain) {
+            return 0;
+        }
+        const dx = x - mountain.x;
+        const dz = z - mountain.z;
+        const along = dx * mountain.cos + dz * mountain.sin;
+        const across = -dx * mountain.sin + dz * mountain.cos;
+        const normalized = (along / mountain.halfLength) ** 2 + (across / mountain.halfWidth) ** 2;
+        if (normalized >= 1) {
+            return 0;
+        }
+        const profile = (1 - normalized) ** 2;
+        const ridge = 0.7 + 0.3 * (1 - Math.abs(this.noise.fbm(x * 0.006 + 19.7, z * 0.006 - 43.1, 3)));
+        const dry = smoothstep(WATER_LEVEL, WATER_LEVEL + 4, ground);
+        return mountain.height * profile * ridge * dry;
     }
 
     // Ridge height at a coordinate along one side of the map. Between two summits the ridge sags into

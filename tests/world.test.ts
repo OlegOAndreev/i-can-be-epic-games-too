@@ -5,7 +5,7 @@ import { PLAYER_RADIUS } from '../src/player';
 import { SPACESHIP_HULL_MARGIN } from '../src/spaceship';
 import { GrassField } from '../src/grass';
 import { smoothstep } from '../src/math-utils';
-import { Terrain, WATER_LEVEL, WORLD_HALF_SIZE } from '../src/terrain';
+import { Terrain, GUARANTEED_MOUNTAIN_TRIGGER_HEIGHT, WATER_LEVEL, WORLD_HALF_SIZE } from '../src/terrain';
 import {
     FAST_TERRAIN,
     NO_INPUT,
@@ -149,6 +149,22 @@ describe('Terrain', () => {
             }
         }
     }, 30_000);
+
+    it('guarantees at least one mountain inside the rim', () => {
+        for (const seed of [1, 2, 3, 4, 5]) {
+            const terrain = testTerrain(seed);
+            let peak = -Infinity;
+            for (let z = -WORLD_HALF_SIZE; z <= WORLD_HALF_SIZE; z += 16) {
+                for (let x = -WORLD_HALF_SIZE; x <= WORLD_HALF_SIZE; x += 16) {
+                    if (terrain.isInRim(x, z, 0.04)) {
+                        continue;
+                    }
+                    peak = Math.max(peak, terrain.heightAt(x, z));
+                }
+            }
+            expect(peak, `seed ${seed}`).toBeGreaterThan(GUARANTEED_MOUNTAIN_TRIGGER_HEIGHT);
+        }
+    }, 60_000);
 
     it('builds the rim as a ridge with a few peaks per side', () => {
         for (const seed of [1234, 24680, 20261018, 1]) {
