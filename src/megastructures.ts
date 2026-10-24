@@ -69,6 +69,12 @@ const SITE_SPAWN_CLEARANCE = 110;
 const SITE_SEPARATION = 210;
 // Grid step of the backup sweep, used when the random samples cannot place every tower.
 const SITE_SWEEP_STEP = 48;
+// A world that cannot fit the sixth tower on gentle ground still gets it: the last-resort sweep
+// relaxes the relief and height bounds and packs the tower closer to the existing sites.
+const SITE_FALLBACK_SWEEP_STEP = 24;
+const SITE_FALLBACK_MAX_RELIEF = 20;
+const SITE_FALLBACK_MAX_HEIGHT = 110;
+const SITE_FALLBACK_SEPARATION = 160;
 export const WALL_THICKNESS = 1.8;
 // Kept thin so the ceiling under a ramp opening leaves room for the first-person camera.
 export const FLOOR_THICKNESS = 0.4;
@@ -800,6 +806,29 @@ export class Megastructures {
             }
         }
 
+        // A rough island can run out of gentle sites before the sixth tower. Relax the ground and
+        // spacing rules rather than shipping a world with only five landmarks.
+        for (let z = -outerRadius; z <= outerRadius && this.sites.length < SITE_COUNT; z += SITE_FALLBACK_SWEEP_STEP) {
+            for (let x = -outerRadius; x <= outerRadius && this.sites.length < SITE_COUNT; x += SITE_FALLBACK_SWEEP_STEP) {
+                const radius = Math.hypot(x, z);
+                if (radius < SITE_RING_INNER_RADIUS || radius > outerRadius) {
+                    continue;
+                }
+                if (Math.hypot(x - spawn.x, z - spawn.z) < SITE_SPAWN_CLEARANCE) {
+                    continue;
+                }
+                if (this.sites.some((site) => Math.hypot(x - site.x, z - site.z) < SITE_FALLBACK_SEPARATION)) {
+                    continue;
+                }
+                if (!this.isSiteClear(x, z, heightAt, SITE_FALLBACK_MAX_RELIEF, SITE_FALLBACK_MAX_HEIGHT)) {
+                    continue;
+                }
+
+                this.sites.push({ x, z, radius: SITE_RADIUS });
+                this.buildSite(x, z, heightAt, rng);
+            }
+        }
+
         this.finishStone();
         this.finishPoweredDecor();
         this.finishEntranceFrame();
@@ -1422,7 +1451,13 @@ export class Megastructures {
         return this.isSiteClear(x, z, heightAt);
     }
 
-    private isSiteClear(x: number, z: number, heightAt: (x: number, z: number) => number): boolean {
+    private isSiteClear(
+        x: number,
+        z: number,
+        heightAt: (x: number, z: number) => number,
+        maxRelief = 12,
+        maxHeight = 85,
+    ): boolean {
         let lowest = Infinity;
         let highest = -Infinity;
 
@@ -1437,7 +1472,7 @@ export class Megastructures {
             }
         }
 
-        return highest - lowest < 12 && highest < 85;
+        return highest - lowest < maxRelief && highest < maxHeight;
     }
 
     private setCurrentTower(origin: Vector3): void {

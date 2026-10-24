@@ -88,6 +88,8 @@ import structureBuzzWavUrl from '../assets/audio/structure-buzz.wav';
 import structureBuzzOpusUrl from '../assets/audio/structure-buzz.opus?url&no-inline';
 import shipEngineWavUrl from '../assets/audio/ship-engine.wav';
 import shipEngineOpusUrl from '../assets/audio/ship-engine.opus?url&no-inline';
+import shipFireWavUrl from '../assets/audio/ship-fire.wav';
+import shipFireOpusUrl from '../assets/audio/ship-fire.opus?url&no-inline';
 import fallWindWavUrl from '../assets/audio/fall-wind.wav';
 import fallWindOpusUrl from '../assets/audio/fall-wind.opus?url&no-inline';
 import wrenchSwingWavUrl from '../assets/audio/wrench-swing.wav';
@@ -352,6 +354,7 @@ const LIGHTNING_STRIKE_URLS = [
 ];
 const STRUCTURE_BUZZ_URL = effectUrl(structureBuzzWavUrl, structureBuzzOpusUrl);
 const SHIP_ENGINE_URL = effectUrl(shipEngineWavUrl, shipEngineOpusUrl);
+const SHIP_FIRE_URL = effectUrl(shipFireWavUrl, shipFireOpusUrl);
 const FALL_WIND_URL = effectUrl(fallWindWavUrl, fallWindOpusUrl);
 const WRENCH_SWING_URL = effectUrl(wrenchSwingWavUrl, wrenchSwingOpusUrl);
 const WRENCH_CLANG_URLS = [
@@ -376,6 +379,7 @@ const EFFECT_URLS = [
     ...LIGHTNING_STRIKE_URLS,
     STRUCTURE_BUZZ_URL,
     SHIP_ENGINE_URL,
+    SHIP_FIRE_URL,
     FALL_WIND_URL,
     WRENCH_SWING_URL,
     ...WRENCH_CLANG_URLS,
@@ -411,6 +415,21 @@ const SHIP_ENGINE_IDLE_RATE = 0.82;
 const SHIP_ENGINE_MAX_RATE = 1.7;
 const SHIP_ENGINE_IDLE_CUTOFF = 520;
 const SHIP_ENGINE_MAX_CUTOFF = 3400;
+// The wreck's fire is a constant roar, not an engine that revs, so it plays at a slightly slow rate
+// to deepen the low end. It is positional and fades with distance from the hull.
+const SHIP_FIRE_GAIN = 0.14;
+const SHIP_FIRE_RATE = 0.9;
+// Full strength inside 12 m, silent by 32 m. The fade extends farther than the hull so the wreck is
+// audible while approaching, without washing over the whole opening clearing. The smoothing matches
+// the structure hum so crossing the edge does not pump the volume.
+const SHIP_FIRE_AUDIBLE_DISTANCE = 32;
+const SHIP_FIRE_FADE_DISTANCE = 20;
+// The player can walk right up to the thrusters, where the fire should feel close and hot. Double
+// the level inside 4 m, tapering back to the normal distance curve by 8 m.
+const SHIP_FIRE_NEAR_GAIN = 2;
+const SHIP_FIRE_NEAR_DISTANCE = 4;
+const SHIP_FIRE_NEAR_FADE_DISTANCE = 8;
+const SHIP_FIRE_GAIN_SMOOTHING = 0.3;
 // The wind loop fades in only once a fall is fast enough to tear wind trails around the robot and
 // reaches full strength at the speed of a drop from a megastructure tower.
 const FALL_WIND_START_SPEED = 20;
@@ -424,6 +443,11 @@ const FALL_WIND_MAX_CUTOFF = 2600;
 // short hum the wrench makes while it charges.
 const STRUCTURE_BUZZ_GAIN = 0.3;
 const WRENCH_BUZZ_GAIN = 0.22;
+// The jump bop is intentionally clear of the footsteps and impacts; the double jump gets a
+// little extra level to read as the second half of a rising pair.
+const JUMP_GAIN = 0.18;
+const DOUBLE_JUMP_GAIN = 0.22;
+const DOUBLE_JUMP_PITCH_UP = 0.07;
 // A drained structure keeps its crown buzzing after the strike. The hum is the same generated
 // sample at a settled pitch, looped and panned from the tower so it fades with distance.
 const STRUCTURE_HUM_GAIN = 0.24;
@@ -481,6 +505,11 @@ export class GameAudio {
     private shipEngineFilter: BiquadFilterNode | null = null;
     private shipEngineThrottle = 0;
     private shipEngineVolume = 1;
+    private shipFireBuffer: AudioBuffer | null = null;
+    private shipFireSource: AudioBufferSourceNode | null = null;
+    private shipFireGain: GainNode | null = null;
+    private pendingShipFirePosition: Vector3 | null = null;
+    private shipFireSoundId = 0;
     private fallWindBuffer: AudioBuffer | null = null;
     private wrenchSwingBuffer: AudioBuffer | null = null;
     private wolfWoofBuffer: AudioBuffer | null = null;
@@ -811,8 +840,8 @@ export class GameAudio {
         this.playBuffer(
             this.randomBuffer(this.jumpBopBuffers),
             null,
-            (doubleJump ? 0.45 : 0.38) * 0.3 * 0.67,
-            0.95 + Math.random() * 0.1 + (doubleJump ? 0.12 : 0),
+            doubleJump ? DOUBLE_JUMP_GAIN : JUMP_GAIN,
+            0.95 + Math.random() * 0.1 + (doubleJump ? DOUBLE_JUMP_PITCH_UP : 0),
             doubleJump ? 'jump-double' : 'jump',
         );
     }
@@ -1183,6 +1212,76 @@ export class GameAudio {
             source.disconnect();
             gain.disconnect();
         };
+    }
+
+    // The wreck's burning thrusters. A request made before the audio graph or the sample is ready
+    // is remembered and started once both exist, like the restored structure hums.
+    playShipFire(position: Vector3): void {
+        if (this.shipFireSource || this.pendingShipFirePosition) {
+            return;
+        }
+        this.pendingShipFirePosition = position.clone();
+        this.startPendingShipFire();
+    }
+
+    // Updates the fire's audibility from the player's horizontal distance to the wreck. It is full
+    // volume inside 12 m, fades out by 32 m, and gets a near-field boost right beside the thrusters.
+    setShipFireDistance(distance: number): void {
+        if (!this.context || !this.shipFireGain) {
+            return;
+        }
+        const factor =
+            1 - smoothstep(SHIP_FIRE_AUDIBLE_DISTANCE - SHIP_FIRE_FADE_DISTANCE, SHIP_FIRE_AUDIBLE_DISTANCE, distance);
+        const near = 1 - smoothstep(SHIP_FIRE_NEAR_DISTANCE, SHIP_FIRE_NEAR_FADE_DISTANCE, distance);
+        const level = factor * SHIP_FIRE_GAIN * (1 + (SHIP_FIRE_NEAR_GAIN - 1) * near);
+        this.shipFireGain.gain.setTargetAtTime(level, this.context.currentTime, SHIP_FIRE_GAIN_SMOOTHING);
+    }
+
+    stopShipFire(fade = 0.8): void {
+        this.pendingShipFirePosition = null;
+        this.releaseSound(this.shipFireSoundId);
+        this.shipFireSoundId = 0;
+
+        const source = this.shipFireSource;
+        const gain = this.shipFireGain;
+        this.shipFireSource = null;
+        this.shipFireGain = null;
+        if (!this.context || !source || !gain) {
+            return;
+        }
+
+        const now = this.context.currentTime;
+        gain.gain.cancelScheduledValues(now);
+        gain.gain.setTargetAtTime(0.0001, now, Math.max(0.02, fade / 3));
+        source.stop(now + fade);
+        source.onended = () => {
+            source.disconnect();
+            gain.disconnect();
+        };
+    }
+
+    private startPendingShipFire(): void {
+        if (!this.context || !this.effectsGain || !this.shipFireBuffer || !this.pendingShipFirePosition) {
+            return;
+        }
+
+        const context = this.context;
+        const position = this.pendingShipFirePosition;
+        this.pendingShipFirePosition = null;
+        const source = this.createLoopSource(this.shipFireBuffer, SHIP_FIRE_RATE);
+        // The distance gate starts closed so the loop cannot blare before the first distance update.
+        const gain = context.createGain();
+        gain.gain.value = 0;
+        const panner = this.createPanner(context, position, { refDistance: 8, maxDistance: 200, rolloffFactor: 0 });
+
+        source.connect(gain);
+        gain.connect(panner);
+        panner.connect(this.effectsGain);
+        source.start();
+
+        this.shipFireSource = source;
+        this.shipFireGain = gain;
+        this.shipFireSoundId = this.trackSound('ship-fire', '', SHIP_FIRE_GAIN, position, Number.POSITIVE_INFINITY);
     }
 
     // The rush of air during a long fall. `fallSpeed` is positive while dropping. The sample is a
@@ -1696,12 +1795,15 @@ export class GameAudio {
             cursor++;
             this.shipEngineBuffer = effects[cursor] ?? null;
             cursor++;
+            this.shipFireBuffer = effects[cursor] ?? null;
+            cursor++;
             this.fallWindBuffer = effects[cursor] ?? null;
             cursor++;
             this.wrenchSwingBuffer = effects[cursor] ?? null;
             cursor++;
             this.wrenchClangBuffers = effects.slice(cursor, cursor + WRENCH_CLANG_URLS.length);
             this.startPendingStructureHums();
+            this.startPendingShipFire();
         } catch (error) {
             console.warn('Sound effects failed to load.', error);
         }

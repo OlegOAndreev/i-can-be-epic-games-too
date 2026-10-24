@@ -207,19 +207,20 @@ function renderLaser(seed: number): Float32Array {
     return samples;
 }
 
-// A short, rubbery "bop" that rises in pitch as the robot leaves the ground. The seeds vary the
-// starting note, the size of the leap, the decay, and the amount of wobble so repeated jumps keep
-// a little personality instead of repeating the exact same sample.
+// A rubbery "bop" that rises in pitch as the robot leaves the ground. The seeds vary the starting
+// note, the size of the leap, the decay, and the amount of wobble so repeated jumps keep a little
+// personality instead of repeating the exact same sample. The tail is deliberately long enough to
+// hear as a bop rather than a click.
 function renderJumpBop(seed: number): Float32Array {
     const rng = mulberry32(seed);
-    const duration = 0.36 + rng() * 0.12;
+    const duration = 0.46 + rng() * 0.14;
     const length = Math.round(duration * SAMPLE_RATE);
     const samples = new Float32Array(length);
 
     const startFrequency = 150 + rng() * 80;
     const endFrequency = startFrequency * (1.3 + rng() * 0.6);
     const pitchDecay = 26 + rng() * 14;
-    const bodyDecay = 0.085 + rng() * 0.04;
+    const bodyDecay = 0.14 + rng() * 0.06;
     const wobbleRate = 14 + rng() * 10;
     const wobbleDepth = 0.02 + rng() * 0.025;
     const ringFrequency = 620 + rng() * 520;
@@ -249,11 +250,11 @@ function renderJumpBop(seed: number): Float32Array {
         // A brief midrange ring turns the tone into a "bop" rather than a plain beep.
         sample += Math.sin(TAU * ringFrequency * t) * Math.exp(-t / ringDecay) * 0.12;
 
-        samples[i] = Math.tanh(sample * 1.35);
+        samples[i] = Math.tanh(sample * 1.2);
     }
 
     const fadeIn = Math.round(0.001 * SAMPLE_RATE);
-    const fadeOut = Math.round(0.045 * SAMPLE_RATE);
+    const fadeOut = Math.round(0.08 * SAMPLE_RATE);
     for (let i = 0; i < fadeIn; i++) {
         samples[i] *= i / fadeIn;
     }
@@ -812,6 +813,91 @@ function renderShipEngine(seed: number): Float32Array {
     return looped;
 }
 
+// A seamless six-second fire loop for the wrecked ship. A low, breathing roar of burning fuel sits
+// under irregular crackles: short bandpassed snaps with a soft low knock, so the plume reads as
+// wood and hull panels popping rather than a steady wash of noise. The tail is folded over the head
+// like the engine loop, so playback can repeat without a click.
+function renderShipFire(seed: number): Float32Array {
+    const rng = mulberry32(seed);
+    const duration = 6;
+    const length = Math.round(duration * SAMPLE_RATE);
+    const fadeLength = Math.round(0.5 * SAMPLE_RATE);
+    const total = length + fadeLength;
+    const samples = new Float32Array(total);
+
+    // Roar: two lowpassed noise bands. The slow breath and the faster hiss flutter complete whole
+    // cycles over the loop, so the folded seam cannot land on a volume step.
+    const rumbleAlpha = 1 - Math.exp((-TAU * 180) / SAMPLE_RATE);
+    const hissAlpha = 1 - Math.exp((-TAU * 900) / SAMPLE_RATE);
+    let rumble = 0;
+    let hiss = 0;
+    for (let i = 0; i < total; i++) {
+        const t = i / SAMPLE_RATE;
+        const white = rng() * 2 - 1;
+        rumble += rumbleAlpha * (white - rumble);
+        hiss += hissAlpha * (white - hiss);
+        const breath =
+            0.8 +
+            0.12 * Math.sin(TAU * t + 0.7) +
+            0.08 * Math.sin(TAU * 2 * t + 2.1) +
+            0.05 * Math.sin(TAU * 3 * t + 4.3);
+        const flutter =
+            0.75 +
+            0.12 * Math.sin(TAU * 5 * t + 1.3) +
+            0.08 * Math.sin(TAU * 7 * t + 5.1) +
+            0.05 * Math.sin(TAU * 11 * t + 2.7);
+        samples[i] = rumble * 1.2 * breath + (hiss - rumble) * 0.14 * flutter;
+    }
+
+    // Crackles: irregular little snaps with occasional larger pops, like wood and hull panels
+    // settling in the heat. Each is a short resonant burst, with a low knock under the bigger pops.
+    const crackleCount = 90;
+    for (let index = 0; index < crackleCount; index++) {
+        const start = Math.floor(rng() * total);
+        const big = rng() < 0.2;
+        const decay = 0.003 + rng() * (big ? 0.04 : 0.012);
+        const crackleSeconds = 0.01 + rng() * (big ? 0.12 : 0.03);
+        const crackleLength = Math.max(2, Math.round(crackleSeconds * SAMPLE_RATE));
+        const cutoff = 900 + rng() * 2300;
+        const coefficient = 2 * Math.sin((Math.PI * cutoff) / SAMPLE_RATE);
+        const damping = 1.2 - rng() * 0.3;
+        const gain = (big ? 0.32 : 0.1) + rng() * 0.28;
+        const knockFrequency = 110 + rng() * 130;
+        let low = 0;
+        let band = 0;
+        let knockPhase = rng() * TAU;
+
+        for (let j = 0; j < crackleLength; j++) {
+            const t = j / SAMPLE_RATE;
+            const white = rng() * 2 - 1;
+            low += coefficient * band;
+            const high = white - low - damping * band;
+            band += coefficient * high;
+            knockPhase += (TAU * knockFrequency) / SAMPLE_RATE;
+
+            const attack = Math.min(1, t / 0.0025);
+            const envelope = attack * Math.exp(-t / decay);
+            const knock = big ? Math.sin(knockPhase) * Math.exp(-t / (decay * 2.5)) * 0.5 : 0;
+            const at = start + j;
+            if (at < total) {
+                samples[at] += (band * 0.7 + knock) * envelope * gain;
+            }
+        }
+    }
+
+    const looped = new Float32Array(length);
+    for (let i = 0; i < length; i++) {
+        if (i < fadeLength) {
+            const mix = i / fadeLength;
+            looped[i] = samples[i] * mix + samples[length + i] * (1 - mix);
+        } else {
+            looped[i] = samples[i];
+        }
+    }
+
+    return looped;
+}
+
 // A seamless, soft bed of air rushing past the robot during a long fall. Two lowpassed noise
 // bands breathe at whole-cycle rates so the loop can be folded without a seam.
 function renderFallWind(seed: number): Float32Array {
@@ -1153,6 +1239,11 @@ const shipEngine = renderShipEngine(0x5b19_e0a0);
 removeDc(shipEngine);
 normalize(shipEngine, 0.8);
 writeSample('ship-engine', shipEngine);
+
+const shipFire = renderShipFire(0x7f31_f1ae);
+removeDc(shipFire);
+normalize(shipFire, 0.75);
+writeSample('ship-fire', shipFire);
 
 const fallWind = renderFallWind(0x4c11_b0a0);
 removeDc(fallWind);

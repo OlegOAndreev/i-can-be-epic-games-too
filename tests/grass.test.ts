@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { GrassField } from '../src/grass';
 import { fakeTerrain } from './test-helpers';
 
-const GROUND_TEXTURE_TINT = new Color().setRGB(0.65, 0.74, 0.4);
+const GROUND_TEXTURE_TINT = new Color().setRGB(0.67, 0.72, 0.55);
 
 describe('grass field', () => {
     it('colors tufts from the height and slope already sampled for placement', () => {

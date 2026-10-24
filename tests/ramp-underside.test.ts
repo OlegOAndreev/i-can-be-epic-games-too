@@ -21,10 +21,20 @@ interface Underpass {
 }
 
 function findUnderpass(terrain: Terrain): Underpass | null {
-    const ramp = terrain.megastructures.ramps.filter((entry) => entry.towerIndex === 0)[1];
-    if (!ramp) {
-        return null;
+    for (let towerIndex = 0; towerIndex < terrain.megastructures.towers.length; towerIndex++) {
+        const ramp = terrain.megastructures.ramps.filter((entry) => entry.towerIndex === towerIndex)[1];
+        if (!ramp) {
+            continue;
+        }
+        const underpass = findUnderpassOnRamp(terrain, ramp);
+        if (underpass) {
+            return underpass;
+        }
     }
+    return null;
+}
+
+function findUnderpassOnRamp(terrain: Terrain, ramp: Ramp): Underpass | null {
     const frame = ramp.frame!;
     const alongIsX = ramp.axis === 'x';
     const minAlong = alongIsX ? ramp.localMinX! : ramp.localMinZ!;

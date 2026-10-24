@@ -10,6 +10,7 @@ import {
     loadRobotDialogue,
     prepareMeshes,
 } from '../src/npc-robots';
+import { shipFootprintClearance } from '../src/spaceship';
 import { installCanvasDocument, stubAudio, testPlayer, testTerrain } from './test-helpers';
 
 installCanvasDocument(1024, 320);
@@ -135,6 +136,37 @@ describe('caretaker dialogue', () => {
 
         expect(shown).toEqual(['First line.', 'Second line.']);
         expect(hides).toBeGreaterThanOrEqual(2);
+
+        npc.dispose();
+    });
+
+    it('holds the opening story while the silent cinematic owns the camera', () => {
+        const terrain = testTerrain(1234);
+        const shown: string[] = [];
+        const npc = new NpcRobots(
+            terrain,
+            stubAudio(),
+            [
+                { speaker: 'matron', text: 'First line.' },
+                { speaker: 'walle', text: 'Second line.' },
+            ],
+            {
+                showLine: (line) => shown.push(line.text),
+                hideLine: () => undefined,
+            },
+        );
+        const atSpawn = new Vector3(terrain.spawn.x, 0, terrain.spawn.z);
+
+        for (let elapsed = 0; elapsed < 2; elapsed += 0.05) {
+            npc.update(0.05, atSpawn, atSpawn, false);
+        }
+        expect(shown).toEqual([]);
+
+        // Releasing the hold lets the story begin normally.
+        for (let elapsed = 0; elapsed < 2; elapsed += 0.05) {
+            npc.update(0.05, atSpawn);
+        }
+        expect(shown).toEqual(['First line.']);
 
         npc.dispose();
     });
@@ -394,11 +426,8 @@ describe('caretaker placement', () => {
             const npc = new NpcRobots(terrain, stubAudio(), []);
 
             for (const collider of npc.getColliders()) {
-                const clearance = Math.min(
-                    ...terrain.spaceship.colliders.map(
-                        (ship) => Math.hypot(collider.x - ship.x, collider.z - ship.z) - collider.radius - ship.radius,
-                    ),
-                );
+                const clearance =
+                    shipFootprintClearance(terrain.spaceshipSite, collider.x, collider.z) - collider.radius;
                 expect(clearance).toBeGreaterThan(1.5);
             }
 

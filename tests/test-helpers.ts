@@ -65,8 +65,11 @@ export function fakeTerrain(overrides: Partial<Record<keyof Terrain, unknown>> =
         walkSurfaceAt: () => 0,
         ceilingAt: () => Number.POSITIVE_INFINITY,
         slopeAt: () => 0,
+        isInRim: () => false,
         earthinessAt: () => 0,
         isOnStructure: () => false,
+        colliders: [],
+        spaceshipWalls: [],
         megastructures: { towers: [], ramps: [], boxes: [] },
         ...overrides,
     } as unknown as Terrain;

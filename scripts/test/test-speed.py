@@ -2,6 +2,15 @@
 
 import math
 
+def fast_exp(x):
+    N = 8
+    result = 1.0
+    term = 1.0
+    for n in range(1, N):
+        term *= x / n
+        result += term
+    return result
+
 # Linear dv = (t - v) * alpha * dt
 # Exp dv = (t - v) * (1 - exp(-alpha*dt))
 
@@ -26,8 +35,10 @@ for linear in [True, False]:
             alpha = 10.0
             print('exp', N)
             for i in range(N):
-                dvx = (wx - vx) * (1 - math.exp(-alpha * dt))
-                dvy = (wy - vy) * (1 - math.exp(-alpha * dt))
+                dvx = (wx - vx) * (1 - fast_exp(-alpha * dt))
+                dvy = (wy - vy) * (1 - fast_exp(-alpha * dt))
+                # dvx = (wx - vx) * (1 - math.exp(-alpha * dt))
+                # dvy = (wy - vy) * (1 - math.exp(-alpha * dt))
                 vx += dvx
                 vy += dvy
                 if i + 1 in [N / 10, N / 3, N / 2]:

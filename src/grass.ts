@@ -29,10 +29,13 @@ const FADE_END = 80;
 // The terrain shader multiplies its vertex color by the grass texture. These are the average
 // tints of the two texture families (green ground and orange-brown earth), so tuft colors land on
 // the same value as the ground under them.
-const GREEN_GROUND_TEXTURE_TINT = new Color().setRGB(0.65, 0.74, 0.4);
+const GREEN_GROUND_TEXTURE_TINT = new Color().setRGB(0.67, 0.72, 0.55);
 const EARTH_GROUND_TEXTURE_TINT = new Color().setRGB(0.72, 0.5, 0.28);
 // Released slots keep their index and are zero-scaled, so no active instance ever has to shift.
 const HIDDEN_MATRIX = new Matrix4().makeScale(0, 0, 0);
+// The whole field is one alpha-blended draw, so it cannot interleave with other transparent
+// effects. Draw it below them; the ship's smoke and engine flame sort after it.
+export const GRASS_RENDER_ORDER = 0;
 
 export const DEFAULT_GRASS_RADIUS = 100;
 
@@ -122,6 +125,7 @@ export class GrassField {
 
         this.mesh = new InstancedMesh(geometry, this.material, MAX_INSTANCES);
         this.mesh.name = 'grass-tufts';
+        this.mesh.renderOrder = GRASS_RENDER_ORDER;
         this.mesh.count = 0;
         this.mesh.instanceMatrix.setUsage(DynamicDrawUsage);
         // The bounds are updated with the cell ring in update(); the default geometry bounds only

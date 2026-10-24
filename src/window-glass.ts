@@ -11,10 +11,10 @@ import { hash2 } from './math-utils';
 const SEED_SALT = 0x5f1e2d3b;
 
 // Where the glazing sits in the transparent draw order. It has to come after the world's other
-// transparent layers — the sea at -1, the grass field at 0, the ship's smoke at 1 and the ground
-// decals at 2 and 3 — so a plume behind a window is seen through the glass instead of being painted
-// over its sheen, and before the gameplay effects (splashes at 5, beams and flashes at 60 and 61,
-// speech labels at 100) that have to stay on top of it.
+// transparent layers — the sea at -1, the shore foam at -0.5, the grass field at 0, the ship's
+// smoke at 1 and the ground decals at 2 and 3 — so a plume behind a window is seen through the glass
+// instead of being painted over its sheen, and before the gameplay effects (splashes at 5, beams
+// and flashes at 60 and 61, speech labels at 100) that have to stay on top of it.
 export const WINDOW_GLASS_RENDER_ORDER = 4;
 
 export interface WindowGlassAnimation {

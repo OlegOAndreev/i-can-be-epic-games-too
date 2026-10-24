@@ -194,15 +194,16 @@ const GRASS_STYLES: GrassStyle[] = [
         bladeWidthMin: 2,
         bladeWidthRange: 2.3,
     },
-    // Bright green: the lush lowland cover that survives in the wettest habitats.
+    // Lowland green: the lush cover that survives in the wettest habitats, kept muted so it
+    // reads as grass rather than a bright lawn.
     {
         seed: 0x51a55eed,
-        base: '#b9cf85',
-        patches: ['#8fae62', '#cfe0a0', '#7d9a55', '#dfecb5', '#a7c274', '#c6d994', '#e8f2c4'],
-        clump: '#658649',
-        blades: ['#547c3d', '#659246', '#7fa653', '#93b863', '#aecb7c', '#c8de9b', '#e2f0b5', '#f0f8d2'],
-        highlight: '#e4f2ba',
-        flowers: ['#f4eaa4', '#fbf4cf', '#e9d87e'],
+        base: '#bac3a6',
+        patches: ['#a1ad91', '#c8cfb5', '#96a383', '#d3d8c1', '#afb99c', '#c2caaf', '#d9ddca'],
+        clump: '#869a76',
+        blades: ['#7b9769', '#87a175', '#98a984', '#a4b292', '#b4bfa1', '#c4cdb3', '#d4dac2', '#dee2d2'],
+        highlight: '#d6dcc4',
+        flowers: ['#dad7b9', '#e3e0d0', '#d1c9a3'],
         flowerCount: 30,
         clusterCount: 300,
         bladeLengthMin: 9,
@@ -210,15 +211,15 @@ const GRASS_STYLES: GrassStyle[] = [
         bladeWidthMin: 2,
         bladeWidthRange: 2.5,
     },
-    // Deep green: the shaded forest-floor cover, kept as the second green variant.
+    // Shaded green: the darker forest-floor cover, kept as the second green variant.
     {
         seed: 0x6b8e23,
-        base: '#7f9960',
-        patches: ['#68854b', '#95ac74', '#5e7a44', '#a8bb84', '#7d945d', '#6f8650'],
-        clump: '#4c6638',
-        blades: ['#3f5c31', '#4d6f39', '#5f8245', '#759855', '#8cab66', '#a6bf7c'],
-        highlight: '#c2d79a',
-        flowers: ['#d9e3a6'],
+        base: '#98a28c',
+        patches: ['#899879', '#a5ad9a', '#82946f', '#b0b7a4', '#969f89', '#8c997d'],
+        clump: '#748866',
+        blades: ['#6b835f', '#768f66', '#829971', '#91a283', '#a0ab92', '#b0b9a0'],
+        highlight: '#c1c9b2',
+        flowers: ['#cdd1b8'],
         flowerCount: 8,
         clusterCount: 340,
         bladeLengthMin: 8,

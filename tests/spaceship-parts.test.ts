@@ -2,7 +2,13 @@ import { CylinderGeometry, Group, Mesh, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
 import type { GameAudio } from '../src/audio';
-import { SpaceshipParts, bestGridSpot, findRingSpot } from '../src/spaceship-parts';
+import {
+    HIGH_GROUND_PART_ID,
+    HIGH_GROUND_RIM_CLEARANCE,
+    SpaceshipParts,
+    bestGridSpot,
+    findRingSpot,
+} from '../src/spaceship-parts';
 import { fakeTerrain, stubAudio as audioStub, testTerrain } from './test-helpers';
 import { WATER_LEVEL, WORLD_HALF_SIZE } from '../src/terrain';
 
@@ -114,7 +120,10 @@ describe('spaceship parts', () => {
         for (const site of sites) {
             expect(Number.isFinite(site.x)).toBe(true);
             expect(Number.isFinite(site.z)).toBe(true);
-            expect(Math.hypot(site.x, site.z)).toBeGreaterThanOrEqual(ringInnerRadius);
+            // The high-ground piece is the one exception to the outer-third ring.
+            if (site.id !== HIGH_GROUND_PART_ID) {
+                expect(Math.hypot(site.x, site.z)).toBeGreaterThanOrEqual(ringInnerRadius);
+            }
             expect(site.y).toBeCloseTo(terrain.heightAt(site.x, site.z), 6);
             if (site.y < WATER_LEVEL) {
                 expect(WATER_LEVEL - site.y).toBeGreaterThanOrEqual(2.5);
@@ -145,6 +154,41 @@ describe('spaceship parts', () => {
 
         parts.dispose();
     });
+
+    it('places the high-ground piece in the top fifth of interior elevations, clear of the rim', () => {
+        for (const seed of [1234, 42]) {
+            const terrain = testTerrain(seed);
+            const { audio } = stubAudio();
+            const parts = new SpaceshipParts(terrain, audio);
+            const site = parts.getSites().find((entry) => entry.id === HIGH_GROUND_PART_ID);
+            expect(site, `seed ${seed}`).toBeDefined();
+            if (!site) {
+                continue;
+            }
+
+            expect(terrain.isInRim(site.x, site.z, HIGH_GROUND_RIM_CLEARANCE), `seed ${seed}`).toBe(false);
+
+            // The piece has to sit at or above the 80th percentile of dry interior ground, using
+            // the same coarse sample grid the placer uses.
+            const heights: number[] = [];
+            for (let z = -WORLD_HALF_SIZE; z <= WORLD_HALF_SIZE; z += 32) {
+                for (let x = -WORLD_HALF_SIZE; x <= WORLD_HALF_SIZE; x += 32) {
+                    if (terrain.isInRim(x, z, HIGH_GROUND_RIM_CLEARANCE)) {
+                        continue;
+                    }
+                    const height = terrain.heightAt(x, z);
+                    if (height > WATER_LEVEL + 2) {
+                        heights.push(height);
+                    }
+                }
+            }
+            heights.sort((left, right) => left - right);
+            const threshold = heights[Math.floor(heights.length * 0.8)];
+            expect(site.y, `seed ${seed}`).toBeGreaterThanOrEqual(threshold);
+
+            parts.dispose();
+        }
+    }, 30_000);
 
     it('submerges a piece for every world seed', () => {
         // Seed 139 keeps its deep water in the shelf beyond the placement square.

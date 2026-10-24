@@ -29,21 +29,32 @@ export interface SpaceshipSite {
     yaw: number;
 }
 
-export interface SpaceshipCollider {
-    kind: 'spaceship';
-    x: number;
-    z: number;
-    radius: number;
+// One edge of the closed wall that keeps the player out of the landed hull. The segment runs
+// through the world in XZ; `base` and `top` bound the height of the wall and `margin` keeps the
+// body off the blade bevel that sticks out past the planform.
+export interface SpaceshipWall {
+    x1: number;
+    z1: number;
+    x2: number;
+    z2: number;
     base: number;
     top: number;
+    margin: number;
 }
 
 // Radius cleared of trees and rocks so the ship reads as a landed object instead of growing out of
 // the scenery. Slightly larger than the interceptor's wing span.
 export const SPACESHIP_CLEARING_RADIUS = 14;
+// The repaired ship hovers with its belly this far above the highest of the wingtip and nose
+// ground samples used to rest it on the terrain.
+export const SPACESHIP_HOVER_CLEARANCE = 1.5;
 
 // The interceptor is built in compact units and then scaled up as one piece.
 const SHIP_SCALE = 2.55;
+// The wing's bevel widens it past the planform shape. Collision uses the same value so the player
+// is held clear of that lip as well as the outline itself.
+const WING_BEVEL = 0.12;
+export const SPACESHIP_HULL_MARGIN = WING_BEVEL * SHIP_SCALE;
 // Wingtip reference point in compact model units, shared by the ground-fit samples, the planform,
 // and the flight effects that stream from the tips.
 const WING_Y = 2.05;
@@ -72,6 +83,7 @@ const ENGINE_CUTOUT_RADIUS = 0.5;
 const SMOKE_COLORS = [0x232220, 0x2a2926, 0x32302c];
 // The grass field is one alpha-blended draw at renderOrder 0, so its camera-relative sort would
 // otherwise put blades in front of puffs that are farther away. Draw the plume after the foliage.
+// The engine flame shares this order so additive light is not blended under the blades either.
 // The megastructure glazing (WINDOW_GLASS_RENDER_ORDER) deliberately draws after this, so smoke
 // behind a window reads as being behind it.
 export const SMOKE_RENDER_ORDER = 1;
@@ -101,19 +113,18 @@ const REPAIRED_ENGINE_INTENSITY = 6.2;
 const REPAIRED_GLOW_SCALE = 2.9 * SHIP_SCALE;
 const HYPERDRIVE_WHITE = new Color(0xffffff);
 const HYPERDRIVE_EMISSIVE_INTENSITY = 12;
-// Overlapping circles approximate the delta footprint for the player's cylinder collision.
-const COLLIDER_FOOTPRINT = [
-    { x: 0, z: 3.8, radius: 0.55 },
-    { x: 0, z: 2.4, radius: 0.85 },
-    { x: 0, z: 0.8, radius: 1.6 },
-    { x: -1.7, z: -1.0, radius: 1.1 },
-    { x: 1.7, z: -1.0, radius: 1.1 },
-    { x: 0, z: -1.8, radius: 1.2 },
-    // Both wingtips sit below head height, so cap them separately. The delta's nose tapers to a
-    // point ahead of the forward fuselage circle.
-    { x: -2.9, z: -2.15, radius: 0.8 },
-    { x: 2.9, z: -2.15, radius: 0.8 },
-    { x: 0, z: 4.35, radius: 0.45 },
+// Closed planform used for the player's hull collision, in the same compact model units as the
+// wing. Following the real delta outline keeps the player from either clipping a wing edge or
+// being stopped in mid-air beside it. The two rear points cover the thruster nozzles, which poke
+// out behind the wing's trailing edge.
+export const SPACESHIP_HULL_OUTLINE: readonly { x: number; z: number }[] = [
+    { x: 0, z: 4.8 },
+    { x: -WING_TIP_X, z: WING_TIP_Z },
+    { x: -1.05, z: -2.9 },
+    { x: -0.83, z: -3.15 },
+    { x: 0.83, z: -3.15 },
+    { x: 1.05, z: -2.9 },
+    { x: WING_TIP_X, z: WING_TIP_Z },
 ];
 
 interface SmokePuff {
@@ -185,8 +196,6 @@ function createSmokeGeometries(): BufferGeometry[] {
     });
 }
 
-const shipLocalScratch = new Vector3();
-
 // Maps a point from the ship's compact model space onto the world, applying the site yaw and the
 // model-to-world scale. The caller sets Y from the terrain.
 export function shipLocalToWorld(site: SpaceshipSite, localX: number, localZ: number, target = new Vector3()): Vector3 {
@@ -199,18 +208,51 @@ export function shipLocalToWorld(site: SpaceshipSite, localX: number, localZ: nu
     );
 }
 
-// Smallest horizontal gap between a point and the hull's collision footprint, measured from the
-// footprint circle edges. World generation uses it to keep the opening gathering clear of the
-// wreck without constructing the ship itself.
-export function shipFootprintClearance(site: SpaceshipSite, x: number, z: number): number {
-    let clearance = Infinity;
+const hullOutlineScratch = SPACESHIP_HULL_OUTLINE.map(() => new Vector3());
 
-    for (const circle of COLLIDER_FOOTPRINT) {
-        const world = shipLocalToWorld(site, circle.x, circle.z, shipLocalScratch);
-        clearance = Math.min(clearance, Math.hypot(x - world.x, z - world.z) - circle.radius * SHIP_SCALE);
+// Smallest horizontal gap between a point and the hull outline. Negative values mean the point is
+// inside the planform. World generation uses it to keep the opening gathering clear of the wreck
+// without constructing the ship itself.
+export function shipFootprintClearance(site: SpaceshipSite, x: number, z: number): number {
+    for (let index = 0; index < SPACESHIP_HULL_OUTLINE.length; index++) {
+        const point = SPACESHIP_HULL_OUTLINE[index];
+        shipLocalToWorld(site, point.x, point.z, hullOutlineScratch[index]);
     }
 
-    return clearance;
+    let clearance = Infinity;
+    for (let index = 0; index < hullOutlineScratch.length; index++) {
+        const start = hullOutlineScratch[index];
+        const end = hullOutlineScratch[(index + 1) % hullOutlineScratch.length];
+        clearance = Math.min(clearance, pointSegmentDistance(x, z, start.x, start.z, end.x, end.z));
+    }
+
+    return pointInPolygon(x, z, hullOutlineScratch) ? -clearance : clearance;
+}
+
+function pointSegmentDistance(px: number, pz: number, ax: number, az: number, bx: number, bz: number): number {
+    const edgeX = bx - ax;
+    const edgeZ = bz - az;
+    const lengthSquared = edgeX * edgeX + edgeZ * edgeZ;
+    const along =
+        lengthSquared > 0 ? Math.max(0, Math.min(1, ((px - ax) * edgeX + (pz - az) * edgeZ) / lengthSquared)) : 0;
+    return Math.hypot(px - (ax + edgeX * along), pz - (az + edgeZ * along));
+}
+
+function pointInPolygon(x: number, z: number, points: readonly Vector3[]): boolean {
+    let inside = false;
+    for (let index = 0, previous = points.length - 1; index < points.length; previous = index++) {
+        const currentPoint = points[index];
+        const previousPoint = points[previous];
+        if (
+            currentPoint.z > z !== previousPoint.z > z &&
+            x <
+                ((previousPoint.x - currentPoint.x) * (z - currentPoint.z)) / (previousPoint.z - currentPoint.z) +
+                    currentPoint.x
+        ) {
+            inside = !inside;
+        }
+    }
+    return inside;
 }
 
 // Pick a dry, gently sloped clearing in front of the spawn. The ship faces back toward the robot so
@@ -274,7 +316,7 @@ export function findSpaceshipSite(
 export class Spaceship {
     readonly group = new Group();
     readonly materials: MeshStandardMaterial[] = [];
-    readonly colliders: SpaceshipCollider[] = [];
+    readonly walls: SpaceshipWall[] = [];
 
     private visual = new Group();
     private smokeGroup = new Group();
@@ -295,6 +337,9 @@ export class Spaceship {
     private repaired = false;
     private hyperdriveGlow = 0;
     private elapsed = 0;
+    // Highest terrain sampled under the wingtips and nose by restOnTerrain(). The hover keeps the
+    // level hull clear of that point.
+    private highestGroundY = 0;
 
     constructor(site: SpaceshipSite, heightAt: (x: number, z: number) => number) {
         this.group.name = 'spaceship';
@@ -304,12 +349,15 @@ export class Spaceship {
         this.visual.name = 'spaceship-body';
         this.group.add(this.visual, this.smokeGroup);
 
-        this.build(site, heightAt);
+        this.build();
         // The hull is static, so every material can become one mesh. Engine glows are sprites and
         // stay separate; the engine material itself still animates the merged thruster mesh.
         mergeMeshesByMaterial(this.visual);
         this.captureMaterialBases();
         this.restOnTerrain(site, heightAt);
+        // The hull pose is final once it rests on the terrain, so the walls follow the same tilt the
+        // player sees instead of the flat yaw-only footprint.
+        this.buildWalls();
         this.group.traverse((child) => {
             if (child instanceof Mesh) {
                 const materials = Array.isArray(child.material) ? child.material : [child.material];
@@ -331,6 +379,20 @@ export class Spaceship {
     getWingtipPosition(side: number, target: Vector3): Vector3 {
         return this.visual.localToWorld(
             target.set(side * WING_TIP_X * SHIP_SCALE, WING_Y * SHIP_SCALE, WING_TIP_Z * SHIP_SCALE),
+        );
+    }
+
+    // World-space midpoint of the twin thrusters, used to anchor the burning-wreck audio. Going
+    // through the visual transform keeps it correct for the hull pose fitted to the terrain.
+    getEnginePosition(target: Vector3): Vector3 {
+        return this.visual.localToWorld(target.set(0, ENGINE_Y * SHIP_SCALE, ENGINE_Z * SHIP_SCALE));
+    }
+
+    // World-space hull planform following the landed hull's terrain tilt. Walking collision and the
+    // regression test both measure against this polygon.
+    getHullOutline(): Vector3[] {
+        return SPACESHIP_HULL_OUTLINE.map((point) =>
+            this.visual.localToWorld(new Vector3(point.x * SHIP_SCALE, WING_Y * SHIP_SCALE, point.z * SHIP_SCALE)),
         );
     }
 
@@ -400,7 +462,8 @@ export class Spaceship {
     }
 
     // Swaps the burning engine for the cold blue-white drive. Used by the finale before the repaired
-    // ship is shown and flown. The hull stays where it is: resting on the ground until takeoff.
+    // ship is shown and flown. The hull's pose is untouched; its rest is on the ground until the
+    // finale calls hover().
     setRepaired(): void {
         if (this.repaired) {
             return;
@@ -431,6 +494,14 @@ export class Spaceship {
         // The hyperdrive ramp restores from these bases, so capture the repaired colours rather
         // than the dark, unpowered ones seen before the parts were fitted.
         this.captureMaterialBases();
+    }
+
+    // Lifts the parked hull level with the XZ plane, its belly at the clearance above the highest
+    // of the same wingtip and nose samples that rested it on the terrain. The group yaw is kept, so
+    // the nose still points where the site faced.
+    hover(clearance = SPACESHIP_HOVER_CLEARANCE): void {
+        this.visual.quaternion.identity();
+        this.visual.position.y = this.highestGroundY + clearance - GROUND_REST_OFFSET - this.group.position.y;
     }
 
     // Lifts the parked hull back onto the model origin for the flight sequence. While landed the
@@ -596,7 +667,7 @@ export class Spaceship {
         });
     }
 
-    private build(site: SpaceshipSite, heightAt: (x: number, z: number) => number): void {
+    private build(): void {
         const hull = this.createMaterial(0xc4c1b4, 0.72, 0.32);
         const shade = this.createMaterial(0x91938c, 0.8, 0.35);
         const dark = this.createMaterial(0x4a5357, 0.62, 0.5);
@@ -622,7 +693,7 @@ export class Spaceship {
         addEngineCutouts(wingShape, -2.9);
         wingShape.lineTo(WING_TIP_X, WING_TIP_Z);
         wingShape.closePath();
-        const wingGeometry = createBladeGeometry(wingShape, 0.04, 0.12);
+        const wingGeometry = createBladeGeometry(wingShape, 0.04, WING_BEVEL);
         wingGeometry.rotateX(Math.PI / 2);
         this.addMesh(wingGeometry, hull, 0, WING_Y, 0);
 
@@ -733,21 +804,33 @@ export class Spaceship {
             const glow = new Sprite(this.engineGlowMaterial);
             glow.position.set(x * SHIP_SCALE, ENGINE_Y * SHIP_SCALE, (ENGINE_Z - 0.24) * SHIP_SCALE);
             glow.scale.setScalar(2.2 * SHIP_SCALE);
+            glow.renderOrder = SMOKE_RENDER_ORDER;
             this.engineGlows.push(glow);
             this.visual.add(glow);
         }
+    }
 
+    // Collision walls are built from the post-rest outline, so they follow the hull's terrain tilt.
+    private buildWalls(): void {
         const centerY = this.group.position.y;
+        const outline = this.getHullOutline();
+        const lowest = Math.min(centerY, ...outline.map((point) => point.y));
+        // The fuselage reaches well below the wing plane, and the player can jump well above it.
+        // Span the whole column so neither a downhill nor an uphill approach can slip past.
+        const base = lowest - 2;
+        const top = centerY + 3.9 * SHIP_SCALE;
 
-        for (const circle of COLLIDER_FOOTPRINT) {
-            const world = shipLocalToWorld(site, circle.x, circle.z, shipLocalScratch);
-            this.colliders.push({
-                kind: 'spaceship',
-                x: world.x,
-                z: world.z,
-                radius: circle.radius * SHIP_SCALE,
-                base: Math.min(centerY, heightAt(world.x, world.z)) - 0.5,
-                top: centerY + 3.9 * SHIP_SCALE,
+        for (let index = 0; index < outline.length; index++) {
+            const start = outline[index];
+            const end = outline[(index + 1) % outline.length];
+            this.walls.push({
+                x1: start.x,
+                z1: start.z,
+                x2: end.x,
+                z2: end.z,
+                base,
+                top,
+                margin: SPACESHIP_HULL_MARGIN,
             });
         }
     }
@@ -763,6 +846,7 @@ export class Spaceship {
         });
         const [leftWing, rightWing, nose] = samples;
         const centre = new Vector3().addVectors(leftWing, rightWing).add(nose).divideScalar(samples.length);
+        this.highestGroundY = Math.max(leftWing.y, rightWing.y, nose.y);
 
         // The centre sample is the average of the other three, so the plane through them already
         // passes through it. Keep the normal pointing up regardless of the sample winding.

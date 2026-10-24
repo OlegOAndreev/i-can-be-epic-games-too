@@ -343,6 +343,52 @@ describe('ship engine', () => {
     });
 });
 
+describe('ship fire', () => {
+    it('queues the wreck loop until the graph is ready and fades it with distance', () => {
+        const audio = new GameAudio();
+        audio.playShipFire(new Vector3(3, 4, 5));
+        const pending = (audio as unknown as { pendingShipFirePosition: Vector3 | null }).pendingShipFirePosition;
+        expect(pending).not.toBeNull();
+
+        const context = new FakeAudioContext();
+        const originalCreateBufferSource = context.createBufferSource.bind(context);
+        context.createBufferSource = () => trackStop(originalCreateBufferSource());
+        Object.assign(audio, {
+            context: context as unknown as AudioContext,
+            master: new FakeGainNode() as unknown as GainNode,
+            effectsGain: new FakeGainNode() as unknown as GainNode,
+            shipFireBuffer: { duration: 6 } as AudioBuffer,
+        });
+        (audio as unknown as { startPendingShipFire: () => void }).startPendingShipFire();
+
+        expect(context.sources).toHaveLength(1);
+        expect(context.sources[0].loop).toBe(true);
+        expect(audio.getActiveSounds().find((sound) => sound.source === 'ship-fire')?.position).toEqual({
+            x: 3,
+            y: 4,
+            z: 5,
+        });
+
+        // Asking again while the loop is already running must not stack a second source.
+        audio.playShipFire(new Vector3());
+        expect(context.sources).toHaveLength(1);
+
+        const fireGain = (audio as unknown as { shipFireGain: FakeGainNode }).shipFireGain;
+        audio.setShipFireDistance(0);
+        expect(fireGain.gain.target).toBeCloseTo(0.28, 5);
+        audio.setShipFireDistance(4);
+        expect(fireGain.gain.target).toBeCloseTo(0.28, 5);
+        audio.setShipFireDistance(12);
+        expect(fireGain.gain.target).toBeCloseTo(0.14, 5);
+        audio.setShipFireDistance(32);
+        expect(fireGain.gain.target).toBe(0);
+
+        audio.stopShipFire(0.5);
+        expect((context.sources[0] as StopRecordingSource).stopAt).toBeCloseTo(0.5, 5);
+        expect(audio.getActiveSounds()).toHaveLength(0);
+    });
+});
+
 describe('fall wind', () => {
     it('fades one looping source in with the fall speed without stacking sources', () => {
         const { audio, context, sources } = createAudio();

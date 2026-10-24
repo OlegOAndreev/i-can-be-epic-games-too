@@ -7,6 +7,9 @@ import type { Terrain } from './terrain';
 
 const CONTOUR_STEP = 4;
 const CYCLE_SECONDS = 5;
+// Foam lies on the water surface: after the transparent sea (renderOrder -1) but below the grass
+// (0) and the ship's smoke and engine glow (1), which sit above the waterline.
+export const SHORE_FOAM_RENDER_ORDER = -0.5;
 // Foam amount follows the surface area of the body it rings: a puddle gets a token hairline of
 // lace, a lake gets real surf, and the ocean keeps the full treatment.
 const SMALL_POOL_AREA = 250;
@@ -209,7 +212,7 @@ diffuseColor.a *= erosion * across * vFoamAmount;`,
             const mesh = new Mesh(geometry, material);
             mesh.name = 'shore-foam';
             mesh.position.y = layerIndex * 0.003;
-            mesh.renderOrder = 2;
+            mesh.renderOrder = SHORE_FOAM_RENDER_ORDER;
             this.scene.add(mesh);
             this.meshes.push(mesh);
             this.layers.push({

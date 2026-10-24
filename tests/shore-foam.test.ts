@@ -1,7 +1,9 @@
 import { FrontSide, Mesh, MeshBasicMaterial, Scene } from 'three';
 import { describe, expect, it } from 'vitest';
 
-import { ShoreFoam, foamAmountForSurfaceArea } from '../src/shore-foam';
+import { GRASS_RENDER_ORDER } from '../src/grass';
+import { SHORE_FOAM_RENDER_ORDER, ShoreFoam, foamAmountForSurfaceArea } from '../src/shore-foam';
+import { SMOKE_RENDER_ORDER } from '../src/spaceship';
 import { testTerrain } from './test-helpers';
 
 describe('shore foam', () => {
@@ -57,6 +59,22 @@ describe('shore foam', () => {
 
         foam.dispose();
         expect(scene.children.length).toBe(0);
+    });
+
+    it('draws the foam above the sea but under the grass and ship effects', () => {
+        const terrain = testTerrain(20261018);
+        const scene = new Scene();
+        const foam = new ShoreFoam(scene, terrain);
+
+        for (const mesh of scene.children as Mesh[]) {
+            expect(mesh.renderOrder).toBe(SHORE_FOAM_RENDER_ORDER);
+            // The sea draws at -1, the grass at 0, and the ship's smoke and engine glow at 1.
+            expect(mesh.renderOrder).toBeGreaterThan(-1);
+            expect(mesh.renderOrder).toBeLessThan(GRASS_RENDER_ORDER);
+            expect(mesh.renderOrder).toBeLessThan(SMOKE_RENDER_ORDER);
+        }
+
+        foam.dispose();
     });
 
     it('faces every foam triangle up so the band is hidden from underwater', () => {

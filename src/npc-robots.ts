@@ -279,7 +279,9 @@ export class NpcRobots {
         this.waving = true;
     }
 
-    update(dt: number, playerPosition: Vector3, lookTarget: Vector3 = playerPosition): void {
+    // `allowDialogue` lets the opening cinematic keep the caretakers idle and looking at the player
+    // without starting the story. They still animate and still hand over the wrench on distance.
+    update(dt: number, playerPosition: Vector3, lookTarget: Vector3 = playerPosition, allowDialogue = true): void {
         this.elapsed += dt;
         for (const actor of this.actors) {
             const dx = lookTarget.x - actor.group.position.x;
@@ -309,6 +311,10 @@ export class NpcRobots {
             this.seeingIntro = true;
             this.wrenchClaimed = true;
             this.stopDialogue();
+        }
+
+        if (!allowDialogue) {
+            return;
         }
 
         if (this.finished || this.dialogue.length === 0) {

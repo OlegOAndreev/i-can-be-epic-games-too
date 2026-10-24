@@ -85,6 +85,17 @@ const PLACEMENT_RING_INNER_FRACTION = 2 / 3;
 // outer third, only offer spots closer to the middle. The search then widens to this radius rather
 // than failing to place a piece.
 const PLACEMENT_FALLBACK_MIN_RADIUS = 180;
+// One piece is a high-ground find: the antenna is placed in the top 20% of the island's dry
+// interior elevations. The rim is scenery rather than playable ground, so it is excluded. The
+// 80th percentile is sampled on a coarse grid, then the highest valid spot in that band wins.
+export const HIGH_GROUND_PART_ID = 'antenna';
+const HIGH_GROUND_BAND = 0.2;
+const HIGH_GROUND_SAMPLE_STEP = 32;
+const HIGH_GROUND_SEARCH_STEP = 24;
+// High ground is often steeper than the lowland sites, so this piece gets a little more slope.
+const HIGH_GROUND_MAX_SLOPE = 0.45;
+// Keep the high piece clear of the rim's foot as well as the rim proper.
+export const HIGH_GROUND_RIM_CLEARANCE = 0.04;
 
 // Samples a ring around the origin, keeping the first point the validator accepts. The angle is
 // drawn before the radius so the caller's random sequence stays stable.
@@ -311,11 +322,16 @@ export class SpaceshipParts {
     private buildParts(): void {
         const placedPositions: Array<{ x: number; z: number }> = [];
         for (let index = 0; index < PART_DEFINITIONS.length; index++) {
+            const definition = PART_DEFINITIONS[index];
             // The first piece goes down first so the underwater search never has to dodge the others.
             const position =
-                index === 0 ? this.findUnderwaterPosition(placedPositions) : this.findPosition(placedPositions);
+                index === 0
+                    ? this.findUnderwaterPosition(placedPositions)
+                    : definition.id === HIGH_GROUND_PART_ID
+                      ? this.findHighGroundPosition(placedPositions)
+                      : this.findPosition(placedPositions);
             placedPositions.push(position);
-            this.parts.push(this.createPart(PART_DEFINITIONS[index], position));
+            this.parts.push(this.createPart(definition, position));
         }
     }
 
@@ -410,6 +426,70 @@ export class SpaceshipParts {
                 this.isValidPosition(x, z, spawn, placed, MIN_SPAWN_DISTANCE, MIN_PART_DISTANCE),
             ) ?? this.findFallbackPosition(spawn, placed)
         );
+    }
+
+    // Puts the high-ground piece on the highest valid spot in the top 20% of the island's dry
+    // interior elevations, away from the rim. If the island has no valid spot that high, the
+    // highest valid interior spot is used so the world still gets all five pieces.
+    private findHighGroundPosition(placed: ReadonlyArray<{ x: number; z: number }>): { x: number; z: number } {
+        const spawn = this.terrain.spawn;
+        const threshold = this.highGroundThreshold();
+        let bestInBand: { x: number; z: number } | null = null;
+        let bestInBandHeight = -Infinity;
+        let bestAny: { x: number; z: number } | null = null;
+        let bestAnyHeight = -Infinity;
+
+        for (let z = -WORLD_HALF_SIZE; z <= WORLD_HALF_SIZE; z += HIGH_GROUND_SEARCH_STEP) {
+            for (let x = -WORLD_HALF_SIZE; x <= WORLD_HALF_SIZE; x += HIGH_GROUND_SEARCH_STEP) {
+                if (this.terrain.isInRim(x, z, HIGH_GROUND_RIM_CLEARANCE)) {
+                    continue;
+                }
+                const height = this.terrain.heightAt(x, z);
+                if (height < WATER_LEVEL + 2) {
+                    continue;
+                }
+                if (this.terrain.slopeAt(x, z) > HIGH_GROUND_MAX_SLOPE) {
+                    continue;
+                }
+                if (!this.hasClearance(x, z, spawn, placed, MIN_SPAWN_DISTANCE, MIN_PART_DISTANCE)) {
+                    continue;
+                }
+
+                if (height > bestAnyHeight) {
+                    bestAnyHeight = height;
+                    bestAny = { x, z };
+                }
+                if (height >= threshold && height > bestInBandHeight) {
+                    bestInBandHeight = height;
+                    bestInBand = { x, z };
+                }
+            }
+        }
+
+        return bestInBand ?? bestAny ?? this.findPosition(placed);
+    }
+
+    // The 80th percentile of dry interior ground. The rim is excluded so its peaks do not define
+    // the band the piece is allowed to use.
+    private highGroundThreshold(): number {
+        const heights: number[] = [];
+        for (let z = -WORLD_HALF_SIZE; z <= WORLD_HALF_SIZE; z += HIGH_GROUND_SAMPLE_STEP) {
+            for (let x = -WORLD_HALF_SIZE; x <= WORLD_HALF_SIZE; x += HIGH_GROUND_SAMPLE_STEP) {
+                if (this.terrain.isInRim(x, z, HIGH_GROUND_RIM_CLEARANCE)) {
+                    continue;
+                }
+                const height = this.terrain.heightAt(x, z);
+                if (height > WATER_LEVEL + 2) {
+                    heights.push(height);
+                }
+            }
+        }
+
+        if (heights.length === 0) {
+            return WATER_LEVEL + 2;
+        }
+        heights.sort((left, right) => left - right);
+        return heights[Math.floor(heights.length * (1 - HIGH_GROUND_BAND))];
     }
 
     // Coarse scan used only if the random samples keep landing in water or on cliffs.

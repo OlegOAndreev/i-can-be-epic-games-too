@@ -58,6 +58,7 @@ import { initI18n, locale, t } from './i18n';
 import type { Locale } from './i18n';
 import { IdleManager } from './idle-manager';
 import { Input } from './input';
+import { IntroCinematic } from './intro-cinematic';
 import { angleDelta, clamp, damp } from './math-utils';
 import { MEGASTRUCTURE_LAYER } from './megastructures';
 import type { MegastructureTower } from './megastructures';
@@ -164,6 +165,8 @@ const PLAYER_SAVE_INTERVAL = 10;
 // whiteout starts fading in just before the bolt and then clears after its hold over 160 ms.
 const SCREEN_FADE_OUT_SECONDS = 0.3;
 const SCREEN_FADE_IN_SECONDS = 0.6;
+// The opening orbit is already moving behind the black, so this reveal is long and soft.
+const INTRO_FADE_IN_SECONDS = 1.4;
 // Hold the full-white frame for a beat, like the death respawn, before revealing the finale.
 const FINALE_WHITE_HOLD_SECONDS = 0.4;
 const LIGHTNING_FADE_OUT_SECONDS = 0.16;
@@ -263,6 +266,7 @@ interface StoredPlayerState {
     energyRemaining?: number;
     mineralsCollected?: number;
     introSeen?: boolean;
+    introCinematicSeen?: boolean;
     guidedWolfIds?: number[];
 }
 
@@ -345,6 +349,10 @@ function readStoredPlayerState(): StoredPlayerState | null {
                 ? Math.max(0, Math.floor(state.mineralsCollected))
                 : undefined,
             introSeen: state.introSeen === true,
+            // Keep "not recorded" distinct from "recorded as not seen": saves written before the
+            // cinematic existed belong to a run already in progress and must not replay the opening.
+            introCinematicSeen:
+                state.introCinematicSeen === true ? true : state.introCinematicSeen === false ? false : undefined,
         };
     } catch {
         return null;
@@ -373,6 +381,7 @@ function storePlayerState(): void {
             energyRemaining,
             mineralsCollected,
             introSeen: npcRobots.introSeen,
+            introCinematicSeen,
             guidedWolfIds: robotAnimals.getGuidedWolfIds(),
         };
         window.localStorage.setItem(PLAYER_STORAGE_KEY, JSON.stringify(state));
@@ -794,6 +803,11 @@ let playerRecovering = false;
 const playerRespawnPosition = new Vector3();
 let playerRespawnFacing = 0;
 let robotStory: RobotDialogue = { intro: [], outro: [] };
+// The silent opening shot plays once per world, after the first pointer lock. It is separate from
+// `npcRobots.introSeen`, which tracks the spoken story.
+let introCinematic: IntroCinematic | null = null;
+let introPending = false;
+let introCinematicSeen = false;
 // The wolf being petted, held until the gesture finishes so the follow-up starts in sync.
 let pettingWolfId: number | null = null;
 const pettingWolfPosition = new Vector3();
@@ -861,6 +875,7 @@ let dialogueSpeaker: HTMLSpanElement;
 let dialogueText: HTMLParagraphElement;
 let lightningFlash: ScreenOverlay;
 let deathFade: ScreenOverlay;
+let introFade: ScreenOverlay;
 let finaleFade: ScreenOverlay;
 let finaleTransitionRemaining = 0;
 let finaleTransitionActive = false;
@@ -979,6 +994,10 @@ function createWorldActors(terrain: Terrain): void {
     };
     view.scene.add(spaceshipParts.group);
     partsRemaining = spaceshipParts.remaining;
+
+    // The wreck burns for the whole run. Request the positional loop once; updateShipFireDistance()
+    // follows the player's distance to the hull from the walking update.
+    gameAudio.playShipFire(terrain.spaceship.getEnginePosition(new Vector3()));
 }
 
 async function init(): Promise<void> {
@@ -1218,6 +1237,13 @@ async function init(): Promise<void> {
     // Apply the stored view settings first; a shared link still wins by setting them again below.
     setFirstPerson(viewSettings.firstPerson);
     const storedPlayer = readStoredPlayerState();
+    // A shared link is a hand-off from a run already in progress, and a matching save that has
+    // already played the shot should stay silent. Old saves predate the field, so they count as
+    // having seen it; only a fresh world or a save written during the shot may replay it.
+    const matchingSave = storedPlayer !== null && storedPlayer.seed === worldSettings.seed;
+    introCinematicSeen =
+        sharedPlayerState !== null || (matchingSave && (storedPlayer.introCinematicSeen ?? true));
+    introPending = sharedPlayerState === null && !introCinematicSeen;
     if (storedPlayer && storedPlayer.seed === worldSettings.seed) {
         enemyRobots.restoreDefeatedEnemyIds(storedPlayer.defeatedEnemies ?? []);
         robotRemains.restoreClaimedIds(storedPlayer.claimedRemains ?? []);
@@ -1309,6 +1335,7 @@ async function init(): Promise<void> {
     dialogueText = getById<HTMLParagraphElement>('dialogue-text');
     damageVignette = new DamageVignette(view.renderer);
     deathFade = new ScreenOverlay(view.renderer, 0x000000);
+    introFade = new ScreenOverlay(view.renderer, 0x000000);
     finaleFade = new ScreenOverlay(view.renderer, 0xffffff);
     lightningFlash = new ScreenOverlay(view.renderer, 0xffffff);
     updateEnergyDisplay();
@@ -1334,12 +1361,12 @@ async function init(): Promise<void> {
         onToggleFullscreen: () => toggleFullscreen(),
         onScreenshot: () => saveScreenshot(),
         onToggleView: () => {
-            if (!finale?.active) {
+            if (!finale?.active && introCinematic === null) {
                 toggleFirstPerson();
             }
         },
         onSelectWeapon: (slot) => {
-            if (!finale?.active && !cinematicActive) {
+            if (!finale?.active && !cinematicActive && introCinematic === null) {
                 player.selectWeapon(slot === 2 ? 'rifle' : 'wrench');
             }
         },
@@ -1347,7 +1374,7 @@ async function init(): Promise<void> {
         onLogAudio: () => gameAudio.logActiveSounds(),
         onToggleMusic: () => toggleMusic(),
         onToggleMap: () => {
-            if (input.pointerLocked && !finale?.active) {
+            if (input.pointerLocked && !finale?.active && introCinematic === null) {
                 wreckMap.toggle();
             }
         },
@@ -1742,6 +1769,84 @@ function resumeWalking(): void {
     }
     gameAudio.start();
     input.requestPointerLock();
+}
+
+// Average of the four opening corners. The caretakers and the player stand on them, so this is
+// the centre of the tableau the orbit has to keep in frame.
+function introFormationCenter(target: Vector3): Vector3 {
+    target.set(0, 0, 0);
+    for (const point of terrain.startPoints) {
+        target.x += point.x;
+        target.z += point.z;
+    }
+    const count = Math.max(1, terrain.startPoints.length);
+    target.x /= count;
+    target.z /= count;
+    target.y = terrain.heightAt(target.x, target.z);
+    return target;
+}
+
+// Starts on the first pointer lock for a world that has not shown the shot yet. The menu must be
+// dismissed first because a browser only starts audio after a gesture, and the fade covers the
+// jump from the menu's sky backdrop to the crash site.
+function startIntroCinematicIfPending(): void {
+    if (!introPending || !worldReady || introCinematic !== null) {
+        return;
+    }
+
+    introPending = false;
+    // The orbit looks at the group, so the robot must be visible even when the saved preference
+    // is first person. The cinematic fades it out as the camera goes into its head.
+    player.group.visible = true;
+    player.setOpacity(1);
+    hideDialogueLine();
+    introCinematic = new IntroCinematic({
+        camera: view.camera,
+        terrain,
+        center: introFormationCenter(new Vector3()),
+        wreck: terrain.spaceshipSite,
+        // The third-person controller sits behind the player at this same offset, so the loop can
+        // finish exactly where the walking camera takes over.
+        startAngle: cameraController.yaw,
+        targetFov: (firstPerson) =>
+            firstPerson ? viewSettings.firstPersonFov : viewSettings.thirdPersonFov,
+        placeTargetCamera: () => cameraController.update(0, player.group.position, terrain, 0),
+        setFov: applyLensFov,
+    });
+    speedometer.classList.add('is-hidden');
+    terrain.setTreeCameraFade(true);
+    introFade.setOpacity(1);
+    introFade.fadeTo(0, INTRO_FADE_IN_SECONDS, 'out');
+}
+
+function finishIntroCinematic(): void {
+    introCinematic = null;
+    introCinematicSeen = true;
+    terrain.setTreeCameraFade(false);
+    introFade.setOpacity(0);
+    // The view mode may have been changed from the pause menu during the orbit; take the current
+    // setting rather than whatever lens the orbit happened to end on.
+    applyCameraFov();
+    player.setOpacity(1);
+    updatePlayerAppearance();
+    speedometer.classList.remove('is-hidden');
+    storePlayerState();
+}
+
+// A world rebuild invalidates the orbit's terrain and camera references. Restore the presentation
+// and let the next pointer lock start the shot on the new world.
+function abortIntroCinematic(): void {
+    // The tree fade can still be active when a world rebuild happens mid-intro.
+    terrain.setTreeCameraFade(false);
+    if (introCinematic === null) {
+        return;
+    }
+
+    introCinematic = null;
+    introFade.setOpacity(0);
+    player.setOpacity(1);
+    updatePlayerAppearance();
+    speedometer.classList.remove('is-hidden');
 }
 
 // Phases are weighted by how long they actually take, and progress is clamped so the bar never
@@ -2167,6 +2272,18 @@ function updateStructureHumDistances(): void {
     }
 }
 
+// Measured horizontally to the hull, so the fire fades in as the player walks up to the wreck.
+// GameAudio silences it past 32 m. The establishing orbit flies over the wreck, so the fire stays
+// muted until walking takes over.
+function updateShipFireDistance(introPlaying: boolean): void {
+    if (introPlaying) {
+        gameAudio.setShipFireDistance(Number.POSITIVE_INFINITY);
+        return;
+    }
+    const site = terrain.spaceshipSite;
+    gameAudio.setShipFireDistance(Math.hypot(player.group.position.x - site.x, player.group.position.z - site.z));
+}
+
 function wireDifficultySelect(): void {
     const select = getById<HTMLSelectElement>('difficulty-select');
     select.value = gameSettings.difficulty;
@@ -2319,7 +2436,7 @@ function shouldStartFinale(): boolean {
 
 // Hidden debug shortcut: fill every mission goal and jump directly into the finale.
 function startFinaleShortcut(): void {
-    if (finale || playerDestroyedRemaining > 0) {
+    if (finale || playerDestroyedRemaining > 0 || introCinematic !== null) {
         return;
     }
 
@@ -2379,6 +2496,9 @@ function startFinale(): void {
     firstPersonWrench.hide();
     firstPersonRifle.hide();
     wreckMap.setVisible(false);
+    // Finale.start() repairs the thrusters, so the burning-wreck loop must not linger under the
+    // celebration music.
+    gameAudio.stopShipFire();
     damageVignette.reset();
     playerHealth.reset();
     playerRecovering = false;
@@ -2564,6 +2684,9 @@ function updateWhiteout(dt: number): void {
 }
 
 function rebuildWorld(seed: number): void {
+    abortIntroCinematic();
+    introCinematicSeen = false;
+    introPending = true;
     if (finale) {
         finale.dispose();
         finale = null;
@@ -2591,6 +2714,7 @@ function rebuildWorld(seed: number): void {
     whiteoutRemaining = 0;
     pettingWolfId = null;
     lightningFlash.setOpacity(0);
+    gameAudio.stopShipFire();
     gameAudio.stopStructureBuzz();
     gameAudio.resetStructureHums();
     gameAudio.playWalkingMusic();
@@ -2835,6 +2959,7 @@ function renderFrame(): void {
     underwater.render(view.scene, view.camera, weaponOverlay);
     damageVignette.render();
     deathFade.render();
+    introFade.render();
     finaleFade.render();
     lightningFlash.render();
     const report = renderAudit?.endFrame();
@@ -2924,6 +3049,7 @@ function showRecordProfileStatus(message: string): void {
 
 function updateScreenFades(dt: number): void {
     deathFade.update(dt);
+    introFade.update(dt);
     lightningFlash.update(dt);
 
     if (finaleHoldRemaining > 0) {
@@ -2966,9 +3092,13 @@ function applyDebugSettings(): void {
 }
 
 function applyCameraFov(): void {
-    const fov = viewSettings.firstPerson ? viewSettings.firstPersonFov : viewSettings.thirdPersonFov;
-    // Fit the cascades to the configured lens so changing FOV does not leave the shadow maps sized
-    // for a wider view.
+    applyLensFov(viewSettings.firstPerson ? viewSettings.firstPersonFov : viewSettings.thirdPersonFov);
+}
+
+// Shared by the settings and the opening cinematic. Fitting the cascades to every intermediate
+// lens keeps the shadow resolution consistent while the cinematic widens from its establishing FOV
+// into the configured view.
+function applyLensFov(fov: number): void {
     (sun.shadow as CascadedSunLightShadow).fitFov = fov;
     (robotShadowSun.shadow as CascadedSunLightShadow).fitFov = fov;
     if (view.camera.fov === fov) {
@@ -3258,6 +3388,7 @@ function onPointerLockChange(locked: boolean): void {
         if (idleManager) {
             idleManager.disableIdle();
         }
+        startIntroCinematicIfPending();
     } else {
         // Suspend the whole graph so music and sound effects stop while the menu is open.
         gameAudio.suspend();
@@ -3510,6 +3641,9 @@ function megastructureEntrance(tower: MegastructureTower): { x: number; z: numbe
 // Debug shortcut: jump to a random megastructure entrance whose crown switch is still idle. The
 // finale owns the robot and the camera, so the shortcut stays out of it.
 function teleportToRandomMegastructure(): void {
+    if (introCinematic !== null) {
+        return;
+    }
     if (finale?.active || playerDestroyedRemaining > 0 || playerRecovering) {
         return;
     }
@@ -3531,6 +3665,9 @@ function teleportToRandomMegastructure(): void {
 // floor's robots back, so wherever it lands is hostile again. A peaceful run still teleports, it
 // just arrives on an empty deck.
 function goToCrazies(): void {
+    if (introCinematic !== null) {
+        return;
+    }
     if (playerDestroyedRemaining > 0) {
         return;
     }
@@ -3567,8 +3704,25 @@ function animate(): void {
         return;
     }
 
-    // Count only active play: the menu pauses the game and hidden tabs stop the render loop.
-    if (input.pointerLocked && !document.hidden) {
+    // The opening orbit owns the camera until it settles. It runs before the input and the walk
+    // simulation so the first visible frame is already the establishing shot.
+    let introPlaying = false;
+    if (introCinematic !== null) {
+        introCinematic.update(dt, viewSettings.firstPerson);
+        if (introCinematic.active) {
+            introPlaying = true;
+            // Keep the robot in the shot even when the saved view mode is first person. The fade
+            // into the head is driven below by the cinematic's opacity.
+            player.group.visible = true;
+            player.setOpacity(introCinematic.playerOpacity, 0);
+        } else {
+            finishIntroCinematic();
+        }
+    }
+
+    // Count only active play: the menu pauses the game, hidden tabs stop the render loop, and the
+    // opening shot is not part of the run.
+    if (input.pointerLocked && !document.hidden && !introPlaying) {
         levelElapsedSeconds += dt;
     }
 
@@ -3581,7 +3735,7 @@ function animate(): void {
         }
     }
 
-    if (!finale && shouldStartFinale()) {
+    if (!introPlaying && !finale && shouldStartFinale()) {
         beginFinaleTransition();
     }
     updateFinaleTransition(dt);
@@ -3604,7 +3758,7 @@ function animate(): void {
         ...robotAnimals.getColliders(),
         ...robotRemains.getColliders(),
     ];
-    if (input.pointerLocked && !cinematic) {
+    if (input.pointerLocked && !cinematic && !introPlaying) {
         const look = input.consumeLook();
         cameraController.rotate(look.x, look.y);
     } else {
@@ -3616,14 +3770,14 @@ function animate(): void {
     // in an attack. A press in the last moments of a swing is remembered and starts the next hold
     // when that swing ends.
     if (input.consumeAttackPress()) {
-        if (!tryPetWolf() && !player.beginWrenchHold()) {
+        if (!introPlaying && !tryPetWolf() && !player.beginWrenchHold()) {
             player.bufferWrenchPress();
         }
     }
     const attackHeld = input.attackHeld;
     player.update(
         dt,
-        cinematic ? CINEMATIC_INPUT : input.getPlayerInput(),
+        cinematic || introPlaying ? CINEMATIC_INPUT : input.getPlayerInput(),
         cameraController.yaw,
         terrain,
         actorColliders,
@@ -3650,7 +3804,7 @@ function animate(): void {
     const chargedSwing = player.isWrenchSwingCharged;
     const regularSwing = player.isWrenchSwinging && !chargedSwing;
     const swingAngle = chargedSwing || regularSwing ? player.wrenchSwingAngle : 0;
-    npcRobots.update(dt, player.group.position);
+    npcRobots.update(dt, player.group.position, player.group.position, !introPlaying);
     player.setWrenchEquipped(npcRobots.wrenchReady);
     const laserHits = enemyRobots.update(dt, player.group.position);
     playerDebris.update(dt);
@@ -3676,8 +3830,9 @@ function animate(): void {
     );
     updateSwitchLook(dt);
     updateStructureHumDistances();
+    updateShipFireDistance(introPlaying);
     updateWhiteout(dt);
-    if (!energyRevealed && (npcRobots.storyFinished || npcRobots.wrenchReady)) {
+    if (!introPlaying && !energyRevealed && (npcRobots.storyFinished || npcRobots.wrenchReady)) {
         revealMissionHud();
     }
 
@@ -3693,18 +3848,23 @@ function animate(): void {
         }
     }
 
-    cameraController.update(dt, player.group.position, terrain, player.knockdownProgress);
-    updateCinematicCamera(dt);
+    if (!introPlaying) {
+        cameraController.update(dt, player.group.position, terrain, player.knockdownProgress);
+        updateCinematicCamera(dt);
+    }
     underwater.update(dt, view.camera.position.y, WATER_LEVEL);
     view.camera.getWorldDirection(cameraForward);
     gameAudio.setListener(view.camera.position, cameraForward);
     gameAudio.setUnderwater(view.camera.position.y < WATER_LEVEL);
-    updatePlayerAppearance();
+    if (!introPlaying) {
+        updatePlayerAppearance();
+    }
     const firstPersonWeaponActive =
         cameraController.firstPerson &&
         (player.isWrenchEquipped || player.isRifleEquipped) &&
         playerDestroyedRemaining === 0 &&
-        !cinematicActive;
+        !cinematicActive &&
+        !introPlaying;
     const firstPersonWrenchActive = firstPersonWeaponActive && player.isWrenchEquipped;
     // Keep the viewmodel frame current before sampling the first-person trail.
     view.viewmodelRoot.position.copy(view.camera.position);

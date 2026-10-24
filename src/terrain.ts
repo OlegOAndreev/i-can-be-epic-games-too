@@ -59,9 +59,10 @@ import {
 } from './structure-frame';
 import type { StructureFrame } from './structure-frame';
 import { SPACESHIP_CLEARING_RADIUS, Spaceship, findSpaceshipSite, shipFootprintClearance } from './spaceship';
-import type { SpaceshipSite } from './spaceship';
+import type { SpaceshipSite, SpaceshipWall } from './spaceship';
 import { applyTerrainSurfaceShader, applyWaterSurfaceShader, getSurfaceTextures } from './textures';
 import type { WaterAnimation } from './textures';
+import { applyTreeCameraFade } from './tree-camera-fade';
 
 export const WATER_LEVEL = 0;
 export const WORLD_HALF_SIZE = 768;
@@ -454,6 +455,9 @@ export class Terrain {
     // stand on the other three.
     readonly startPoints: readonly SpawnPoint[];
     readonly colliders: CylinderCollider[] = [];
+    // The landed ship is a closed loop of walls rather than a filled footprint. Keeping the players
+    // out at the delta's own outline lets them walk right up to the wing without entering it.
+    readonly spaceshipWalls: SpaceshipWall[] = [];
     readonly megastructures: Megastructures;
     readonly spaceship: Spaceship;
     readonly spaceshipSite: SpaceshipSite;
@@ -502,6 +506,8 @@ export class Terrain {
     private treeHighMeshes: InstancedMesh[] = [];
     private leafLowCells: Array<Map<string, TreeCell>> = [];
     private leafHighMeshes: Array<InstancedMesh | null> = [];
+    private readonly treeFadeUniform = { value: 0 };
+    private readonly treeFadeMaterials: MeshStandardMaterial[] = [];
     private treeLodX = Number.NaN;
     private treeLodZ = Number.NaN;
     private treeLodCounts = { high: 0, low: 0, culled: 0 };
@@ -571,7 +577,7 @@ export class Terrain {
         if (options.decorations !== false) {
             this.buildDecorations();
         }
-        this.colliders.push(...this.spaceship.colliders);
+        this.spaceshipWalls.push(...this.spaceship.walls);
     }
 
     // Saved progress only needs the count; the world itself is rebuilt from its seed. Harvested
@@ -620,6 +626,14 @@ export class Terrain {
         return floor < ground ? floor : ground;
     }
 
+    // True inside the perimeter mountain rim's footprint. `margin` widens the excluded band so
+    // placement systems can keep clear of the rim's foot slope as well.
+    isInRim(x: number, z: number, margin = 0): boolean {
+        const xTerm = Math.pow(Math.abs(x) / WORLD_HALF_SIZE, 4);
+        const zTerm = Math.pow(Math.abs(z) / WORLD_HALF_SIZE, 4);
+        return Math.pow(xTerm + zTerm, 0.25) > RIM_FOOT - margin;
+    }
+
     // The world without its pools: the landscape the seed alone describes.
     private baseHeightAt(x: number, z: number): number {
         const noise = this.noise;
@@ -634,11 +648,19 @@ export class Terrain {
         const ridgeDetail =
             Math.pow(1 - Math.abs(noise.fbm(x * 0.009 - 53.6, z * 0.009 + 27.3, 4)), 1.3) - RIDGE_DETAIL_MEAN;
         const hills = noise.fbm(x * 0.0046 - 4.7, z * 0.0046 + 8.9, 3);
+        // Superellipse distance from the world centre: below RIM_FOOT this is interior ground.
+        const xTerm = Math.pow(Math.abs(x) / WORLD_HALF_SIZE, 4);
+        const zTerm = Math.pow(Math.abs(z) / WORLD_HALF_SIZE, 4);
+        const edge = Math.pow(xTerm + zTerm, 0.25);
 
-        const mountainMask = smoothstep(0.08, 0.6, noise.fbm(warpedX * 0.00055 + 90.1, warpedZ * 0.00055 - 40.7, 3));
+        const mountainField = noise.fbm(warpedX * 0.00055 + 90.1, warpedZ * 0.00055 - 40.7, 3);
+        const mountainMask = smoothstep(0.08, 0.6, mountainField);
+        // The ranges get a wider footprint than the mask that shapes the lowlands and sand flats,
+        // so they read as mountains instead of a few isolated peaks without disturbing those terms.
+        const mountainCoverage = smoothstep(-0.02, 0.42, mountainField + 0.01);
         const ridge = 1 - Math.abs(noise.fbm(warpedX * 0.0018 - 21.5, warpedZ * 0.0018 + 33.8, 5));
         const peakMask = smoothstep(0.05, 0.75, noise.fbm(warpedX * 0.00035 + 200.2, warpedZ * 0.00035 - 90.1, 2));
-        const mountains = Math.pow(ridge, 2.5) * (45 + 115 * peakMask) * mountainMask;
+        const mountains = Math.pow(ridge, 2.5) * (45 + 115 * peakMask) * mountainCoverage;
 
         const sand = this.sandField(x, z);
         const dunes = noise.fbm(x * 0.013 - 17.2, z * 0.013 + 44.8, 3);
@@ -648,13 +670,22 @@ export class Terrain {
         const sandFlats = sand * (1 - smoothstep(22, 58, lowland)) * (1 - mountainMask * 0.7) * (1 - basins * 0.85);
         const duneShaping = sandFlats * (dunes * 9 - 2) * DUNE_PROMINENCE;
         const relief = rolling * 40 * (1 - sand * 0.45) + ridgeDetail * 20 * (1 - sand * 0.55);
+        const seaDepth = this.seaDepthAt(x, z);
+        // Keep the ranges on the island's higher ground. This preserves the sea, the coast, and the
+        // low, flat sites that pools and megastructures are placed on.
+        const groundBeforeMountains =
+            lowland + hills * 4.5 * (1 - sand * 0.45) + relief + duneShaping - seaDepth;
+        const mountainGate = smoothstep(4, 20, groundBeforeMountains);
+        // Real ranges get a pronounced lift, while the gentle ground the pools, spawns, and tower
+        // sites are placed on keeps its original height. The lift fades out at the rim's foot so
+        // the edge skyline is unchanged.
+        const interior = 1 - smoothstep(0.8, 0.88, edge);
+        const liftedMountains =
+            mountains * (1 + 4 * smoothstep(2, 16, mountains) * interior) * mountainGate;
 
         // Raise the perimeter into a mountain ridge, which hides the edge of the world and gives the sea
         // its far shore. The ridge height comes from the peaks each side carries, so the skyline rises
         // and falls instead of running as one wall around the map.
-        const xTerm = Math.pow(Math.abs(x) / WORLD_HALF_SIZE, 4);
-        const zTerm = Math.pow(Math.abs(z) / WORLD_HALF_SIZE, 4);
-        const edge = Math.pow(xTerm + zTerm, 0.25);
         let rim = 0;
         if (edge > RIM_FOOT) {
             // The two sides meeting near a corner are blended by the same weights that shape the rim
@@ -672,10 +703,10 @@ export class Terrain {
             lowland +
             hills * 4.5 * (1 - sand * 0.45) +
             relief +
-            mountains +
+            liftedMountains +
             duneShaping +
             rim -
-            this.seaDepthAt(x, z)
+            seaDepth
         );
     }
 
@@ -868,19 +899,14 @@ export class Terrain {
                 continue;
             }
 
-            const reach =
-                flatRadius + shapeWobble + (shore.height + POOL_RIM_MARGIN - floorY) / limits.bankSlope;
+            const reach = flatRadius + shapeWobble + (shore.height + POOL_RIM_MARGIN - floorY) / limits.bankSlope;
             if (reach > radius * limits.maxReachScale) {
                 continue;
             }
             if (this.seaCornerDistanceAt(x, z) < this.seaShoreAt(x, z) + reach + POOL_SEA_CLEARANCE) {
                 continue;
             }
-            if (
-                this.pools.some(
-                    (pool) => Math.hypot(x - pool.x, z - pool.z) < reach + pool.reach + POOL_SEPARATION,
-                )
-            ) {
+            if (this.pools.some((pool) => Math.hypot(x - pool.x, z - pool.z) < reach + pool.reach + POOL_SEPARATION)) {
                 continue;
             }
 
@@ -1005,7 +1031,9 @@ export class Terrain {
     // wet forest cores and their surroundings keep both colours visible. The large water keeps a
     // green/sand shore, while inland pools are allowed to open onto orange banks.
     earthinessAt(x: number, z: number, height = this.heightAt(x, z)): number {
-        return 1 - this.greennessFromFields(this.seaCoastAt(height), this.forestField(x, z), this.poolProximityAt(x, z));
+        return (
+            1 - this.greennessFromFields(this.seaCoastAt(height), this.forestField(x, z), this.poolProximityAt(x, z))
+        );
     }
 
     private seaCoastAt(height: number): number {
@@ -1303,12 +1331,7 @@ export class Terrain {
     }
 
     // Pushes the world position by a correction expressed in a storey's local XZ plane.
-    private applyLocalCorrection(
-        frame: StructureFrame,
-        deltaX: number,
-        deltaZ: number,
-        position: Vector3,
-    ): void {
+    private applyLocalCorrection(frame: StructureFrame, deltaX: number, deltaZ: number, position: Vector3): void {
         if (deltaX === 0 && deltaZ === 0) {
             return;
         }
@@ -1413,8 +1436,7 @@ export class Terrain {
         this.crownSurfaceCount = 0;
         const baseX = spiral.worldX ?? spiral.x;
         const baseZ = spiral.worldZ ?? spiral.z;
-        const frame =
-            spiral.frame ?? createStructureFrame(baseX, spiral.baseY, baseZ, IDENTITY_FRAME.rotation);
+        const frame = spiral.frame ?? createStructureFrame(baseX, spiral.baseY, baseZ, IDENTITY_FRAME.rotation);
 
         // The ribbon is a ring around the frame's local Y axis. When the tower leans, that axis is
         // not world-vertical: the top of the spiral is shifted away from the base centre. Include
@@ -1423,8 +1445,7 @@ export class Terrain {
         const shift = Math.hypot(top.x - baseX, top.z - baseZ);
         const pointRadius = Math.hypot(x - baseX, z - baseZ);
         const minRadius = Math.min(spiral.baseRadius, spiral.topRadius) + spiral.gap - shift - margin;
-        const maxRadius =
-            Math.max(spiral.baseRadius, spiral.topRadius) + spiral.width + spiral.gap + shift + margin;
+        const maxRadius = Math.max(spiral.baseRadius, spiral.topRadius) + spiral.width + spiral.gap + shift + margin;
         if (pointRadius < minRadius - 1e-6 || pointRadius > maxRadius + 1e-6) {
             return 0;
         }
@@ -1728,6 +1749,16 @@ export class Terrain {
                 hitThisPass = true;
                 collided = true;
             }
+            // The landed hull is a closed wall loop, so a body can walk along the wing edge but
+            // cannot pass through it.
+            for (const wall of this.spaceshipWalls) {
+                if (!this.pushOutOfWall(position, radius, headY, wall)) {
+                    continue;
+                }
+
+                hitThisPass = true;
+                collided = true;
+            }
             // Moving actors are few and change every frame, so they stay out of the static grid.
             for (const collider of extraColliders) {
                 if (!this.pushOutOfCollider(position, radius, headY, collider)) {
@@ -1779,8 +1810,7 @@ export class Terrain {
                 const localLowY = rampLowY(ramp);
                 const localHighY = rampHighY(ramp);
                 const along = ramp.axis === 'x' ? local.x - localMinX : local.z - localMinZ;
-                const rampY =
-                    localLowY + (localHighY - localLowY) * clamp(along / Math.max(run, 0.001), 0, 1);
+                const rampY = localLowY + (localHighY - localLowY) * clamp(along / Math.max(run, 0.001), 0, 1);
 
                 // While on the walkway, the side rails keep the robot from stepping off the edge.
                 // The taller allowance treats a robot standing just below the low edge as being on
@@ -1886,12 +1916,7 @@ export class Terrain {
                     this.applyLocalCorrection(cone.frame, minimumRadius, 0, position);
                 } else {
                     const push = minimumRadius / pointRadius;
-                    this.applyLocalCorrection(
-                        cone.frame,
-                        local.x * push - local.x,
-                        local.z * push - local.z,
-                        position,
-                    );
+                    this.applyLocalCorrection(cone.frame, local.x * push - local.x, local.z * push - local.z, position);
                 }
 
                 hitThisPass = true;
@@ -2062,6 +2087,24 @@ export class Terrain {
         return pushOutOfCircle(position, collider.x, collider.z, radius + collider.radius);
     }
 
+    // A wall is a zero-thickness segment, so the player is held one body radius plus the wall's
+    // margin away from its nearest point. Two passes in resolveCollisions settle corners where two
+    // walls meet.
+    private pushOutOfWall(position: Vector3, radius: number, headY: number, wall: SpaceshipWall): boolean {
+        if (headY < wall.base || position.y + 0.25 > wall.top) {
+            return false;
+        }
+
+        const edgeX = wall.x2 - wall.x1;
+        const edgeZ = wall.z2 - wall.z1;
+        const lengthSquared = edgeX * edgeX + edgeZ * edgeZ;
+        const along =
+            lengthSquared > 0
+                ? clamp(((position.x - wall.x1) * edgeX + (position.z - wall.z1) * edgeZ) / lengthSquared, 0, 1)
+                : 0;
+        return pushOutOfCircle(position, wall.x1 + edgeX * along, wall.z1 + edgeZ * along, radius + wall.margin);
+    }
+
     private crownCatwalkLocal(catwalk: CrownCatwalk, x: number, z: number): { along: number; across: number } {
         const dx = x - (catwalk.worldX ?? catwalk.x);
         const dz = z - (catwalk.worldZ ?? catwalk.z);
@@ -2093,9 +2136,7 @@ export class Terrain {
         const along = this.structureLocalPoint.z;
         const across = this.structureLocalPoint.x;
         const inWalkway =
-            along >= -margin &&
-            along <= catwalk.length + margin &&
-            Math.abs(across) <= catwalk.width / 2 + margin;
+            along >= -margin && along <= catwalk.length + margin && Math.abs(across) <= catwalk.width / 2 + margin;
         const inLedge =
             along >= catwalk.length - margin &&
             along <= catwalk.length + catwalk.ledgeLength + margin &&
@@ -2112,6 +2153,22 @@ export class Terrain {
     setTreesVisible(visible: boolean): void {
         this.treesVisible = visible;
         this.applyTreeVisibility();
+    }
+
+    // The opening orbit keeps the camera at a fixed height, so nearby trees are faded out instead of
+    // pushing the camera up. Only the intro enables this; normal play keeps the trees opaque.
+    setTreeCameraFade(enabled: boolean): void {
+        this.treeFadeUniform.value = enabled ? 1 : 0;
+        for (const material of this.treeFadeMaterials) {
+            if (material.transparent === enabled) {
+                continue;
+            }
+            material.transparent = enabled;
+            // `transparent` changes the OPAQUE program define, so the material needs a fresh
+            // program. The opaque variant was already compiled at startup, so turning it off reuses
+            // that program.
+            material.needsUpdate = true;
+        }
     }
 
     private applyTreeVisibility(): void {
@@ -2647,6 +2704,8 @@ export class Terrain {
         this.treeHighMeshes = [];
         this.leafLowCells = [];
         this.leafHighMeshes = [];
+        this.treeFadeMaterials.length = 0;
+        this.treeFadeUniform.value = 0;
         this.group.clear();
         this.group.removeFromParent();
     }
@@ -3281,6 +3340,9 @@ export class Terrain {
             flatShading: true,
             vertexColors: true,
         });
+        applyTreeCameraFade(treeMaterial, this.treeFadeUniform);
+        applyTreeCameraFade(leafMaterial, this.treeFadeUniform);
+        this.treeFadeMaterials.push(treeMaterial, leafMaterial);
         // Some variants receive no instances and never get a mesh, so register every generated
         // tree and canopy geometry explicitly instead of relying on the scene traversal.
         this.disposables.push(

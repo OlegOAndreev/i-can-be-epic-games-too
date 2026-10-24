@@ -183,9 +183,10 @@ vec3 sampleSurfaceVariant(sampler2DArray maps, vec2 uv, float layerCount, float 
 }
 `;
 
-// Blends the ground texture arrays with a per-vertex splat weight, using world-space XZ projection.
-// Each biome blends between two adjacent style variants, and macro channels pick a different pair
-// over distance. Sand is sampled at two scales, so no single tile or style dominates.
+// Blends the ground texture arrays with a per-vertex splat weight, using triplanar world-space
+// projection so slopes keep their detail instead of stretching the overhead XZ projection. Each
+// biome blends between two adjacent style variants, and macro channels pick a different pair over
+// distance. Sand is sampled at two scales, so no single tile or style dominates.
 export function applyTerrainSurfaceShader(material: MeshStandardMaterial, textures: SurfaceTextures): void {
     material.onBeforeCompile = (shader) => {
         shader.uniforms.uGrassMaps = { value: textures.grass };
@@ -205,14 +206,19 @@ attribute vec3 splat;
 attribute float earth;
 varying vec3 vSplat;
 varying float vEarth;
-varying vec2 vSurfaceUv;`,
+varying vec2 vSurfaceUv;
+varying vec3 vSurfaceWorld;
+varying vec3 vSurfaceNormal;`,
             )
             .replace(
                 '#include <begin_vertex>',
                 `#include <begin_vertex>
 vSplat = splat;
 vEarth = earth;
-vSurfaceUv = (modelMatrix * vec4(transformed, 1.0)).xz;`,
+vec3 surfaceWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
+vSurfaceWorld = surfaceWorld;
+vSurfaceNormal = normalize(mat3(modelMatrix) * objectNormal);
+vSurfaceUv = surfaceWorld.xz;`,
             );
 
         shader.fragmentShader = shader.fragmentShader
@@ -229,7 +235,53 @@ uniform float uSandLayers;
 uniform float uStoneLayers;
 varying vec3 vSplat;
 varying float vEarth;
-varying vec2 vSurfaceUv;${SAMPLE_VARIANT_GLSL}`,
+varying vec2 vSurfaceUv;
+varying vec3 vSurfaceWorld;
+varying vec3 vSurfaceNormal;${SAMPLE_VARIANT_GLSL}
+vec3 sampleSurfaceTriplanar(
+    sampler2DArray maps,
+    vec3 world,
+    vec2 warp,
+    vec3 weights,
+    float layerCount,
+    float field,
+    float tile,
+    mat2 rotation,
+    vec2 offset
+) {
+    vec3 result = vec3(0.0);
+    float usedWeight = 0.0;
+    // A flat fragment only needs the overhead projection; the side projections only run once the
+    // surface tilts far enough for their weight to matter.
+    if (weights.y > 0.02) {
+        result += sampleSurfaceVariant(
+            maps,
+            rotation * ((world.xz + warp) / tile) + offset,
+            layerCount,
+            field
+        ) * weights.y;
+        usedWeight += weights.y;
+    }
+    if (weights.x > 0.02) {
+        result += sampleSurfaceVariant(
+            maps,
+            rotation * ((world.zy + warp) / tile) + offset,
+            layerCount,
+            field
+        ) * weights.x;
+        usedWeight += weights.x;
+    }
+    if (weights.z > 0.02) {
+        result += sampleSurfaceVariant(
+            maps,
+            rotation * ((world.xy + warp) / tile) + offset,
+            layerCount,
+            field
+        ) * weights.z;
+        usedWeight += weights.z;
+    }
+    return result / max(usedWeight, 0.0001);
+}`,
             )
             .replace(
                 '#include <color_fragment>',
@@ -238,8 +290,10 @@ vec2 macroUv = vSurfaceUv / ${MACRO_TILE.toFixed(1)};
 vec3 macroSample = texture2D(uMacroMap, macroUv).rgb;
 vec3 variantSample = texture2D(uMacroMap, vSurfaceUv / 83.0 + vec2(0.37, 0.61)).rgb;
 vec2 surfaceWarp = (macroSample.gb - 0.5) * 16.0;
-vec2 warpedSurfaceUv = vSurfaceUv + surfaceWarp;
 float variantJitter = 0.5 + 0.5 * sin(vSurfaceUv.x * 0.055 + sin(vSurfaceUv.y * 0.047) * 1.7);
+vec3 surfaceNormal = normalize(vSurfaceNormal);
+vec3 surfaceWeights = pow(abs(surfaceNormal), vec3(4.0));
+surfaceWeights /= max(surfaceWeights.x + surfaceWeights.y + surfaceWeights.z, 0.0001);
 
 // Skip biome samples whose splat weight cannot contribute visibly. The weights sum to one, so
 // at least one branch always runs; low-weight branches are normalized out at the end.
@@ -254,18 +308,27 @@ if (vSplat.x > 0.01) {
     float orangeSpan = max(orangeLayers - 1.0, 0.0) / max(uGrassLayers, 1.0);
     float greenStart = orangeLayers / max(uGrassLayers, 1.0);
     float greenSpan = max(uGrassGreenLayers - 1.0, 0.0) / max(uGrassLayers, 1.0);
-    vec2 grassUv = warpedSurfaceUv / ${GRASS_TILE.toFixed(1)};
-    vec3 greenDetail = sampleSurfaceVariant(
+    vec3 greenDetail = sampleSurfaceTriplanar(
         uGrassMaps,
-        grassUv,
+        vSurfaceWorld,
+        surfaceWarp,
+        surfaceWeights,
         uGrassLayers,
-        greenStart + grassNoise * greenSpan
+        greenStart + grassNoise * greenSpan,
+        ${GRASS_TILE.toFixed(1)},
+        mat2(1.0),
+        vec2(0.0)
     );
-    vec3 orangeDetail = sampleSurfaceVariant(
+    vec3 orangeDetail = sampleSurfaceTriplanar(
         uGrassMaps,
-        grassUv,
+        vSurfaceWorld,
+        surfaceWarp,
+        surfaceWeights,
         uGrassLayers,
-        grassNoise * orangeSpan
+        grassNoise * orangeSpan,
+        ${GRASS_TILE.toFixed(1)},
+        mat2(1.0),
+        vec2(0.0)
     );
     surfaceDetail += mix(greenDetail, orangeDetail, clamp(vEarth, 0.0, 1.0)) * vSplat.x;
     surfaceWeight += vSplat.x;
@@ -273,20 +336,31 @@ if (vSplat.x > 0.01) {
 
 if (vSplat.y > 0.01) {
     float sandField = macroSample.g * 1.5 + variantSample.b * 2.8 + variantJitter * 0.7;
-    vec3 sandDetail = sampleSurfaceVariant(
+    vec3 sandDetail = sampleSurfaceTriplanar(
         uSandMaps,
-        warpedSurfaceUv / ${SAND_TILE.toFixed(1)},
+        vSurfaceWorld,
+        surfaceWarp,
+        surfaceWeights,
         uSandLayers,
-        sandField
+        sandField,
+        ${SAND_TILE.toFixed(1)},
+        mat2(1.0),
+        vec2(0.0)
     );
     // The second sand scale only hides repetition; drop it once sand is a thin edge blend.
     if (vSplat.y > 0.12) {
-        vec2 sandAltUv = mat2(0.8, -0.6, 0.6, 0.8) * warpedSurfaceUv / 67.0 + vec2(0.41, 0.17);
-        sandDetail = mix(
-            sandDetail,
-            sampleSurfaceVariant(uSandMaps, sandAltUv, uSandLayers, sandField + 0.73),
-            0.3
+        vec3 sandAlt = sampleSurfaceTriplanar(
+            uSandMaps,
+            vSurfaceWorld,
+            surfaceWarp,
+            surfaceWeights,
+            uSandLayers,
+            sandField + 0.73,
+            67.0,
+            mat2(0.8, -0.6, 0.6, 0.8),
+            vec2(0.41, 0.17)
         );
+        sandDetail = mix(sandDetail, sandAlt, 0.3);
     }
     surfaceDetail += sandDetail * vSplat.y;
     surfaceWeight += vSplat.y;
@@ -294,11 +368,16 @@ if (vSplat.y > 0.01) {
 
 if (vSplat.z > 0.01) {
     float stoneField = macroSample.b * 1.6 + variantSample.r * 2.5 + variantJitter * 0.6;
-    surfaceDetail += sampleSurfaceVariant(
+    surfaceDetail += sampleSurfaceTriplanar(
         uStoneMaps,
-        warpedSurfaceUv / ${STONE_TILE.toFixed(1)},
+        vSurfaceWorld,
+        surfaceWarp,
+        surfaceWeights,
         uStoneLayers,
-        stoneField
+        stoneField,
+        ${STONE_TILE.toFixed(1)},
+        mat2(1.0),
+        vec2(0.0)
     ) * vSplat.z;
     surfaceWeight += vSplat.z;
 }
@@ -308,7 +387,7 @@ surfaceDetail *= 0.7 + macroSample.r * 0.6;
 diffuseColor.rgb *= surfaceDetail * 1.3;`,
             );
     };
-    material.customProgramCacheKey = () => 'terrain-surface-textures-v5';
+    material.customProgramCacheKey = () => 'terrain-surface-textures-v6';
 }
 
 // Water blends two scrolling layers, each picking a different style from the water array based on

@@ -852,8 +852,11 @@ export class Player {
         this.wrenchArm.rotation.set(0, 0, this.wrenchArmRestZ);
     }
 
-    setOpacity(opacity: number): void {
-        const clamped = Math.min(1, Math.max(0.1, opacity));
+    // The camera-proximity fade keeps the body faintly visible at 10%, so a camera pushed into the
+    // robot still shows where it is. The opening cinematic passes a minimum of 0 to dissolve the
+    // body completely as the view moves into its head.
+    setOpacity(opacity: number, minimum = 0.1): void {
+        const clamped = Math.min(1, Math.max(minimum, opacity));
         // Keep the body in the opaque pass whenever it is fully visible. Only the camera-proximity
         // fade needs blending, and toggling the flag back re-sorts the meshes into the opaque set.
         const transparent = clamped < 1;

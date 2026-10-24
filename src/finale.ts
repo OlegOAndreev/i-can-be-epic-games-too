@@ -838,6 +838,7 @@ export class Finale {
         this.baseFov = this.configuredBaseFov ?? this.camera.fov;
         this.maxAltitude = mountainCeiling((x, z) => this.terrain.heightAt(x, z));
         this.ship.setRepaired();
+        this.ship.hover();
         this.phase = 'celebration';
         this.celebrationElapsed = 0;
         this.outroHold = 0;

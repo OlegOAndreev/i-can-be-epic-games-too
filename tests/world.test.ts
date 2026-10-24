@@ -1,10 +1,20 @@
 import { InstancedMesh, Matrix4, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
+import { PLAYER_RADIUS } from '../src/player';
+import { SPACESHIP_HULL_MARGIN } from '../src/spaceship';
 import { GrassField } from '../src/grass';
 import { smoothstep } from '../src/math-utils';
 import { Terrain, WATER_LEVEL, WORLD_HALF_SIZE } from '../src/terrain';
-import { FAST_TERRAIN, NO_INPUT, PLAYER_SETTINGS, stepPlayer, testPlayer, testTerrain, triangleCount } from './test-helpers';
+import {
+    FAST_TERRAIN,
+    NO_INPUT,
+    PLAYER_SETTINGS,
+    stepPlayer,
+    testPlayer,
+    testTerrain,
+    triangleCount,
+} from './test-helpers';
 import type { CylinderCollider } from '../src/terrain';
 
 // A point on the map's boundary for a side of the rim (0 = +x, 1 = -x, 2 = +z, 3 = -z), where `t`
@@ -21,6 +31,37 @@ function rimPoint(side: number, t: number): { x: number; z: number } {
         default:
             return { x: t * edge, z: -edge };
     }
+}
+
+// Signed horizontal distance from a point to the ship's closed hull outline. Negative means the
+// point is inside the planform.
+function hullClearance(outline: readonly Vector3[], x: number, z: number): number {
+    let distance = Infinity;
+    for (let index = 0; index < outline.length; index++) {
+        const start = outline[index];
+        const end = outline[(index + 1) % outline.length];
+        const edgeX = end.x - start.x;
+        const edgeZ = end.z - start.z;
+        const lengthSquared = edgeX * edgeX + edgeZ * edgeZ;
+        const along =
+            lengthSquared > 0
+                ? Math.max(0, Math.min(1, ((x - start.x) * edgeX + (z - start.z) * edgeZ) / lengthSquared))
+                : 0;
+        distance = Math.min(distance, Math.hypot(x - (start.x + edgeX * along), z - (start.z + edgeZ * along)));
+    }
+
+    let inside = false;
+    for (let index = 0, previous = outline.length - 1; index < outline.length; previous = index++) {
+        const current = outline[index];
+        const prior = outline[previous];
+        if (
+            current.z > z !== prior.z > z &&
+            x < ((prior.x - current.x) * (z - current.z)) / (prior.z - current.z) + current.x
+        ) {
+            inside = !inside;
+        }
+    }
+    return inside ? -distance : distance;
 }
 
 describe('Terrain', () => {
@@ -362,23 +403,38 @@ describe('Terrain', () => {
         expect(player.group.rotation.y).toBeCloseTo(expected, 6);
     });
 
-    it('pushes the hero out of the spaceship hull', () => {
+    it('keeps the hero outside the spaceship hull from every approach direction', () => {
         const terrain = testTerrain(24680);
-        expect(terrain.spaceship.colliders.length).toBeGreaterThan(0);
+        const player = testPlayer(terrain);
+        const site = terrain.spaceshipSite;
+        // The hull is tilted onto the terrain, so measure the clearance against the outline the
+        // player actually sees rather than the flat model planform.
+        const hull = terrain.spaceship.getHullOutline();
+        const approachRadius = 26;
+        let closest = Infinity;
 
-        for (const shipCollider of terrain.spaceship.colliders) {
-            const position = new Vector3(
-                shipCollider.x + 0.05,
-                terrain.heightAt(shipCollider.x, shipCollider.z),
-                shipCollider.z,
-            );
-            const collided = terrain.resolveCollisions(position, 0.34, 2);
+        for (let direction = 0; direction < 48; direction++) {
+            const angle = (direction / 48) * Math.PI * 2;
+            const startX = site.x + Math.sin(angle) * approachRadius;
+            const startZ = site.z + Math.cos(angle) * approachRadius;
+            player.respawnAt(new Vector3(startX, terrain.heightAt(startX, startZ), startZ), angle);
 
-            expect(collided).toBe(true);
-            expect(Math.hypot(position.x - shipCollider.x, position.z - shipCollider.z)).toBeGreaterThan(
-                shipCollider.radius,
+            // Walk straight at the ship for seven seconds. The wall keeps the capsule clear of
+            // the planform plus the blade bevel, so even the closest frame stays outside the hull.
+            let nearest = Infinity;
+            for (let frame = 0; frame < 420; frame++) {
+                player.update(1 / 60, { forward: 1, right: 0, jump: false }, angle, terrain);
+                nearest = Math.min(nearest, hullClearance(hull, player.group.position.x, player.group.position.z));
+            }
+
+            expect(nearest, `approach ${direction} at ${angle.toFixed(2)} rad`).toBeGreaterThanOrEqual(
+                PLAYER_RADIUS + SPACESHIP_HULL_MARGIN - 0.02,
             );
+            closest = Math.min(closest, nearest);
         }
+
+        // At least one approach reached the hull, so the checks above are not vacuous.
+        expect(closest).toBeLessThan(PLAYER_RADIUS + 2);
     });
 
     it('draws the transparent water before other transparent effects', () => {
@@ -512,9 +568,7 @@ describe('Terrain', () => {
                 if (height < WATER_LEVEL + 0.2 || height > WATER_LEVEL + 1.5) {
                     continue;
                 }
-                const inPoolBasin = terrain.pools.some(
-                    (pool) => Math.hypot(x - pool.x, z - pool.z) < pool.reach,
-                );
+                const inPoolBasin = terrain.pools.some((pool) => Math.hypot(x - pool.x, z - pool.z) < pool.reach);
                 if (inPoolBasin) {
                     continue;
                 }
